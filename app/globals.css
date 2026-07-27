@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Sistema de diseño DPCR-08 — tokens reutilizables.
+   Nunca repartir valores de color sueltos por el código: usar estas variables
+   (expuestas como utilidades Tailwind: bg-sidebar, text-muted, bg-accent, …).
+   Tema claro tipo ERP, según la referencia.
+   ───────────────────────────────────────────────────────────────────────── */
+@theme {
+  /* Superficies */
+  --color-content: #f8fafc; /* fondo del área de contenido (slate-50) */
+  --color-surface: #ffffff; /* tarjetas */
+  --color-border: #e2e8f0; /* bordes sutiles (slate-200) */
+
+  /* Barra lateral (slate oscuro) */
+  --color-sidebar: #1e293b; /* slate-800 */
+  --color-sidebar-active: #334155; /* slate-700 (ítem activo) */
+  --color-sidebar-text: #cbd5e1; /* slate-300 (ítems inactivos) */
+
+  /* Acento primario (botones, ítem activo) — azul marino */
+  --color-accent: #1e3a8a; /* blue-900 */
+  --color-accent-hover: #172554; /* blue-950 */
+
+  /* Texto */
+  --color-ink: #0f172a; /* texto principal (slate-900) */
+  --color-muted: #64748b; /* texto secundario/tenue (slate-500) */
+  --color-link: #2563eb; /* nombre de proyecto / enlaces (blue-600) */
+
+  /* Semáforo de estados (reutilizado por badges y alertas de negocio) */
+  --color-ok: #059669; /* verde — Confirmado / disponible (emerald-600) */
+  --color-warn: #d97706; /* ámbar — alerta de margen (amber-600) */
+  --color-danger: #dc2626; /* rojo — conflicto / acción destructiva (red-600) */
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-content);
+  color: var(--color-ink);
+}

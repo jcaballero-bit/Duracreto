@@ -1,0 +1,647 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { Fragment, useState, useTransition } from "react";
+import { Ban, Check, ChevronRight, Lock, Pencil, RefreshCw } from "lucide-react";
+import {
+  avanzarEstadoAction,
+  cambiarOperadorAction,
+  corregirHoraRealAction,
+  editarVolumenAction,
+  reasignarMixerAction,
+} from "../actions";
+import { Badge } from "../components/ui";
+import { BotonesMapa, type UbicacionCliente } from "../components/maps-buttons";
+import { CancelarPedidoModal } from "../components/cancelar-pedido-modal";
+import type { CampoTsReal } from "@/lib/motor/asignacion";
+
+export interface HitoVista {
+  label: string;
+  estado: string;
+  campoReal: CampoTsReal;
+  progTxt: string;
+  realTxt: string | null;
+  realLocal: string | null;
+  diffMin: number | null;
+  tono: "ok" | "warn" | "danger" | null;
+}
+export interface MixerBadge {
+  texto: string;
+  tono: "ok" | "info" | "warn" | "neutro";
+}
+export interface ViajeDespacho {
+  id: number;
+  pedidoId: number;
+  ordenCargaMs: number; // clave de orden cronológico (hora de carga real o programada)
+  horaProgTxt: string;
+  cliente: string;
+  proyecto: string;
+  disenoCodigo: string;
+  disenoEspec: string;
+  elemento: string;
+  tipoDescarga: string;
+  hieloTxt: string;
+  volumen: number;
+  volumenEditable: boolean;
+  volumenBloqueoMsg: string | null;
+  mixerId: number;
+  mixerLabel: string;
+  mixerBadge: MixerBadge;
+  operadorId: number | null;
+  operadorNombre: string | null;
+  estado: string;
+  hitos: HitoVista[];
+  ubicacion: UbicacionCliente;
+}
+export interface GrupoDespacho {
+  plantelNombre: string;
+  zona: string;
+  viajes: ViajeDespacho[];
+}
+export interface MixerOpcion {
+  id: number;
+  etiqueta: string;
+}
+export interface OperadorOpcion {
+  id: number;
+  nombre: string;
+}
+
+const SIGUIENTE: Record<string, string | null> = {
+  Programado: "En carga",
+  "En carga": "En ruta",
+  "En ruta": "Descargando",
+  Descargando: "Regresando",
+  Regresando: "Completado",
+  Completado: null,
+  Cancelado: null,
+};
+
+function tonoEstado(estado: string): "neutro" | "info" | "warn" | "ok" | "danger" {
+  switch (estado) {
+    case "Programado":
+      return "neutro";
+    case "En carga":
+    case "En ruta":
+      return "info";
+    case "Descargando":
+    case "Regresando":
+      return "warn";
+    case "Completado":
+      return "ok";
+    default:
+      return "danger";
+  }
+}
+
+const CLASE_DIFF: Record<"ok" | "warn" | "danger", string> = {
+  ok: "text-emerald-600",
+  warn: "text-amber-600",
+  danger: "text-red-600",
+};
+
+export function TableroDespacho({
+  grupos,
+  mixers,
+  operadores,
+  soloLectura = false,
+}: {
+  grupos: GrupoDespacho[];
+  mixers: MixerOpcion[];
+  operadores: OperadorOpcion[];
+  // Asesor: solo VE el despacho de sus clientes (sin avanzar estados ni editar).
+  soloLectura?: boolean;
+}) {
+  if (grupos.length === 0) {
+    return (
+      <p className="py-8 text-center text-sm text-muted">
+        No hay viajes asignados para esta fecha.
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-6">
+      {grupos.map((g) => (
+        <div key={g.plantelNombre}>
+          <div className="mb-2 flex items-center gap-2">
+            <h3 className="font-semibold text-ink">{g.plantelNombre}</h3>
+            <span className="text-sm text-muted">({g.zona})</span>
+            <span className="text-xs text-muted">· {g.viajes.length} viaje(s)</span>
+          </div>
+          <div className="space-y-3">
+            {g.viajes.map((v) => (
+              <FilaViaje
+                key={v.id}
+                v={v}
+                mixers={mixers}
+                operadores={operadores}
+                soloLectura={soloLectura}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Etiqueta de campo (título pequeño gris + valor) ──────────────────────────
+function Campo({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`flex flex-col gap-0.5 ${className}`}>
+      <span className="text-[10px] font-medium uppercase tracking-wide text-muted">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function FilaViaje({
+  v,
+  mixers,
+  operadores,
+  soloLectura,
+}: {
+  v: ViajeDespacho;
+  mixers: MixerOpcion[];
+  operadores: OperadorOpcion[];
+  soloLectura: boolean;
+}) {
+  const router = useRouter();
+  const [pendiente, startTransition] = useTransition();
+  const [cancelando, setCancelando] = useState(false);
+  const siguiente = SIGUIENTE[v.estado];
+
+  const avanzar = (estado: string) =>
+    startTransition(async () => {
+      const res = await avanzarEstadoAction(v.id, estado);
+      if (res.ok) router.refresh();
+      else alert(res.mensaje ?? "No se pudo avanzar.");
+    });
+
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs text-muted">Viaje #{v.id}</span>
+        <div className="flex items-center gap-2">
+          <Badge tono={tonoEstado(v.estado)}>{v.estado}</Badge>
+          {!soloLectura && v.estado !== "Completado" && (
+            <button
+              onClick={() => setCancelando(true)}
+              title="Cancelar el pedido (con motivo)"
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50"
+            >
+              <Ban size={13} /> Cancelar
+            </button>
+          )}
+        </div>
+      </div>
+
+      {cancelando && (
+        <CancelarPedidoModal
+          pedidoId={v.pedidoId}
+          etiqueta={v.proyecto ? `${v.cliente} — ${v.proyecto}` : v.cliente}
+          onClose={() => setCancelando(false)}
+          onCancelado={() => {
+            setCancelando(false);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {/* Línea de información: 8 campos (una fila si cabe; si no, envuelve) */}
+      <div className="flex flex-wrap items-start gap-x-5 gap-y-3">
+        <Campo label="Hora">
+          <span className="whitespace-nowrap font-mono text-sm text-ink">
+            {v.horaProgTxt}
+          </span>
+        </Campo>
+
+        <Campo label="Cliente / proyecto" className="min-w-[150px]">
+          <div className="text-sm font-semibold text-ink">{v.cliente}</div>
+          {v.proyecto && <div className="text-xs text-link">{v.proyecto}</div>}
+          <div className="mt-1">
+            <BotonesMapa ubicacion={v.ubicacion} compacto />
+          </div>
+        </Campo>
+
+        <Campo label="Tipo de concreto">
+          <div className="text-sm font-semibold text-ink">{v.disenoCodigo}</div>
+          <div className="text-xs text-muted">{v.disenoEspec}</div>
+        </Campo>
+
+        <Campo label="Elemento">
+          <span className="text-sm text-ink">{v.elemento}</span>
+        </Campo>
+
+        <Campo label="Descarga">
+          <span className="text-sm text-ink">{v.tipoDescarga}</span>
+        </Campo>
+
+        <Campo label="Hielo">
+          <span className="text-sm text-ink">{v.hieloTxt}</span>
+        </Campo>
+
+        <Campo label="Volumen">
+          <CampoVolumen
+            viajeId={v.id}
+            volumen={v.volumen}
+            editable={v.volumenEditable}
+            bloqueoMsg={v.volumenBloqueoMsg}
+            soloLectura={soloLectura}
+          />
+        </Campo>
+
+        <Campo label="Mixer">
+          <CampoMixer
+            viajeId={v.id}
+            mixerId={v.mixerId}
+            mixerLabel={v.mixerLabel}
+            badge={v.mixerBadge}
+            mixers={mixers}
+            soloLectura={soloLectura}
+          />
+        </Campo>
+
+        <Campo label="Motorista">
+          <CampoOperador
+            viajeId={v.id}
+            operadorId={v.operadorId}
+            operadorNombre={v.operadorNombre}
+            operadores={operadores}
+            soloLectura={soloLectura}
+          />
+        </Campo>
+      </div>
+
+      {/* Botones de avance de estado con conectores; solo el tramo EN CURSO
+          (entre la última etapa hecha y la siguiente pendiente) se anima. */}
+      <div className="mt-3 flex flex-wrap items-start justify-center gap-x-1 gap-y-3 border-t border-border/60 pt-3">
+        {v.hitos.map((h, i) => (
+          <Fragment key={h.estado}>
+            <ColumnaHito
+              viajeId={v.id}
+              h={h}
+              esSiguiente={siguiente === h.estado}
+              alcanzado={h.realTxt != null}
+              bloqueado={pendiente}
+              onAvanzar={() => avanzar(h.estado)}
+              soloLectura={soloLectura}
+            />
+            {i < v.hitos.length - 1 && (
+              <Conector estado={estadoConector(v.hitos, siguiente, i)} />
+            )}
+          </Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+type EstadoConector = "activo" | "completado" | "futuro";
+
+/** Estado del conector en el hueco i (entre hito i e i+1). */
+function estadoConector(
+  hitos: HitoVista[],
+  siguiente: string | null,
+  i: number,
+): EstadoConector {
+  const idxSig = siguiente ? hitos.findIndex((h) => h.estado === siguiente) : -1;
+  if (idxSig !== -1 && i + 1 === idxSig) return "activo"; // en curso
+  if (hitos[i].realTxt != null && hitos[i + 1].realTxt != null) return "completado";
+  return "futuro";
+}
+
+function Conector({ estado }: { estado: EstadoConector }) {
+  const cls =
+    estado === "activo"
+      ? "text-accent animate-pulse"
+      : estado === "completado"
+        ? "text-emerald-500"
+        : "text-muted/30";
+  return (
+    <div className={`hidden shrink-0 items-center pt-1.5 lg:flex ${cls}`} aria-hidden>
+      <ChevronRight size={18} strokeWidth={estado === "activo" ? 3 : 2} />
+    </div>
+  );
+}
+
+// ── Campo Volumen (editable con restricción) ─────────────────────────────────
+function CampoVolumen({
+  viajeId,
+  volumen,
+  editable,
+  bloqueoMsg,
+  soloLectura,
+}: {
+  viajeId: number;
+  volumen: number;
+  editable: boolean;
+  bloqueoMsg: string | null;
+  soloLectura: boolean;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [pendiente, startTransition] = useTransition();
+
+  const guardar = (valor: string) => {
+    const n = Number(valor);
+    if (!n || n === volumen) return setEditando(false);
+    startTransition(async () => {
+      const res = await editarVolumenAction(viajeId, n);
+      if (res.ok) {
+        setEditando(false);
+        router.refresh();
+      } else alert(res.mensaje ?? "No se pudo editar el volumen.");
+    });
+  };
+
+  if (soloLectura) {
+    return (
+      <span className="whitespace-nowrap text-sm font-semibold text-ink">
+        {volumen} m³
+      </span>
+    );
+  }
+
+  if (editando) {
+    return (
+      <input
+        type="number"
+        min="0.5"
+        step="0.5"
+        autoFocus
+        defaultValue={volumen}
+        onBlur={(e) => guardar(e.target.value)}
+        disabled={pendiente}
+        className="w-20 rounded border border-border bg-surface px-1 py-0.5 text-sm outline-none focus:border-accent"
+      />
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <span className="whitespace-nowrap text-sm font-semibold text-ink">
+        {volumen} m³
+      </span>
+      {editable ? (
+        <button
+          onClick={() => setEditando(true)}
+          title="Editar volumen"
+          className="text-muted hover:text-accent"
+        >
+          <Pencil size={12} />
+        </button>
+      ) : (
+        <span className="text-muted/50" title={bloqueoMsg ?? "No editable"}>
+          <Lock size={12} />
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── Campo Mixer (reasignable) + badge de procedencia ─────────────────────────
+function CampoMixer({
+  viajeId,
+  mixerId,
+  mixerLabel,
+  badge,
+  mixers,
+  soloLectura,
+}: {
+  viajeId: number;
+  mixerId: number;
+  mixerLabel: string;
+  badge: MixerBadge;
+  mixers: MixerOpcion[];
+  soloLectura: boolean;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [pendiente, startTransition] = useTransition();
+
+  const reasignar = (nuevo: number) => {
+    if (nuevo === mixerId) return setEditando(false);
+    startTransition(async () => {
+      const res = await reasignarMixerAction(viajeId, nuevo);
+      if (res.ok) {
+        setEditando(false);
+        router.refresh();
+      } else alert(res.mensaje ?? "No se pudo reasignar.");
+    });
+  };
+
+  if (soloLectura) {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span className="whitespace-nowrap text-sm font-semibold text-ink">
+          {mixerLabel}
+        </span>
+        <Badge tono={badge.tono}>{badge.texto}</Badge>
+      </div>
+    );
+  }
+
+  if (editando) {
+    return (
+      <select
+        autoFocus
+        defaultValue={mixerId}
+        onChange={(e) => reasignar(Number(e.target.value))}
+        onBlur={() => setEditando(false)}
+        disabled={pendiente}
+        className="rounded border border-border bg-surface px-1 py-0.5 text-sm outline-none focus:border-accent"
+      >
+        {mixers.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.etiqueta}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-1">
+        <span className="whitespace-nowrap text-sm font-semibold text-ink">
+          {mixerLabel}
+        </span>
+        <button
+          onClick={() => setEditando(true)}
+          title="Reasignar mixer"
+          className="text-muted hover:text-accent"
+        >
+          <RefreshCw size={12} />
+        </button>
+      </div>
+      <Badge tono={badge.tono}>{badge.texto}</Badge>
+    </div>
+  );
+}
+
+// ── Campo Motorista (operador, editable) ─────────────────────────────────────
+function CampoOperador({
+  viajeId,
+  operadorId,
+  operadorNombre,
+  operadores,
+  soloLectura,
+}: {
+  viajeId: number;
+  operadorId: number | null;
+  operadorNombre: string | null;
+  operadores: OperadorOpcion[];
+  soloLectura: boolean;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [pendiente, startTransition] = useTransition();
+
+  const cambiar = (nuevo: number) => {
+    if (nuevo === operadorId) return setEditando(false);
+    startTransition(async () => {
+      const res = await cambiarOperadorAction(viajeId, nuevo);
+      if (res.ok) {
+        setEditando(false);
+        router.refresh();
+      } else alert(res.mensaje ?? "No se pudo cambiar el motorista.");
+    });
+  };
+
+  if (soloLectura) {
+    return (
+      <span className="text-sm text-ink">{operadorNombre ?? "Sin asignar"}</span>
+    );
+  }
+
+  if (editando) {
+    return (
+      <select
+        autoFocus
+        defaultValue={operadorId ?? ""}
+        onChange={(e) => e.target.value && cambiar(Number(e.target.value))}
+        onBlur={() => setEditando(false)}
+        disabled={pendiente}
+        className="rounded border border-border bg-surface px-1 py-0.5 text-sm outline-none focus:border-accent"
+      >
+        {operadores.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.nombre}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-sm text-ink">{operadorNombre ?? "Sin asignar"}</span>
+      <button
+        onClick={() => setEditando(true)}
+        title="Cambiar motorista"
+        className="text-muted hover:text-accent"
+      >
+        <Pencil size={12} />
+      </button>
+    </div>
+  );
+}
+
+// ── Columna de una etapa: botón (encabezado) + programado/real/desvío ────────
+function ColumnaHito({
+  viajeId,
+  h,
+  esSiguiente,
+  alcanzado,
+  bloqueado,
+  onAvanzar,
+  soloLectura,
+}: {
+  viajeId: number;
+  h: HitoVista;
+  esSiguiente: boolean;
+  alcanzado: boolean;
+  bloqueado: boolean;
+  onAvanzar: () => void;
+  soloLectura: boolean;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [pendiente, startTransition] = useTransition();
+
+  const guardar = (valor: string) => {
+    if (!valor) return setEditando(false);
+    startTransition(async () => {
+      const res = await corregirHoraRealAction(viajeId, h.campoReal, valor);
+      if (res.ok) {
+        setEditando(false);
+        router.refresh();
+      } else alert(res.mensaje ?? "No se pudo corregir.");
+    });
+  };
+
+  const botonCls = alcanzado
+    ? "bg-emerald-100 text-emerald-700"
+    : esSiguiente
+      ? "bg-accent text-white hover:bg-accent-hover"
+      : "bg-content text-muted";
+
+  return (
+    <div className="flex flex-col items-center gap-1.5 text-center">
+      <button
+        disabled={soloLectura || !esSiguiente || bloqueado}
+        onClick={onAvanzar}
+        className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${botonCls} ${soloLectura ? "cursor-default" : ""}`}
+      >
+        {alcanzado && <Check size={14} />}
+        {h.label}
+      </button>
+
+      <div className="whitespace-nowrap text-[11px] text-muted">
+        Prog <span className="font-medium text-ink">{h.progTxt}</span>
+      </div>
+
+      {editando ? (
+        <input
+          type="datetime-local"
+          autoFocus
+          defaultValue={h.realLocal ?? undefined}
+          onBlur={(e) => guardar(e.target.value)}
+          disabled={pendiente}
+          className="rounded border border-border bg-surface px-1 py-0.5 text-[11px] outline-none focus:border-accent"
+        />
+      ) : h.realTxt ? (
+        <div className="flex items-center justify-center gap-1 whitespace-nowrap text-[11px]">
+          <span className="text-muted">Real</span>
+          <span className="font-semibold text-ink">{h.realTxt}</span>
+          {!soloLectura && (
+            <button
+              onClick={() => setEditando(true)}
+              title="Corregir hora real"
+              className="text-muted hover:text-accent"
+            >
+              <Pencil size={11} />
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="text-[11px] text-muted/50">Real —</div>
+      )}
+
+      {h.diffMin != null && h.tono && (
+        <div className={`whitespace-nowrap text-[11px] font-semibold ${CLASE_DIFF[h.tono]}`}>
+          {h.diffMin > 0 ? "+" : ""}
+          {h.diffMin} min
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,16 @@
+# Despliegue en Netlify de la app DPCR-08 (Next.js 16 full-stack + Prisma + Postgres).
+#
+# Netlify detecta Next.js automáticamente y usa su runtime (@netlify/plugin-nextjs),
+# no hace falta declararlo aquí.
+#
+# El cliente Prisma se regenera en `postinstall` (está gitignored). El build
+# aplica las migraciones pendientes al Postgres de producción y luego compila.
+# Requiere que la variable DATABASE_URL esté configurada en Netlify (ver docs).
+
+[build]
+  command = "npx prisma migrate deploy && npm run build"
+  publish = ".next"
+
+[build.environment]
+  # Next 16 requiere Node 20+.
+  NODE_VERSION = "20"

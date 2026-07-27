@@ -1,0 +1,452 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// DPCR-08 — Esquema de datos · FASE 1 (motor de programación y despacho)
+//
+// Solo se modelan las 9 tablas necesarias para el motor de asignación:
+//   planteles, plantas, mixers, bombas, clientes, disenos_mezcla,
+//   rutas_estandar, pedidos, viajes.
+//
+// Tablas del CLAUDE.md que NO pertenecen a esta fase (se agregarán después):
+//   operadores (Fase 4), asesores (Fase 4), usuarios (Fase 3),
+//   bitacora_auditoria (Fase 4).
+// Por eso los campos que las referenciarían quedan OMITIDOS o como texto libre
+// nullable, marcados con "// [fase futura]". No se pierde trabajo: cuando esas
+// tablas existan, se convierten en relaciones reales con una migración aditiva.
+//
+// Nota SQLite: Prisma no soporta enum en SQLite, así que los campos de dominio
+// cerrado (zona, estado, tipo_descarga) son String; los valores válidos se
+// documentan en un comentario junto a cada campo y se validan en el servidor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Prisma 7: la URL vive en prisma.config.ts (para Migrate/CLI) y el runtime
+  // recibe la conexión vía driver adapter (@prisma/adapter-pg) en el constructor
+  // de PrismaClient (ver lib/prisma.ts). No se declara `url` aquí a propósito.
+  // Fase 3: Postgres local embebido en :5433 (antes SQLite). Ver scripts/pg.ts.
+}
+
+// ── Planteles ────────────────────────────────────────────────────────────────
+// Los 7 planteles. La flota es 100% dinámica: agregar/quitar un plantel es una
+// operación de datos, nunca un cambio de código.
+model planteles {
+  id                         Int    @id @default(autoincrement())
+  nombre                     String @unique
+  zona                       String // "Norte" | "Centro Sur"
+  capacidad_dosificacion_m3h Int // capacidad total informativa del plantel
+
+  // Hub de préstamo de flota de la zona. Los planteles sin flota propia
+  // (Choloma, Villanueva, La Ceiba, Hazama) apuntan a su hub (Santa Marta /
+  // Tegucigalpa). Un hub puede tener hub_id = null (él mismo es el hub).
+  hub_id Int?
+  hub    planteles?  @relation("HubDeZona", fields: [hub_id], references: [id])
+  hijos  planteles[] @relation("HubDeZona")
+
+  plantas     plantas[]
+  mixers_base mixers[]  @relation("MixerBase")
+  bombas_base bombas[]  @relation("BombaBase")
+  pedidos     pedidos[]
+  solicitudes solicitudes_anticipadas[]
+
+  @@index([zona])
+}
+
+// ── Plantas dosificadoras ──────────────────────────────────────────────────
+// Un plantel puede tener 1 o 2 plantas simultáneas (Santa Marta y Tegucigalpa
+// tienen 2). El límite de m³/h de la cascada de horarios es POR PLANTA.
+model plantas {
+  id            Int    @id @default(autoincrement())
+  plantel_id    Int
+  nombre        String
+  capacidad_m3h Int // m³/h de esta planta (STALO 45, SANY 50, etc.)
+  // Maniobra/posicionamiento del camión antes de dosificar (min). El tiempo de
+  // carga = tiempo_alistamiento_min + volumen/capacidad_m3h*60.
+  tiempo_alistamiento_min Int @default(5)
+
+  plantel planteles @relation(fields: [plantel_id], references: [id])
+  pedidos pedidos[]
+
+  @@index([plantel_id])
+}
+
+// ── Operadores (motoristas) ────────────────────────────────────────────────
+model operadores {
+  id     Int    @id @default(autoincrement())
+  nombre String
+  estado String @default("Disponible") // "Disponible" | "No disponible"
+
+  mixers_asignados mixers[] @relation("OperadorMixer") // mixers cuyo motorista habitual es este
+  viajes           viajes[] // viajes donde va este motorista
+
+  @@index([estado])
+}
+
+// ── Mixers (camiones revolvedores) ─────────────────────────────────────────
+model mixers {
+  id              Int     @id @default(autoincrement())
+  identificador   String? @unique // número de unidad que captura el usuario (opcional)
+  placa           String? // placa de la unidad (opcional)
+  marca           String
+  capacidad_m3    Int // 7 | 9 | 11
+  plantel_base_id Int
+  estado          String  @default("Disponible") // "Disponible" | "En mantenimiento" | "Fuera de servicio"
+
+  // Motorista habitual del mixer (catálogo). Nullable.
+  operador_asignado_id Int?
+  operador_asignado    operadores? @relation("OperadorMixer", fields: [operador_asignado_id], references: [id])
+
+  plantel_base planteles @relation("MixerBase", fields: [plantel_base_id], references: [id])
+  viajes       viajes[]
+
+  @@index([plantel_base_id])
+  @@index([estado])
+  @@index([capacidad_m3])
+}
+
+// ── Bombas ─────────────────────────────────────────────────────────────────
+model bombas {
+  id              Int    @id @default(autoincrement())
+  identificador   String @unique
+  estado          String @default("Disponible") // "Disponible" | "En mantenimiento" | "Fuera de servicio"
+  plantel_base_id Int
+
+  plantel_base planteles @relation("BombaBase", fields: [plantel_base_id], references: [id])
+  pedidos      pedidos[]
+
+  @@index([plantel_base_id])
+  @@index([estado])
+}
+
+// ── Clientes ───────────────────────────────────────────────────────────────
+model clientes {
+  id        Int     @id @default(autoincrement())
+  empresa   String
+  proyecto  String? // opcional: hay clientes sin un proyecto (p. ej. remodelación propia)
+  ubicacion String
+  latitud   Float? // coordenada del proyecto / sitio de entrega
+  longitud  Float?
+  // Enlace de Google Maps que pegó el asesor (pin de la obra). Se guarda tal cual
+  // porque reabrirlo es más preciso que reconstruir uno desde las coordenadas.
+  google_maps_url String?
+  contacto  String?
+  telefono  String?
+  // El asesor decide si el cliente está activo. Hay clientes que funden una sola
+  // vez (se inactivan al terminar) y otros que funden por un período largo. Los
+  // inactivos se ocultan de los listados operativos pero conservan su historial.
+  activo    Boolean @default(true)
+  asesor_id Int? // asesor comercial dueño del cliente (Fase 3)
+  // Tiempos de referencia para la cascada del motor (antes vivían en la tabla
+  // rutas_estandar, ya fusionada). Null = sin ruta → el motor usa el default y
+  // lo marca visualmente (ver DEFAULTS en lib/motor).
+  tiempo_viaje_referencia_min   Int?
+  tiempo_regreso_referencia_min Int?
+
+  asesor       asesores?                  @relation(fields: [asesor_id], references: [id])
+  pedidos      pedidos[]
+  solicitudes  solicitudes_anticipadas[]
+
+  @@index([asesor_id])
+}
+
+// ── Asesores (vendedores) ────────────────────────────────────────────────────
+// Un asesor puede estar vinculado a un usuario de sistema (usuario_auth_id) para
+// que, con rol Asesor, vea/confirme solo los pedidos de SUS clientes.
+model asesores {
+  id              Int     @id @default(autoincrement())
+  nombre          String
+  correo          String?
+  usuario_auth_id String? @unique // enlaza a User.id (rol Asesor)
+
+  usuario     User?                     @relation(fields: [usuario_auth_id], references: [id])
+  clientes    clientes[]
+  pedidos     pedidos[]
+  solicitudes solicitudes_anticipadas[]
+  metas       metas_asesor[]
+}
+
+// ── Metas de venta por asesor (dashboard comercial) ──────────────────────────
+// Meta de m³ por asesor y mes. La configura el Gerente Comercial / Admin.
+model metas_asesor {
+  id         Int      @id @default(autoincrement())
+  asesor_id  Int
+  anio       Int
+  mes        Int // 1-12
+  meta_m3    Float
+  creado_por String
+  creado_en  DateTime @default(now())
+
+  asesor asesores @relation(fields: [asesor_id], references: [id])
+
+  @@unique([asesor_id, anio, mes]) // una meta por asesor y mes
+  @@index([anio, mes])
+}
+
+// ── Diseños de mezcla ──────────────────────────────────────────────────────
+model disenos_mezcla {
+  id                   Int     @id @default(autoincrement())
+  codigo               String  @unique // p.ej. "DIS-0013"
+  // Resistencia a compresión en psi. Null para diseños por flexión (MR), donde
+  // el psi no aplica y se usa `etiqueta_resistencia` (p.ej. "MR-600").
+  resistencia_psi      Int?
+  // Etiqueta a mostrar de la resistencia ("4,000" o "MR-600"). Si es null se
+  // formatea `resistencia_psi` con separador de miles.
+  etiqueta_resistencia String?
+  tamano_agregado      String? // tamaño máximo de agregado, p.ej. "3/4\"", "1-1/2\""
+  revenimiento         String // p.ej. "4 pulg"
+  sacos_hielo_por_m3   Float   @default(0)
+  aditivo_especial     String?
+
+  pedidos pedidos[]
+}
+
+
+// ── Pedidos ────────────────────────────────────────────────────────────────
+model pedidos {
+  id                Int      @id @default(autoincrement())
+  cliente_id        Int
+  diseno_id         Int
+  volumen_total_m3  Float
+  hora_solicitada   DateTime // fecha + hora: define el DÍA y la hora objetivo del pedido
+  plantel_id        Int
+  planta_id         Int
+  bomba_id          Int?
+  tipo_descarga     String // "Canal directo" | "Bomba estacionaria" | "Bomba pluma"
+  sacos_hielo_por_m3 Int    @default(0) // control de temperatura (0 = sin control; 1-10)
+  asesor_id         Int? // asesor que gestiona el pedido (precargado del cliente, editable)
+  // Orden de atención del pedido DENTRO de su plantel+fecha (1 = primero). Es la
+  // base de la cola para la cascada de horarios; se asigna MAX+1 al crear y el
+  // Programador puede reordenarlo (reacomoda el resto). Independiente por plantel
+  // y por día.
+  orden_dia         Int?
+  // Hora de llegada FIJA: si true, la cascada respeta `hora_solicitada` como
+  // llegada exacta (piso duro) y NO reprograma este pedido junto al resto
+  // (para casos ocasionales: p. ej. un cliente que pide suministro por la tarde).
+  hora_bloqueada    Boolean @default(false)
+  // Minutos mínimos entre la llegada de un camión y el siguiente (restricción de
+  // acceso/espacio del sitio). El motor lo usa para escalonar los viajes del
+  // pedido; null = sin restricción especial.
+  frecuencia_entre_camiones_min Int?
+  // Tiempo de transporte (min) SOLO IDA hacia la obra; el regreso se asume igual.
+  // Se precarga del cliente al programar pero el Programador puede ajustarlo por
+  // pedido. Null = usa el tiempo del cliente (o el default si el cliente no tiene).
+  tiempo_transporte_min Int?
+  elemento          String? // elemento estructural (losa, columna, zapata, …)
+  ubicacion_detalle String?
+  // Volumen ORIGINAL programado (snapshot al crear/reprogramar). Sirve para medir
+  // "adiciones de volumen" en el día: si lo despachado supera este valor, la
+  // diferencia es adición al programa. Backfill = volumen_total_m3 al migrar.
+  volumen_programado Float?
+  // Estado del pedido a nivel de negocio: "Activo" | "Cancelado". Un pedido
+  // cancelado se conserva (con su motivo) para el indicador comercial y la
+  // bitácora, pero sale del programa/despacho activo.
+  estado_pedido        String  @default("Activo")
+  motivo_cancelacion   String? // "Clima o Lluvia" | "Cliente no está listo" | "Se fue con la competencia" | "Cancelado por el cliente" | "Otro"
+  detalle_cancelacion  String? // texto libre cuando el motivo es "Otro"
+  cancelado_por        String?
+  fecha_cancelacion    DateTime?
+  creado_por        String // [fase futura] pasará a FK usuarios; por ahora texto libre
+  creado_en         DateTime @default(now())
+  // asesor_id -> [fase futura] relación a asesores (Fase 4)
+
+  cliente clientes       @relation(fields: [cliente_id], references: [id])
+  diseno  disenos_mezcla @relation(fields: [diseno_id], references: [id])
+  plantel planteles      @relation(fields: [plantel_id], references: [id])
+  planta  plantas        @relation(fields: [planta_id], references: [id])
+  bomba   bombas?        @relation(fields: [bomba_id], references: [id])
+  asesor  asesores?      @relation(fields: [asesor_id], references: [id])
+  viajes  viajes[]
+  // Solicitud anticipada (proyección semanal) de la que nació este pedido, si aplica.
+  solicitud solicitudes_anticipadas?
+
+  @@index([plantel_id])
+  @@index([planta_id])
+  @@index([hora_solicitada])
+}
+
+// ── Solicitudes anticipadas (proyección semanal de asesores) ─────────────────
+// Reemplaza el Excel semanal: cada celda (cliente × día) es una proyección
+// PRELIMINAR del asesor (no un pedido formal). El Programador la convierte en un
+// pedido real. Los datos fijos del cliente NO se duplican aquí (viven en clientes).
+model solicitudes_anticipadas {
+  id                     Int      @id @default(autoincrement())
+  cliente_id             Int
+  asesor_id              Int? // asesor dueño (= asesor del cliente); null si el cliente no tiene
+  plantel_id             Int? // planta que atenderá esta proyección (puede variar por día)
+  fecha_requerida        DateTime // día proyectado (se guarda a medianoche local)
+  volumen_estimado_m3    Float?
+  tipo_concreto_estimado String? // texto libre aproximado (el asesor no sabe el código exacto)
+  tipo_descarga_estimado String? // "Bomba" | "Directo" (sin bomba/mixer específico)
+  sacos_hielo_por_m3     Int? // control de temperatura estimado (0-10)
+  elemento               String? // elemento estructural (pavimento, losa, columna…)
+  frecuencia_entre_camiones_min Int?
+  observaciones          String?
+  estado                 String   @default("Pendiente") // Pendiente | Programado | Descartada
+  pedido_id              Int?     @unique // se llena al convertir en pedido real
+  creado_por             String
+  creado_en              DateTime @default(now())
+
+  cliente clientes  @relation(fields: [cliente_id], references: [id])
+  asesor  asesores? @relation(fields: [asesor_id], references: [id])
+  plantel planteles? @relation(fields: [plantel_id], references: [id])
+  pedido  pedidos?  @relation(fields: [pedido_id], references: [id])
+
+  // Un cliente puede tener VARIAS proyecciones el mismo día (p. ej. 4000 para
+  // muros y 5000 para losa), por eso NO hay unique por (cliente, fecha).
+  @@index([cliente_id, fecha_requerida])
+  @@index([fecha_requerida, estado])
+  @@index([asesor_id])
+}
+
+// ── Viajes ─────────────────────────────────────────────────────────────────
+// Un pedido genera N viajes (uno por mixer/carga). El motor asigna el mixer y
+// calcula toda la cascada de horarios. hora_regreso_planta = momento en que el
+// mixer específico vuelve a estar libre.
+model viajes {
+  id                    Int   @id @default(autoincrement())
+  pedido_id             Int
+  mixer_id              Int? // nullable: un viaje sugerido de refuerzo aún sin asignar
+  capacidad_asignada_m3 Int // capacidad del mixer asignado (7/9/11)
+  volumen_asignado_m3   Float // volumen real cargado en este viaje (puede ser parcial)
+
+  // Motorista del viaje. Se preselecciona con el operador del mixer y es
+  // editable en Despacho (por si el habitual no está disponible ese día).
+  operador_id Int?
+  operador    operadores? @relation(fields: [operador_id], references: [id])
+
+  // ── PROGRAMACIÓN (línea base del motor, Hito 2) ────────────────────────────
+  // Calculados por la cascada de asignación. Son la LÍNEA BASE ACORDADA.
+  // Despacho en vivo NUNCA debe escribir sobre estos campos.
+  hora_solicitada       DateTime
+  hora_inicio_carga     DateTime?
+  hora_fin_carga        DateTime?
+  hora_salida_planta    DateTime?
+  hora_llegada_proyecto DateTime?
+  hora_inicio_descarga  DateTime?
+  hora_fin_descarga     DateTime?
+  hora_regreso_planta   DateTime?
+
+  // ── EJECUCIÓN REAL (Despacho en vivo) ──────────────────────────────────────
+  // Sellados por el despachador al avanzar el estado, con la hora del SERVIDOR.
+  // Todo lo real vive aquí; la programación de arriba queda intacta.
+  ts_inicio_carga_real    DateTime?
+  ts_fin_carga_real       DateTime? // se sella al salir de "En carga" (fin de carga físico)
+  ts_salida_real          DateTime?
+  ts_llegada_real         DateTime?
+  ts_inicio_descarga_real DateTime?
+  ts_fin_descarga_real    DateTime?
+  ts_regreso_real         DateTime?
+
+  estado               String  @default("Programado") // "Programado" | "En carga" | "En ruta" | "Descargando" | "Regresando" | "Completado" | "Cancelado"
+  ajustado_manualmente Boolean @default(false)
+
+  // Motivo de la asignación, para mostrar en la interfaz de prueba:
+  // "Flota propia" | "Préstamo de zona" | "Refuerzo excepcional" | "Sin cubrir"
+  motivo_asignacion String?
+
+  // Marca que el tiempo de viaje/regreso se calculó con valores por defecto
+  // porque el cliente no tiene ruta_estandar registrada (para resaltar en UI).
+  ruta_por_defecto Boolean @default(false)
+
+  // Campos de confirmación de asesor — se usan en Fase 4, nullable por ahora.
+  estado_confirmacion     String? // "Pendiente" | "Confirmado" | "Rechazado"
+  fecha_hora_confirmacion DateTime?
+  usuario_confirmo        String?
+
+  pedido pedidos @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
+  mixer  mixers? @relation(fields: [mixer_id], references: [id])
+
+  @@index([pedido_id])
+  @@index([mixer_id])
+  @@index([estado])
+}
+
+// ── Autenticación y roles (Fase 3) ───────────────────────────────────────────
+// Modelos estándar de Auth.js (@auth/prisma-adapter) + extensiones del negocio:
+// `passwordHash` (login por correo/contraseña), `activo` (desactivar acceso sin
+// borrar), `zona` (para Programador/Despachador), y `roles` (multi-rol).
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String? // login por credenciales (bcrypt); null si solo usa Google
+  activo        Boolean   @default(true)
+  zona          String? // "Norte" | "Centro Sur" | null (aplica a Programador/Despachador)
+  creado_en     DateTime  @default(now())
+
+  accounts Account[]
+  sessions Session[]
+  roles    UserRole[]
+  asesor   asesores? // 1:1 si este usuario es un asesor comercial
+}
+
+// Un usuario puede tener más de un rol activo a la vez.
+model UserRole {
+  id     String @id @default(cuid())
+  userId String
+  rol    String // "Administrador" | "Programador" | "Despachador" | "Asesor"
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, rol])
+  @@index([userId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ── Bitácora de auditoría ────────────────────────────────────────────────────
+// Registro de cambios sensibles. Se usa plenamente en Fase 4; por ahora la
+// corrección manual de horas reales en Despacho ya escribe aquí.
+// `usuario` es texto libre hasta que exista autenticación (Fase 3).
+model bitacora_auditoria {
+  id              Int      @id @default(autoincrement())
+  tabla_afectada  String
+  registro_id     Int
+  usuario         String
+  fecha_hora      DateTime @default(now())
+  campo_modificado String
+  valor_anterior  String?
+  valor_nuevo     String?
+  motivo          String?
+
+  @@index([tabla_afectada, registro_id])
+}

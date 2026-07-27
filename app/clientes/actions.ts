@@ -1,0 +1,330 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { calcularAlcance } from "@/lib/auth/acceso";
+import { esEnlaceCorto, extraerCoordsDeUrl } from "@/lib/geo/maps-link";
+
+export type Datos = Record<string, string>;
+type Res = { ok: boolean; mensaje?: string; id?: number };
+
+// Helpers de parseo.
+const s = (v?: string) => (v ?? "").trim();
+const sNull = (v?: string) => (s(v) === "" ? null : s(v));
+const intNull = (v?: string) => {
+  if (s(v) === "") return null;
+  const n = Number.parseInt(s(v), 10);
+  return Number.isNaN(n) ? null : n;
+};
+const floatNull = (v?: string) => {
+  if (s(v) === "") return null;
+  const n = Number.parseFloat(s(v).replace(",", "."));
+  return Number.isNaN(n) ? null : n;
+};
+
+interface Contexto {
+  userId: string;
+  quien: string;
+  esAdmin: boolean;
+  esAsesor: boolean;
+  asesorId: number | null; // asesor del propio usuario (rol Asesor)
+}
+
+/** Sesión + alcance + asesor propio. Solo Admin o Asesor pueden gestionar. */
+async function contexto(): Promise<Contexto | { error: string }> {
+  const sesion = await auth();
+  if (!sesion?.user) return { error: "Sesión no válida." };
+  const alcance = calcularAlcance(sesion.user.roles ?? [], sesion.user.zona ?? null);
+  if (!alcance.esAdmin && !alcance.esAsesor) {
+    return { error: "No tienes permiso para gestionar clientes." };
+  }
+  // Equivalente a get_asesor_id_for_user(): el asesor ligado a este usuario.
+  const asesor = await prisma.asesores.findFirst({
+    where: { usuario_auth_id: sesion.user.id },
+    select: { id: true },
+  });
+  return {
+    userId: sesion.user.id,
+    quien: sesion.user.name ?? sesion.user.email ?? "usuario",
+    esAdmin: alcance.esAdmin,
+    esAsesor: alcance.esAsesor,
+    asesorId: asesor?.id ?? null,
+  };
+}
+
+/** Construye los campos escribibles de un cliente desde el formulario. */
+function construir(d: Datos): Record<string, unknown> {
+  // El cliente captura UN solo tiempo de transporte (ida). El regreso se asume
+  // igual, así que se espeja en ambas columnas para el motor.
+  const transporte = intNull(d.tiempo_viaje_referencia_min);
+  return {
+    empresa: s(d.empresa),
+    proyecto: sNull(d.proyecto),
+    ubicacion: s(d.ubicacion),
+    latitud: floatNull(d.latitud),
+    longitud: floatNull(d.longitud),
+    contacto: sNull(d.contacto),
+    telefono: sNull(d.telefono),
+    google_maps_url: sNull(d.google_maps_url),
+    tiempo_viaje_referencia_min: transporte,
+    tiempo_regreso_referencia_min: transporte,
+  };
+}
+
+/** ¿El usuario puede operar sobre este cliente? (Asesor: solo los suyos.) */
+async function autorizarCliente(
+  ctx: Contexto,
+  clienteId: number,
+): Promise<Res & { clienteAsesorId?: number | null }> {
+  const cliente = await prisma.clientes.findUnique({
+    where: { id: clienteId },
+    include: { asesor: { select: { usuario_auth_id: true } } },
+  });
+  if (!cliente) return { ok: false, mensaje: "Cliente no encontrado." };
+  if (ctx.esAdmin) return { ok: true, clienteAsesorId: cliente.asesor_id };
+  // Asesor: SOLO sus propios clientes (validado en el servidor, no en la UI).
+  if (cliente.asesor?.usuario_auth_id !== ctx.userId) {
+    return { ok: false, mensaje: "Ese cliente no es tuyo." };
+  }
+  return { ok: true, clienteAsesorId: cliente.asesor_id };
+}
+
+async function auditar(
+  registroId: number,
+  quien: string,
+  campo: string,
+  anterior: string | null,
+  nuevo: string | null,
+  motivo: string,
+) {
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "clientes",
+      registro_id: registroId,
+      usuario: quien,
+      campo_modificado: campo,
+      valor_anterior: anterior,
+      valor_nuevo: nuevo,
+      motivo,
+    },
+  });
+}
+
+function traducirError(e: unknown): string {
+  const code = (e as { code?: string })?.code;
+  if (code === "P2003")
+    return "No se puede eliminar: el cliente tiene pedidos asociados.";
+  if (code === "P2002") return "Ya existe un registro con ese valor único.";
+  return e instanceof Error ? e.message : "Error inesperado.";
+}
+
+/** Crea un cliente. El Asesor NO elige asesor: se autoasigna a sí mismo. */
+export async function crearClienteAction(datos: Datos): Promise<Res> {
+  const ctx = await contexto();
+  if ("error" in ctx) return { ok: false, mensaje: ctx.error };
+  if (!s(datos.empresa)) return { ok: false, mensaje: "El nombre del cliente es obligatorio." };
+  if (!s(datos.ubicacion)) return { ok: false, mensaje: "La ubicación es obligatoria." };
+
+  const data = construir(datos);
+  // Asesor: se autoasigna (no puede regalar/robar clientes). Admin: elige.
+  if (ctx.esAdmin) {
+    data.asesor_id = intNull(datos.asesor_id);
+  } else {
+    if (ctx.asesorId == null) {
+      return { ok: false, mensaje: "Tu usuario no está vinculado a un asesor." };
+    }
+    data.asesor_id = ctx.asesorId;
+  }
+
+  try {
+    // @ts-expect-error data validada por whitelist
+    const creado = await prisma.clientes.create({ data });
+    await auditar(creado.id, ctx.quien, "alta", null, s(datos.empresa), "Alta de cliente");
+    revalidatePath("/clientes");
+    revalidatePath("/clientes/semana");
+    return { ok: true, id: creado.id };
+  } catch (e) {
+    return { ok: false, mensaje: traducirError(e) };
+  }
+}
+
+/** Edita un cliente. El Asesor solo edita los suyos y no puede reasignarlo. */
+export async function actualizarClienteAction(id: number, datos: Datos): Promise<Res> {
+  const ctx = await contexto();
+  if ("error" in ctx) return { ok: false, mensaje: ctx.error };
+  const permiso = await autorizarCliente(ctx, id);
+  if (!permiso.ok) return permiso;
+
+  const data = construir(datos);
+  // Solo el Admin puede reasignar el cliente a otro asesor.
+  if (ctx.esAdmin) {
+    data.asesor_id = intNull(datos.asesor_id);
+  } // Asesor: se conserva el asesor_id actual (no se toca).
+
+  try {
+    await prisma.clientes.update({ where: { id }, data });
+    await auditar(id, ctx.quien, "edición", null, s(datos.empresa), "Edición de cliente");
+    revalidatePath("/clientes");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, mensaje: traducirError(e) };
+  }
+}
+
+// User-Agent de navegador real: Google sirve a los bots una página distinta (a
+// veces sin las coordenadas embebidas), así que nos identificamos como Chrome.
+const UA_NAVEGADOR =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+/** Intenta extraer coordenadas de un texto crudo y de su versión URL-decodificada
+ * (las páginas de consentimiento de Google traen la URL real en un `continue=`). */
+function extraerDeTexto(texto: string | null | undefined) {
+  if (!texto) return null;
+  const directo = extraerCoordsDeUrl(texto);
+  if (directo) return directo;
+  try {
+    return extraerCoordsDeUrl(decodeURIComponent(texto));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resuelve un enlace CORTO (maps.app.goo.gl / goo.gl/maps) a coordenadas. Sigue
+ * las redirecciones y prueba en cada URL; si la respuesta final NO redirige (llega
+ * una página HTML), extrae las coordenadas del CUERPO (Google las embebe como
+ * `!3d!4d`). Devuelve null si nada funciona.
+ */
+async function resolverEnlaceCorto(url: string, maxSaltos = 6) {
+  let actual = url;
+  for (let i = 0; i < maxSaltos; i++) {
+    let res: Response;
+    try {
+      res = await fetch(actual, {
+        method: "GET",
+        redirect: "manual",
+        headers: { "User-Agent": UA_NAVEGADOR, "Accept-Language": "es,en" },
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch {
+      return null;
+    }
+    const loc = res.headers.get("location");
+    if (loc) {
+      actual = new URL(loc, actual).toString();
+      const c = extraerDeTexto(actual);
+      if (c) return c;
+      continue;
+    }
+    // Sin más redirecciones: probar con la URL final y con el cuerpo HTML.
+    const enUrl = extraerDeTexto(res.url) ?? extraerDeTexto(actual);
+    if (enUrl) return enUrl;
+    try {
+      const html = await res.text();
+      const enHtml = extraerCoordsDeUrl(html);
+      if (enHtml) return enHtml;
+    } catch {
+      /* ignorar: caemos al fallback de abajo */
+    }
+    break;
+  }
+
+  // Fallback: seguir todas las redirecciones automáticamente y leer el cuerpo.
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      headers: { "User-Agent": UA_NAVEGADOR, "Accept-Language": "es,en" },
+      signal: AbortSignal.timeout(8000),
+    });
+    const enUrl = extraerDeTexto(res.url);
+    if (enUrl) return enUrl;
+    const html = await res.text();
+    return extraerCoordsDeUrl(html);
+  } catch {
+    return null;
+  }
+}
+
+const MENSAJE_ENLACE_INVALIDO =
+  "No se pudo leer la ubicación de ese enlace — verifica que sea un enlace de Google Maps válido, o intenta copiar el enlace largo desde el navegador en vez de la app.";
+
+/**
+ * Resuelve un enlace de Google Maps a coordenadas. Enlace largo → regex directo;
+ * enlace corto → resuelve la redirección y luego regex. NO bloquea nada: si no
+ * se puede extraer, devuelve `{ ok: false, mensaje }` y el cliente igual se puede
+ * guardar con la ubicación en blanco (robustez ante cambios de formato de Google).
+ */
+export async function resolverEnlaceMapsAction(
+  url: string,
+): Promise<{ ok: boolean; lat?: number; lng?: number; mensaje?: string }> {
+  const sesion = await auth();
+  if (!sesion?.user) return { ok: false, mensaje: "Sesión no válida." };
+
+  const limpio = (url ?? "").trim();
+  if (!limpio) return { ok: false, mensaje: "Pega un enlace de Google Maps." };
+
+  // 1. Intento directo (enlace largo con coordenadas en el texto).
+  const directo = extraerCoordsDeUrl(limpio);
+  if (directo) return { ok: true, lat: directo.lat, lng: directo.lng };
+
+  // 2. Enlace corto → resolver la redirección / leer el cuerpo y reintentar.
+  if (esEnlaceCorto(limpio)) {
+    const coords = await resolverEnlaceCorto(limpio);
+    if (coords) return { ok: true, lat: coords.lat, lng: coords.lng };
+  }
+
+  return { ok: false, mensaje: MENSAJE_ENLACE_INVALIDO };
+}
+
+/** Activa/desactiva un cliente (Asesor: solo los suyos). El asesor decide si el
+ * cliente sigue fundiendo; los inactivos conservan su historial pero se ocultan
+ * de las listas de selección operativas. */
+export async function alternarActivoClienteAction(
+  id: number,
+  activo: boolean,
+): Promise<Res> {
+  const ctx = await contexto();
+  if ("error" in ctx) return { ok: false, mensaje: ctx.error };
+  const permiso = await autorizarCliente(ctx, id);
+  if (!permiso.ok) return permiso;
+
+  try {
+    const antes = await prisma.clientes.findUnique({
+      where: { id },
+      select: { activo: true },
+    });
+    await prisma.clientes.update({ where: { id }, data: { activo } });
+    await auditar(
+      id,
+      ctx.quien,
+      "activo",
+      antes?.activo ? "Activo" : "Inactivo",
+      activo ? "Activo" : "Inactivo",
+      activo ? "Reactivación de cliente" : "Inactivación de cliente",
+    );
+    revalidatePath("/clientes");
+    revalidatePath("/clientes/semana");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, mensaje: traducirError(e) };
+  }
+}
+
+/** Elimina un cliente (Asesor: solo los suyos). */
+export async function eliminarClienteAction(id: number): Promise<Res> {
+  const ctx = await contexto();
+  if ("error" in ctx) return { ok: false, mensaje: ctx.error };
+  const permiso = await autorizarCliente(ctx, id);
+  if (!permiso.ok) return permiso;
+
+  try {
+    const cliente = await prisma.clientes.findUnique({ where: { id }, select: { empresa: true } });
+    await prisma.clientes.delete({ where: { id } });
+    await auditar(id, ctx.quien, "baja", cliente?.empresa ?? null, null, "Baja de cliente");
+    revalidatePath("/clientes");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, mensaje: traducirError(e) };
+  }
+}
