@@ -1,7 +1,6 @@
 "use client";
 
 import { useActionState } from "react";
-import { Boxes } from "lucide-react";
 import { iniciarSesionAction, entrarConGoogleAction } from "./actions";
 
 const inputCls =
@@ -16,11 +15,14 @@ export function LoginForm({ googleHabilitado }: { googleHabilitado: boolean }) {
   return (
     <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-6 shadow-sm">
       <div className="mb-5 flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent text-white">
-          <Boxes size={22} />
-        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/logo-duracreto.png"
+          alt="DURACRETO"
+          className="h-14 w-14 shrink-0 object-contain"
+        />
         <div className="leading-tight">
-          <div className="font-bold text-ink">Despacho</div>
+          <div className="font-bold text-ink">DURACRETO Logistics</div>
           <div className="text-[11px] tracking-wider text-muted">
             CONCRETO PREMEZCLADO
           </div>
@@ -71,7 +73,7 @@ export function LoginForm({ googleHabilitado }: { googleHabilitado: boolean }) {
       )}
 
       <p className="mt-4 rounded-lg bg-content px-3 py-2 text-xs text-muted">
-        Demo: <strong className="text-ink">jcaballero@duracreto.com</strong> / admin123
+        Demo: <strong className="text-ink">usuario@duracreto.com</strong> / Miclave123
       </p>
     </div>
   );

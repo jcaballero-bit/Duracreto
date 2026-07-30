@@ -51,7 +51,7 @@ export function Filtros({
             type="date"
             value={fecha}
             onChange={(e) => navegar(e.target.value, plantel)}
-            className="rounded-lg border border-border bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent"
+            className="rounded-lg border border-border bg-surface px-2.5 py-2.5 text-sm text-ink outline-none focus:border-accent"
           />
         </label>
 
@@ -60,7 +60,7 @@ export function Filtros({
           <select
             value={plantel}
             onChange={(e) => navegar(fecha, e.target.value)}
-            className="rounded-lg border border-border bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent"
+            className="rounded-lg border border-border bg-surface px-2.5 py-2.5 text-sm text-ink outline-none focus:border-accent"
           >
             <option value="todos">Todos</option>
             {planteles.map((p) => (

@@ -5,7 +5,9 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Menu, X } from "lucide-react";
 import { puedeAccederRuta } from "@/lib/auth/acceso";
-import { NAV, type ItemNav } from "./nav";
+import { NAV, etiquetaNav, type ItemNav } from "./nav";
+import { UserMenu } from "./user-menu";
+import type { UsuarioShell } from "./sidebar";
 
 function esActivo(pathname: string, item: ItemNav): boolean {
   if (item.href === "/") return pathname === "/";
@@ -14,10 +16,10 @@ function esActivo(pathname: string, item: ItemNav): boolean {
 }
 
 /** Menú de navegación para móvil/tablet (el sidebar fijo está oculto en < md). */
-export function MobileNav({ roles }: { roles: string[] }) {
+export function MobileNav({ usuario }: { usuario: UsuarioShell }) {
   const [abierto, setAbierto] = useState(false);
   const pathname = usePathname();
-  const items = NAV.filter((item) => puedeAccederRuta(roles, item.href));
+  const items = NAV.filter((item) => puedeAccederRuta(usuario.roles, item.href));
 
   // Cerrar el drawer al navegar (cambia la ruta).
   useEffect(() => {
@@ -74,11 +76,16 @@ export function MobileNav({ roles }: { roles: string[] }) {
                     }`}
                   >
                     <Icon size={18} className="shrink-0" />
-                    <span>{item.label}</span>
+                    <span>{etiquetaNav(item, usuario.roles)}</span>
                   </Link>
                 );
               })}
             </nav>
+
+            {/* Menú de usuario (Configuración, Cerrar sesión) al pie del drawer */}
+            <div className="border-t border-white/5">
+              <UserMenu nombre={usuario.nombre} email={usuario.email} roles={usuario.roles} />
+            </div>
           </aside>
         </div>
       )}

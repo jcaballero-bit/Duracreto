@@ -58,7 +58,7 @@ function construir(d: Datos): Record<string, unknown> {
   // El cliente captura UN solo tiempo de transporte (ida). El regreso se asume
   // igual, así que se espeja en ambas columnas para el motor.
   const transporte = intNull(d.tiempo_viaje_referencia_min);
-  return {
+  const data: Record<string, unknown> = {
     empresa: s(d.empresa),
     proyecto: sNull(d.proyecto),
     ubicacion: s(d.ubicacion),
@@ -70,6 +70,16 @@ function construir(d: Datos): Record<string, unknown> {
     tiempo_viaje_referencia_min: transporte,
     tiempo_regreso_referencia_min: transporte,
   };
+  // Si en este guardado se (re)capturó la ubicación (GPS en sitio / enlace /
+  // manual), se registra el origen, la precisión y la fecha. Si no viene el
+  // origen, no se tocan esos campos (en edición se conservan los existentes).
+  const origen = s(d.ubicacion_origen);
+  if (origen) {
+    data.ubicacion_origen = origen;
+    data.ubicacion_precision_m = floatNull(d.ubicacion_precision_m);
+    data.ubicacion_capturada_en = new Date();
+  }
+  return data;
 }
 
 /** ¿El usuario puede operar sobre este cliente? (Asesor: solo los suyos.) */
@@ -111,6 +121,19 @@ async function auditar(
   });
 }
 
+/** Si en este guardado se capturó/actualizó la ubicación, deja un REGISTRO en la
+ *  bitácora indicando el método (GPS en sitio / Enlace de Maps / Manual). */
+async function registrarUbicacion(id: number, quien: string, d: Datos) {
+  const origen = s(d.ubicacion_origen);
+  if (!origen) return;
+  const lat = s(d.latitud);
+  const lng = s(d.longitud);
+  const prec = s(d.ubicacion_precision_m);
+  const detalle =
+    `${lat},${lng}` + (origen === "GPS en sitio" && prec ? ` (±${prec} m)` : "");
+  await auditar(id, quien, "ubicacion", null, detalle, `Ubicación capturada: ${origen}`);
+}
+
 function traducirError(e: unknown): string {
   const code = (e as { code?: string })?.code;
   if (code === "P2003")
@@ -141,6 +164,7 @@ export async function crearClienteAction(datos: Datos): Promise<Res> {
     // @ts-expect-error data validada por whitelist
     const creado = await prisma.clientes.create({ data });
     await auditar(creado.id, ctx.quien, "alta", null, s(datos.empresa), "Alta de cliente");
+    await registrarUbicacion(creado.id, ctx.quien, datos);
     revalidatePath("/clientes");
     revalidatePath("/clientes/semana");
     return { ok: true, id: creado.id };
@@ -165,6 +189,7 @@ export async function actualizarClienteAction(id: number, datos: Datos): Promise
   try {
     await prisma.clientes.update({ where: { id }, data });
     await auditar(id, ctx.quien, "edición", null, s(datos.empresa), "Edición de cliente");
+    await registrarUbicacion(id, ctx.quien, datos);
     revalidatePath("/clientes");
     return { ok: true };
   } catch (e) {

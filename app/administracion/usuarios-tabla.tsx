@@ -9,6 +9,7 @@ import {
   alternarRolAction,
   crearUsuarioAction,
   eliminarUsuarioAction,
+  fijarPlantelAsignadoAction,
   fijarZonaAction,
 } from "./actions";
 
@@ -17,11 +18,22 @@ export interface UsuarioAdmin {
   nombre: string;
   correo: string;
   zona: string | null;
+  plantelAsignadoId: number | null;
   roles: string[];
   activo: boolean;
 }
+export interface PlantelOpc {
+  id: number;
+  nombre: string;
+}
 
-export function UsuariosTabla({ usuarios }: { usuarios: UsuarioAdmin[] }) {
+export function UsuariosTabla({
+  usuarios,
+  planteles,
+}: {
+  usuarios: UsuarioAdmin[];
+  planteles: PlantelOpc[];
+}) {
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
   const [nuevoAbierto, setNuevoAbierto] = useState(false);
@@ -56,6 +68,7 @@ export function UsuariosTabla({ usuarios }: { usuarios: UsuarioAdmin[] }) {
               <th className="px-3 py-2">Nombre</th>
               <th className="px-3 py-2">Correo</th>
               <th className="px-3 py-2">Zona</th>
+              <th className="px-3 py-2">Plantel (Jefe/Dosif.)</th>
               <th className="px-3 py-2">Roles</th>
               <th className="px-3 py-2">Activo</th>
               <th className="px-3 py-2">Acciones</th>
@@ -77,6 +90,21 @@ export function UsuariosTabla({ usuarios }: { usuarios: UsuarioAdmin[] }) {
                     {ZONAS.map((z) => (
                       <option key={z} value={z}>
                         {z}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td className="px-3 py-2">
+                  <select
+                    value={u.plantelAsignadoId != null ? String(u.plantelAsignadoId) : ""}
+                    disabled={pendiente}
+                    onChange={(e) => accion(() => fijarPlantelAsignadoAction(u.id, e.target.value))}
+                    className="rounded-md border border-border bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent"
+                  >
+                    <option value="">—</option>
+                    {planteles.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.nombre}
                       </option>
                     ))}
                   </select>
@@ -139,6 +167,7 @@ export function UsuariosTabla({ usuarios }: { usuarios: UsuarioAdmin[] }) {
 
       {nuevoAbierto && (
         <NuevoUsuarioModal
+          planteles={planteles}
           onCerrar={() => setNuevoAbierto(false)}
           onExito={() => {
             setNuevoAbierto(false);
@@ -151,9 +180,11 @@ export function UsuariosTabla({ usuarios }: { usuarios: UsuarioAdmin[] }) {
 }
 
 function NuevoUsuarioModal({
+  planteles,
   onCerrar,
   onExito,
 }: {
+  planteles: PlantelOpc[];
   onCerrar: () => void;
   onExito: () => void;
 }) {
@@ -175,6 +206,7 @@ function NuevoUsuarioModal({
         String(fd.get("password") ?? ""),
         roles,
         String(fd.get("zona") ?? ""),
+        String(fd.get("plantel_asignado") ?? ""),
       );
       if (res.ok) onExito();
       else alert(res.mensaje ?? "No se pudo crear el usuario.");
@@ -207,12 +239,23 @@ function NuevoUsuarioModal({
             <input type="password" name="password" required minLength={6} className={inputCls} />
           </label>
           <label className="block text-sm">
-            <span className="mb-1 block font-medium text-ink">Zona</span>
+            <span className="mb-1 block font-medium text-ink">Zona (Programador/Despachador/Laboratorista)</span>
             <select name="zona" defaultValue="" className={inputCls}>
               <option value="">Sin zona</option>
               {ZONAS.map((z) => (
                 <option key={z} value={z}>
                   {z}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-ink">Plantel asignado (Jefe de Planta / Dosificador)</span>
+            <select name="plantel_asignado" defaultValue="" className={inputCls}>
+              <option value="">— (no aplica)</option>
+              {planteles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.nombre}
                 </option>
               ))}
             </select>

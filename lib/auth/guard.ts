@@ -21,7 +21,11 @@ export async function exigirAdmin(): Promise<
 export async function alcanceActual(): Promise<Alcance | null> {
   const sesion = await auth();
   if (!sesion?.user) return null;
-  return calcularAlcance(sesion.user.roles ?? [], sesion.user.zona ?? null);
+  return calcularAlcance(
+    sesion.user.roles ?? [],
+    sesion.user.zona ?? null,
+    sesion.user.plantelAsignadoId ?? null,
+  );
 }
 
 /**
@@ -34,5 +38,5 @@ export async function requerirAcceso(ruta: string): Promise<Alcance> {
   if (!sesion?.user) redirect("/login");
   const roles = sesion.user.roles ?? [];
   if (!puedeAccederRuta(roles, ruta)) redirect("/?denegado=1");
-  return calcularAlcance(roles, sesion.user.zona ?? null);
+  return calcularAlcance(roles, sesion.user.zona ?? null, sesion.user.plantelAsignadoId ?? null);
 }

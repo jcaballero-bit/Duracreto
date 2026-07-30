@@ -1,10 +1,12 @@
 // Configuración única de navegación. Sidebar y Topbar la comparten para
 // mantener títulos, rutas e íconos en un solo lugar.
 import {
+  BarChart3,
   Building2,
   CalendarClock,
   Contact,
   FileText,
+  FlaskConical,
   LayoutGrid,
   ScrollText,
   Settings,
@@ -36,7 +38,9 @@ export const NAV: ItemNav[] = [
     activePrefixes: ["/clientes", "/confirmaciones"],
   },
   { href: "/comercial", label: "Gerencia Comercial", icon: TrendingUp },
+  { href: "/reportes", label: "Indicadores", icon: BarChart3 },
   { href: "/flota", label: "Flota", icon: Building2 },
+  { href: "/laboratorio", label: "Laboratorio", icon: FlaskConical },
   { href: "/programa", label: "Programa DPCR-08", icon: FileText },
   { href: "/administracion", label: "Administración", icon: Settings },
   { href: "/bitacora", label: "Bitácora", icon: ScrollText },
@@ -47,13 +51,26 @@ function prefijosDe(item: ItemNav): string[] {
   return [item.href, ...(item.activePrefixes ?? [])];
 }
 
-/** Título de sección para una ruta (coincide con el label del NAV). */
-export function tituloDeRuta(pathname: string): string {
+/**
+ * Etiqueta del ítem según el rol. Para el Laboratorista (que NO gestiona
+ * asignaciones) la pestaña "Laboratorio" se llama "Proyectos asignados" — para él
+ * es su agenda, no la gestión. Admin/Jefe de Laboratorio la ven como "Laboratorio".
+ */
+export function etiquetaNav(item: ItemNav, roles: string[]): string {
+  if (item.href === "/laboratorio") {
+    const esGestor = roles.includes("Administrador") || roles.includes("JefeLaboratorio");
+    if (!esGestor && roles.includes("Laboratorista")) return "Proyectos asignados";
+  }
+  return item.label;
+}
+
+/** Título de sección para una ruta (coincide con el label del NAV, sensible al rol). */
+export function tituloDeRuta(pathname: string, roles: string[] = []): string {
   const candidatos = NAV.filter((n) => n.href !== "/")
     .flatMap((n) => prefijosDe(n).map((prefijo) => ({ n, prefijo })))
     .sort((a, b) => b.prefijo.length - a.prefijo.length);
   const match = candidatos.find(
     ({ prefijo }) => pathname === prefijo || pathname.startsWith(`${prefijo}/`),
   );
-  return match ? match.n.label : "Panel principal";
+  return match ? etiquetaNav(match.n, roles) : "Panel principal";
 }

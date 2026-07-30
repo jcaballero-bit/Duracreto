@@ -60,6 +60,7 @@ export const SECUENCIA_ESTADOS_VIAJE = [
   "Programado",
   "En carga",
   "En ruta",
+  "Llegada", // el Laboratorista revisa el concreto en obra ANTES de autorizar descarga
   "Descargando",
   "Regresando",
   "Completado",

@@ -57,6 +57,22 @@ describe("extraerCoordsDeUrl", () => {
     expect(extraerCoordsDeUrl(url)).toEqual({ lat: 14.0818, lng: -87.2068 });
   });
 
+  it("extrae del pin de un enlace compartido /maps/search/LAT,+LNG (con '+')", () => {
+    // Formato real al soltar un pin y compartir: el corto resuelve a esto.
+    const url =
+      "https://www.google.com/maps/search/15.498333,+-88.045429?entry=tts&g_ep=abc";
+    expect(extraerCoordsDeUrl(url)).toEqual({ lat: 15.498333, lng: -88.045429 });
+  });
+
+  it("extrae de /maps/place/LAT,LNG y /maps/dir/LAT,+LNG", () => {
+    expect(
+      extraerCoordsDeUrl("https://www.google.com/maps/place/15.5,-88.02"),
+    ).toEqual({ lat: 15.5, lng: -88.02 });
+    expect(
+      extraerCoordsDeUrl("https://www.google.com/maps/dir/15.5,+-88.02"),
+    ).toEqual({ lat: 15.5, lng: -88.02 });
+  });
+
   it("devuelve null si no hay coordenadas (enlace corto o texto)", () => {
     expect(extraerCoordsDeUrl("https://maps.app.goo.gl/abc123")).toBeNull();
     expect(extraerCoordsDeUrl("https://www.google.com/maps?q=Tegucigalpa")).toBeNull();

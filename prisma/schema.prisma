@@ -46,13 +46,38 @@ model planteles {
   hub    planteles?  @relation("HubDeZona", fields: [hub_id], references: [id])
   hijos  planteles[] @relation("HubDeZona")
 
-  plantas     plantas[]
-  mixers_base mixers[]  @relation("MixerBase")
-  bombas_base bombas[]  @relation("BombaBase")
-  pedidos     pedidos[]
-  solicitudes solicitudes_anticipadas[]
+  plantas       plantas[]
+  mixers_base   mixers[]   @relation("MixerBase")
+  bombas_base   bombas[]   @relation("BombaBase")
+  camiones_base camiones[] @relation("CamionBase")
+  pickups_base  pickups[]  @relation("PickupBase")
+  pedidos       pedidos[]
+  solicitudes   solicitudes_anticipadas[]
+  usuarios_asignados User[] @relation("PlantelAsignadoUsuario")
 
   @@index([zona])
+}
+
+// Asignación de PROYECTOS (clientes) a un Laboratorista. El Laboratorista solo ve
+// en Despacho los viajes de pedidos cuyo cliente le fue asignado (activo=true).
+// Las gestiona el Jefe de Laboratorio.
+// El Jefe de Laboratorio asigna un Laboratorista a cada PROGRAMA del día (pedido):
+// cada fila es (pedido -> laboratorista). Un pedido tiene a lo sumo UN laboratorista
+// (o ninguno). El día se deriva del pedido. Un mismo laboratorista puede tener
+// varios pedidos, pero sus horarios (derivados de los viajes de cada pedido) no
+// pueden traslaparse entre clientes distintos; se valida al asignar
+// (ver lib/laboratorio/ventana.ts).
+model asignaciones_laboratorista {
+  id               Int      @id @default(autoincrement())
+  pedido_id        Int      @unique // un laboratorista por pedido (programa)
+  laboratorista_id String
+  creado_por       String
+  creado_en        DateTime @default(now())
+
+  laboratorista User    @relation(fields: [laboratorista_id], references: [id], onDelete: Cascade)
+  pedido        pedidos @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
+
+  @@index([laboratorista_id])
 }
 
 // ── Plantas dosificadoras ──────────────────────────────────────────────────
@@ -121,6 +146,59 @@ model bombas {
   @@index([estado])
 }
 
+// Camiones: vehículo que remolca/mueve las bombas ESTACIONARIAS (no las pluma,
+// que se mueven solas). Un camión puede mover varias bombas al día según
+// distancia/tiempo; la asignación a cada bomba se coordina MANUAL (el motor no la
+// reserva por ahora — ver CLAUDE.md). Aquí se controla su mantenimiento.
+model camiones {
+  id              Int     @id @default(autoincrement())
+  identificador   String  @unique // número de unidad
+  placa           String?
+  estado          String  @default("Disponible") // "Disponible" | "En mantenimiento" | "Fuera de servicio"
+  plantel_base_id Int
+
+  plantel_base planteles @relation("CamionBase", fields: [plantel_base_id], references: [id])
+
+  @@index([plantel_base_id])
+  @@index([estado])
+}
+
+// Pickups: vehículos de apoyo (supervisión, traslado de personal). NO participan
+// en el motor de asignación de viajes, pero llevan control de mantenimiento igual.
+model pickups {
+  id              Int     @id @default(autoincrement())
+  identificador   String  @unique
+  placa           String?
+  estado          String  @default("Disponible")
+  plantel_base_id Int
+
+  plantel_base planteles @relation("PickupBase", fields: [plantel_base_id], references: [id])
+
+  @@index([plantel_base_id])
+  @@index([estado])
+}
+
+// Disponibilidad de flota: mantenimientos programados y bajas de servicio de
+// CUALQUIER tipo de unidad (relación polimórfica por unidad_tipo + unidad_id, sin
+// FK porque apunta a 4 tablas distintas). El motor excluye las unidades con un
+// registro activo (Programado/En_curso) cuyo rango cubra la fecha del viaje.
+model disponibilidad_flota {
+  id           Int      @id @default(autoincrement())
+  unidad_tipo  String // "Mixer" | "Bomba" | "Camion" | "Pickup"
+  unidad_id    Int
+  fecha_inicio DateTime // día de inicio (00:00)
+  fecha_fin    DateTime // día de fin (inclusive)
+  tipo_evento  String // "Mantenimiento_Programado" | "Fuera_de_Servicio" | "Otro"
+  motivo       String?
+  estado       String   @default("Programado") // "Programado" | "En_curso" | "Completado" | "Cancelado"
+  creado_por   String
+  creado_en    DateTime @default(now())
+
+  @@index([unidad_tipo, unidad_id])
+  @@index([estado])
+  @@index([fecha_inicio, fecha_fin])
+}
+
 // ── Clientes ───────────────────────────────────────────────────────────────
 model clientes {
   id        Int     @id @default(autoincrement())
@@ -132,6 +210,11 @@ model clientes {
   // Enlace de Google Maps que pegó el asesor (pin de la obra). Se guarda tal cual
   // porque reabrirlo es más preciso que reconstruir uno desde las coordenadas.
   google_maps_url String?
+  // Cómo se capturó la ubicación: "GPS en sitio" | "Enlace de Maps" | "Manual".
+  // `ubicacion_precision_m` = precisión (metros) reportada por el GPS del celular.
+  ubicacion_origen      String?
+  ubicacion_precision_m Float?
+  ubicacion_capturada_en DateTime?
   contacto  String?
   telefono  String?
   // El asesor decide si el cliente está activo. Hay clientes que funden una sola
@@ -261,6 +344,8 @@ model pedidos {
   viajes  viajes[]
   // Solicitud anticipada (proyección semanal) de la que nació este pedido, si aplica.
   solicitud solicitudes_anticipadas?
+  // Laboratorista asignado a este programa (o ninguno).
+  asignacion_lab asignaciones_laboratorista?
 
   @@index([plantel_id])
   @@index([planta_id])
@@ -377,12 +462,20 @@ model User {
   passwordHash  String? // login por credenciales (bcrypt); null si solo usa Google
   activo        Boolean   @default(true)
   zona          String? // "Norte" | "Centro Sur" | null (aplica a Programador/Despachador)
+  // Plantel específico asignado (aplica a JefePlanta/Dosificador: ven/operan solo
+  // ese plantel — alcance más fino que por zona). Null para los demás roles.
+  plantel_asignado_id Int?
+  // Si true, el usuario DEBE cambiar su contraseña antes de operar (primer ingreso).
+  // Los usuarios nuevos creados por el Admin nacen en true; se apaga al cambiarla.
+  debe_cambiar_password Boolean @default(true)
   creado_en     DateTime  @default(now())
 
   accounts Account[]
   sessions Session[]
   roles    UserRole[]
   asesor   asesores? // 1:1 si este usuario es un asesor comercial
+  plantel_asignado planteles? @relation("PlantelAsignadoUsuario", fields: [plantel_asignado_id], references: [id])
+  asignaciones_lab asignaciones_laboratorista[] // proyectos asignados si es Laboratorista
 }
 
 // Un usuario puede tener más de un rol activo a la vez.

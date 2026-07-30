@@ -80,6 +80,21 @@ export function resolverFila(catalogo: Catalogo, r: Fila, m: Mapas): Resuelto {
         data: { identificador: req(r.identificador), estado: req(r.estado) || "Disponible", plantel_base_id: p },
       };
     }
+    case "camiones":
+    case "pickups": {
+      if (!req(r.identificador)) return { error: "identificador vacío" };
+      const p = buscarPlantel(r.plantel_base);
+      if (p === null) return { error: "plantel_base vacío" };
+      if (typeof p === "string") return { error: p };
+      return {
+        data: {
+          identificador: req(r.identificador),
+          placa: opc(r.placa),
+          estado: req(r.estado) || "Disponible",
+          plantel_base_id: p,
+        },
+      };
+    }
     case "operadores": {
       if (!req(r.nombre)) return { error: "nombre vacío" };
       return { data: { nombre: req(r.nombre), estado: req(r.estado) || "Disponible" } };

@@ -70,7 +70,8 @@ export interface OperadorOpcion {
 const SIGUIENTE: Record<string, string | null> = {
   Programado: "En carga",
   "En carga": "En ruta",
-  "En ruta": "Descargando",
+  "En ruta": "Llegada",
+  Llegada: "Descargando",
   Descargando: "Regresando",
   Regresando: "Completado",
   Completado: null,
@@ -83,6 +84,7 @@ function tonoEstado(estado: string): "neutro" | "info" | "warn" | "ok" | "danger
       return "neutro";
     case "En carga":
     case "En ruta":
+    case "Llegada":
       return "info";
     case "Descargando":
     case "Regresando":
@@ -105,12 +107,16 @@ export function TableroDespacho({
   mixers,
   operadores,
   soloLectura = false,
+  estadosEditables = null,
 }: {
   grupos: GrupoDespacho[];
   mixers: MixerOpcion[];
   operadores: OperadorOpcion[];
-  // Asesor: solo VE el despacho de sus clientes (sin avanzar estados ni editar).
+  // soloLectura: campos (volumen/mixer/motorista/hora) de solo lectura.
   soloLectura?: boolean;
+  // estadosEditables: qué botones de estado se pueden tocar. null = todos;
+  // [] = ninguno (solo lectura total); [lista] = solo esos (Laboratorista).
+  estadosEditables?: string[] | null;
 }) {
   if (grupos.length === 0) {
     return (
@@ -136,6 +142,7 @@ export function TableroDespacho({
                 mixers={mixers}
                 operadores={operadores}
                 soloLectura={soloLectura}
+                estadosEditables={estadosEditables}
               />
             ))}
           </div>
@@ -170,11 +177,13 @@ function FilaViaje({
   mixers,
   operadores,
   soloLectura,
+  estadosEditables,
 }: {
   v: ViajeDespacho;
   mixers: MixerOpcion[];
   operadores: OperadorOpcion[];
   soloLectura: boolean;
+  estadosEditables: string[] | null;
 }) {
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
@@ -218,15 +227,15 @@ function FilaViaje({
         />
       )}
 
-      {/* Línea de información: 8 campos (una fila si cabe; si no, envuelve) */}
-      <div className="flex flex-wrap items-start gap-x-5 gap-y-3">
+      {/* Línea de información: en celular grid de 2 columnas; en ≥sm fila que envuelve. */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:flex sm:flex-wrap sm:items-start sm:gap-x-5">
         <Campo label="Hora">
           <span className="whitespace-nowrap font-mono text-sm text-ink">
             {v.horaProgTxt}
           </span>
         </Campo>
 
-        <Campo label="Cliente / proyecto" className="min-w-[150px]">
+        <Campo label="Cliente / proyecto" className="col-span-2 sm:col-span-1 sm:min-w-[150px]">
           <div className="text-sm font-semibold text-ink">{v.cliente}</div>
           {v.proyecto && <div className="text-xs text-link">{v.proyecto}</div>}
           <div className="mt-1">
@@ -283,9 +292,10 @@ function FilaViaje({
         </Campo>
       </div>
 
-      {/* Botones de avance de estado con conectores; solo el tramo EN CURSO
-          (entre la última etapa hecha y la siguiente pendiente) se anima. */}
-      <div className="mt-3 flex flex-wrap items-start justify-center gap-x-1 gap-y-3 border-t border-border/60 pt-3">
+      {/* Botones de avance de estado. En celular: grid de 3 columnas con targets
+          táctiles grandes. En ≥sm: fila con conectores (solo el tramo EN CURSO se
+          anima). */}
+      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border/60 pt-3 sm:flex sm:flex-wrap sm:items-start sm:justify-center sm:gap-x-1 sm:gap-y-3">
         {v.hitos.map((h, i) => (
           <Fragment key={h.estado}>
             <ColumnaHito
@@ -296,6 +306,7 @@ function FilaViaje({
               bloqueado={pendiente}
               onAvanzar={() => avanzar(h.estado)}
               soloLectura={soloLectura}
+              estadoAvanzable={estadosEditables === null || estadosEditables.includes(h.estado)}
             />
             {i < v.hitos.length - 1 && (
               <Conector estado={estadoConector(v.hitos, siguiente, i)} />
@@ -564,6 +575,7 @@ function ColumnaHito({
   bloqueado,
   onAvanzar,
   soloLectura,
+  estadoAvanzable,
 }: {
   viajeId: number;
   h: HitoVista;
@@ -572,6 +584,8 @@ function ColumnaHito({
   bloqueado: boolean;
   onAvanzar: () => void;
   soloLectura: boolean;
+  // ¿Este rol puede avanzar ESTE estado? (Laboratorista solo algunos.)
+  estadoAvanzable: boolean;
 }) {
   const router = useRouter();
   const [editando, setEditando] = useState(false);
@@ -597,9 +611,9 @@ function ColumnaHito({
   return (
     <div className="flex flex-col items-center gap-1.5 text-center">
       <button
-        disabled={soloLectura || !esSiguiente || bloqueado}
+        disabled={!estadoAvanzable || !esSiguiente || bloqueado}
         onClick={onAvanzar}
-        className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${botonCls} ${soloLectura ? "cursor-default" : ""}`}
+        className={`inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors sm:w-auto sm:py-1.5 ${botonCls} ${!estadoAvanzable ? "cursor-default" : ""}`}
       >
         {alcanzado && <Check size={14} />}
         {h.label}

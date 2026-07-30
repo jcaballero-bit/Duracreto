@@ -17,8 +17,6 @@ export const dynamic = "force-dynamic";
 const TABS: { key: string; label: string }[] = [
   { key: "planteles", label: "Planteles" },
   { key: "plantas", label: "Plantas" },
-  { key: "mixers", label: "Mixers" },
-  { key: "bombas", label: "Bombas" },
   { key: "operadores", label: "Operadores" },
   { key: "asesores", label: "Asesores" },
   { key: "disenos", label: "Diseños de mezcla" },
@@ -27,9 +25,6 @@ const TABS: { key: string; label: string }[] = [
 
 const opc = (arr: { value: string; label: string }[]) => arr;
 const zonaOpc = ZONAS.map((z) => ({ value: z, label: z }));
-const estadoUnidad = ["Disponible", "En mantenimiento", "Fuera de servicio"].map(
-  (e) => ({ value: e, label: e }),
-);
 
 export default async function AdministracionPage({
   searchParams,
@@ -102,6 +97,7 @@ interface Ctx {
     name: string | null;
     email: string | null;
     zona: string | null;
+    plantel_asignado_id: number | null;
     activo: boolean;
     roles: { rol: string }[];
   }[];
@@ -216,91 +212,6 @@ async function renderTab(tab: string, ctx: Ctx) {
         filas,
       );
     }
-    case "mixers": {
-      const mixers = await prisma.mixers.findMany({
-        orderBy: { id: "asc" },
-        include: { operador_asignado: true },
-      });
-      const filas: FilaCatalogo[] = mixers.map((m) => ({
-        id: m.id,
-        celdas: {
-          id: `#${m.id}`,
-          identificador: m.identificador ?? "—",
-          placa: m.placa ?? "—",
-          marca: m.marca,
-          cap: `${m.capacidad_m3} m³`,
-          plantel: nombrePlantel(m.plantel_base_id),
-          estado: m.estado,
-          operador: m.operador_asignado?.nombre ?? "—",
-        },
-        valores: {
-          identificador: m.identificador ?? "",
-          placa: m.placa ?? "",
-          marca: m.marca,
-          capacidad_m3: String(m.capacidad_m3),
-          plantel_base_id: String(m.plantel_base_id),
-          estado: m.estado,
-          operador_asignado_id: m.operador_asignado_id ? String(m.operador_asignado_id) : "",
-        },
-      }));
-      return bloque(
-        "mixers",
-        "mixer",
-        "Flota de mixers. El identificador y la placa son opcionales; la capacidad (7/9/11) y el plantel base alimentan el motor.",
-        [
-          { key: "id", label: "ID" },
-          { key: "identificador", label: "Identificador" },
-          { key: "placa", label: "Placa" },
-          { key: "marca", label: "Marca" },
-          { key: "cap", label: "Cap." },
-          { key: "plantel", label: "Plantel base" },
-          { key: "estado", label: "Estado" },
-          { key: "operador", label: "Motorista" },
-        ],
-        [
-          { name: "identificador", label: "Identificador (opcional)", tipo: "text", placeholder: "Ej. M-01" },
-          { name: "placa", label: "Placa (opcional)", tipo: "text", placeholder: "Ej. HAB-1234" },
-          { name: "marca", label: "Marca", tipo: "text", requerido: true },
-          { name: "capacidad_m3", label: "Capacidad m³ (7/9/11)", tipo: "number", requerido: true },
-          { name: "plantel_base_id", label: "Plantel base", tipo: "select", opciones: ctx.opcPlanteles, requerido: true },
-          { name: "estado", label: "Estado", tipo: "select", opciones: estadoUnidad, requerido: true },
-          { name: "operador_asignado_id", label: "Motorista", tipo: "select", opciones: ctx.opcOperadores },
-        ],
-        filas,
-      );
-    }
-    case "bombas": {
-      const bombas = await prisma.bombas.findMany({ orderBy: { id: "asc" } });
-      const filas: FilaCatalogo[] = bombas.map((b) => ({
-        id: b.id,
-        celdas: {
-          identificador: b.identificador,
-          estado: b.estado,
-          plantel: nombrePlantel(b.plantel_base_id),
-        },
-        valores: {
-          identificador: b.identificador,
-          estado: b.estado,
-          plantel_base_id: String(b.plantel_base_id),
-        },
-      }));
-      return bloque(
-        "bombas",
-        "bomba",
-        "Bombas de concreto por plantel base.",
-        [
-          { key: "identificador", label: "Identificador" },
-          { key: "estado", label: "Estado" },
-          { key: "plantel", label: "Plantel base" },
-        ],
-        [
-          { name: "identificador", label: "Identificador", tipo: "text", requerido: true },
-          { name: "estado", label: "Estado", tipo: "select", opciones: estadoUnidad, requerido: true },
-          { name: "plantel_base_id", label: "Plantel base", tipo: "select", opciones: ctx.opcPlanteles, requerido: true },
-        ],
-        filas,
-      );
-    }
     case "operadores": {
       const filas: FilaCatalogo[] = ctx.operadores.map((o) => ({
         id: o.id,
@@ -411,6 +322,7 @@ async function renderTab(tab: string, ctx: Ctx) {
         nombre: u.name ?? "(sin nombre)",
         correo: u.email ?? "—",
         zona: u.zona,
+        plantelAsignadoId: u.plantel_asignado_id,
         roles: u.roles.map((r) => r.rol),
         activo: u.activo,
       }));
@@ -418,9 +330,13 @@ async function renderTab(tab: string, ctx: Ctx) {
         <>
           <p className="mb-3 text-sm text-muted">
             Los usuarios pueden crearse aquí o al iniciar sesión. La zona aplica a
-            Programador/Despachador; un usuario puede tener varios roles.
+            Programador/Despachador/Laboratorista; el plantel asignado a Jefe de
+            Planta/Dosificador; un usuario puede tener varios roles.
           </p>
-          <UsuariosTabla usuarios={filas} />
+          <UsuariosTabla
+            usuarios={filas}
+            planteles={ctx.planteles.map((p) => ({ id: p.id, nombre: p.nombre }))}
+          />
         </>
       );
     }

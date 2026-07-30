@@ -82,9 +82,11 @@ export default async function ProgramacionPage({
   const fecha = sp.fecha ?? (await fechaPorDefecto());
   const plantelFiltro = sp.plantel ?? "todos";
 
-  // Regla: el Programador puede VER días pasados pero no editarlos; el Admin
-  // edita cualquier día. (comparación de cadenas "YYYY-MM-DD" es segura)
-  const puedeEditar = alcance.esAdmin || fecha >= ymdLocal(new Date());
+  // Solo estos roles editan Programación (Admin/Programador/JefePlanta). El
+  // JefeLaboratorio la ve en SOLO LECTURA. Además, el Programador/JefePlanta solo
+  // editan hoy en adelante (los días pasados quedan de solo lectura).
+  const rolEditaProg = alcance.esAdmin || alcance.esProgramador || alcance.esJefePlanta;
+  const puedeEditar = rolEditaProg && (alcance.esAdmin || fecha >= ymdLocal(new Date()));
 
   const [y, m, d] = fecha.split("-").map(Number);
   const ini = new Date(y, m - 1, d, 0, 0, 0, 0);

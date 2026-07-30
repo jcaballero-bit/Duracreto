@@ -6,6 +6,8 @@ declare module "next-auth" {
       id: string;
       roles: string[];
       zona: string | null;
+      debeCambiarPassword: boolean;
+      plantelAsignadoId: number | null;
     } & DefaultSession["user"];
   }
 }
@@ -16,5 +18,7 @@ declare module "next-auth/jwt" {
     roles?: string[];
     zona?: string | null;
     nombre?: string | null;
+    debeCambiar?: boolean;
+    plantelAsignado?: number | null;
   }
 }

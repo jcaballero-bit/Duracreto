@@ -5,11 +5,13 @@ import {
   DESVIO_AMARILLO_MAX_MIN,
   DESVIO_VERDE_MAX_MIN,
 } from "@/lib/motor/config";
-import type { CampoTsReal } from "@/lib/motor/asignacion";
+import { unidadesEnMantenimiento, type CampoTsReal } from "@/lib/motor/asignacion";
 import {
   filtroPedidoPorAsesor,
+  filtroPedidoPorLaboratorista,
   filtroPedidoPorZona,
   filtroPlantelPorZona,
+  ESTADOS_LABORATORISTA,
 } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { compararPlanteles } from "@/lib/planteles-orden";
@@ -95,17 +97,39 @@ export default async function DespachoPage({
   const fecha = sp.fecha ?? (await fechaPorDefecto());
   const plantelFiltro = sp.plantel ?? "todos";
 
-  // El Asesor solo VE (sin operar) el despacho de SUS clientes: se limita por
-  // cliente, no por zona, y la interfaz va en modo solo lectura.
-  const soloAsesor =
-    alcance.esAsesor && !alcance.esAdmin && !alcance.esDespachador;
-  const scopePedido = soloAsesor
-    ? filtroPedidoPorAsesor(userId)
-    : filtroPedidoPorZona(alcance);
-
   const [y, m, d] = fecha.split("-").map(Number);
   const ini = new Date(y, m - 1, d, 0, 0, 0, 0);
   const fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+
+  // Autorización de despacho por rol: qué pedidos ve, si edita, qué botones de
+  // estado puede tocar, y si puede crear pedidos de último momento.
+  const rolPlenoDespacho =
+    alcance.esAdmin || alcance.esDespachador || alcance.esJefePlanta || alcance.esDosificador;
+  let scopePedido: Record<string, unknown>;
+  let soloLectura = false; // campos (volumen/mixer/motorista/hora) de solo lectura
+  let estadosEditables: string[] | null = null; // null = todos los botones; [] = ninguno
+  let puedeCrear = false;
+  if (rolPlenoDespacho) {
+    scopePedido = alcance.esAdmin ? {} : filtroPedidoPorZona(alcance); // zona o plantel
+    puedeCrear = true;
+  } else if (alcance.esLaboratorista) {
+    // Solo los programas (pedidos) que le asignaron; el día ya lo acota la consulta.
+    scopePedido = filtroPedidoPorLaboratorista(userId);
+    soloLectura = true;
+    estadosEditables = [...ESTADOS_LABORATORISTA]; // Llegada/Descargando/Regresando
+  } else if (alcance.esJefeLaboratorio) {
+    scopePedido = {}; // ve todo, solo lectura
+    soloLectura = true;
+    estadosEditables = [];
+  } else if (alcance.esAsesor) {
+    scopePedido = filtroPedidoPorAsesor(userId);
+    soloLectura = true;
+    estadosEditables = [];
+  } else {
+    scopePedido = filtroPedidoPorZona(alcance);
+    soloLectura = true;
+    estadosEditables = [];
+  }
 
   const [planteles, clientes, disenos, bombas, asesoresLista, mixersDisp, operadoresDisp, pedidos] =
     await Promise.all([
@@ -165,10 +189,18 @@ export default async function DespachoPage({
       }),
     ]);
 
-  const mixers: MixerOpcion[] = mixersDisp.map((m) => ({
-    id: m.id,
-    etiqueta: `${m.identificador ?? `#${m.id}`} · ${m.capacidad_m3}m³ · ${m.plantel_base.nombre}`,
-  }));
+  // Excluir del desplegable de reasignación / selección los mixers y bombas en
+  // mantenimiento ese día (Hito 6).
+  const [mixEnMant, bombaEnMant] = await Promise.all([
+    unidadesEnMantenimiento("Mixer", ini),
+    unidadesEnMantenimiento("Bomba", ini),
+  ]);
+  const mixers: MixerOpcion[] = mixersDisp
+    .filter((m) => !mixEnMant.has(m.id))
+    .map((m) => ({
+      id: m.id,
+      etiqueta: `${m.identificador ?? `#${m.id}`} · ${m.capacidad_m3}m³ · ${m.plantel_base.nombre}`,
+    }));
   const operadores: OperadorOpcion[] = operadoresDisp.map((o) => ({
     id: o.id,
     nombre: o.nombre,
@@ -225,6 +257,7 @@ export default async function DespachoPage({
         hitos: [
           armarHito("En carga", "En carga", "ts_inicio_carga_real", v.hora_inicio_carga, v.ts_inicio_carga_real),
           armarHito("En ruta", "En ruta", "ts_salida_real", v.hora_salida_planta, v.ts_salida_real),
+          armarHito("Llegada", "Llegada", "ts_llegada_real", v.hora_llegada_proyecto, v.ts_llegada_real),
           armarHito("Descargando", "Descargando", "ts_inicio_descarga_real", v.hora_inicio_descarga, v.ts_inicio_descarga_real),
           armarHito("Regresando", "Regresando", "ts_fin_descarga_real", v.hora_fin_descarga, v.ts_fin_descarga_real),
           armarHito("Completado", "Completado", "ts_regreso_real", v.hora_regreso_planta, v.ts_regreso_real),
@@ -276,8 +309,8 @@ export default async function DespachoPage({
   // "Programado") y que todavía no están 100% completados. El avance se mide por
   // viaje DESPACHADO = el camión ya SALIÓ de planta (En ruta en adelante), no por
   // viaje completado: así la barra sube en cuanto el concreto sale hacia la obra.
-  const DESPACHADO = new Set(["En ruta", "Descargando", "Regresando", "Completado"]);
-  const ACTIVOS_EN_CURSO = new Set(["En carga", "En ruta", "Descargando", "Regresando"]);
+  const DESPACHADO = new Set(["En ruta", "Llegada", "Descargando", "Regresando", "Completado"]);
+  const ACTIVOS_EN_CURSO = new Set(["En carga", "En ruta", "Llegada", "Descargando", "Regresando"]);
   const atencion: AtencionCliente[] = pedidos
     .flatMap((p) => {
       const conMixer = p.viajes; // ya filtrados: mixer_id != null
@@ -334,11 +367,13 @@ export default async function DespachoPage({
         etiqueta: `${pl.nombre} (${pl.capacidad_m3h} m³/h)`,
       })),
     })),
-    bombas: bombas.map((b) => ({
-      id: b.id,
-      etiqueta: b.identificador,
-      plantelId: b.plantel_base_id,
-    })),
+    bombas: bombas
+      .filter((b) => !bombaEnMant.has(b.id))
+      .map((b) => ({
+        id: b.id,
+        etiqueta: b.identificador,
+        plantelId: b.plantel_base_id,
+      })),
     asesores: asesoresLista.map((a) => ({ id: a.id, etiqueta: a.nombre })),
   };
 
@@ -348,11 +383,11 @@ export default async function DespachoPage({
       <PageHeader
         titulo="Despacho en vivo"
         descripcion={
-          soloAsesor
-            ? "Seguimiento del día de los pedidos de tus clientes (solo lectura)."
+          soloLectura
+            ? "Seguimiento del día (solo lectura)."
             : "Tablero del día: avanza el estado de cada viaje, reasigna mixers al vuelo y crea pedidos de último momento."
         }
-        accion={soloAsesor ? undefined : <NuevoPedidoModal {...opciones} fechaInicial={fecha} />}
+        accion={puedeCrear ? <NuevoPedidoModal {...opciones} fechaInicial={fecha} /> : undefined}
       />
 
       <Filtros
@@ -368,7 +403,8 @@ export default async function DespachoPage({
           grupos={grupos}
           mixers={mixers}
           operadores={operadores}
-          soloLectura={soloAsesor}
+          soloLectura={soloLectura}
+          estadosEditables={estadosEditables}
         />
       </Card>
 

@@ -1,12 +1,28 @@
 import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
 import { requerirAcceso } from "@/lib/auth/guard";
-import { calcularDesempeno } from "@/lib/comercial/metricas";
+import { calcularDesempeno, clientesAtendidos } from "@/lib/comercial/metricas";
+import { colorPorAsesor } from "@/lib/color-asesor";
 import { Card } from "../components/ui";
 import { Saludo } from "../saludo";
 import { FiltrosComercial } from "./filtros-comercial";
 import { TablaDesempeno } from "./tabla-desempeno";
+import { MapaFiltroAsesor } from "./mapa-controles";
+import { MapaLeaflet, type PuntoMapa } from "../components/mapa-leaflet";
 
 export const dynamic = "force-dynamic";
+
+/** Escapa texto para insertarlo con seguridad en el HTML del popup del mapa. */
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function fechaCortaMs(ms: number): string {
+  return new Date(ms).toLocaleDateString("es-HN", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
 
 function periodoActual(): string {
   const d = new Date();
@@ -23,7 +39,7 @@ function tono(pct: number | null, verde: number, amarillo: number): string {
 export default async function ComercialPage({
   searchParams,
 }: {
-  searchParams: Promise<{ periodo?: string; zona?: string }>;
+  searchParams: Promise<{ periodo?: string; zona?: string; mapAsesor?: string }>;
 }) {
   const alcance = await requerirAcceso("/comercial");
   const sesion = await auth();
@@ -43,6 +59,41 @@ export default async function ComercialPage({
     zona: zona === "todas" ? null : zona,
   });
   const puedeEditar = alcance.esAdmin || alcance.esGerenteComercial;
+
+  // ── Mapa de cobertura ────────────────────────────────────────────────────
+  const mapAsesorId = /^\d+$/.test(sp.mapAsesor ?? "") ? Number(sp.mapAsesor) : null;
+  const [cobertura, asesoresLista] = await Promise.all([
+    clientesAtendidos({
+      anio,
+      mes,
+      zona: zona === "todas" ? null : zona,
+      asesorId: mapAsesorId,
+    }),
+    prisma.asesores.findMany({ orderBy: { nombre: "asc" }, select: { id: true, nombre: true } }),
+  ]);
+
+  // Puntos del mapa (color determinista por asesor + popup con el detalle).
+  const puntos: PuntoMapa[] = cobertura.clientes.map((c) => {
+    const color = colorPorAsesor(c.asesorId);
+    const proyecto = c.proyecto
+      ? `<div style="color:#2563eb;font-size:12px">${esc(c.proyecto)}</div>`
+      : "";
+    const popupHtml =
+      `<div style="min-width:190px;line-height:1.35">` +
+      `<div style="font-weight:600;color:#0f172a">${esc(c.empresa)}</div>` +
+      proyecto +
+      `<div style="margin-top:5px;font-size:12px">Asesor: <b>${esc(c.asesorNombre)}</b></div>` +
+      `<div style="font-size:12px">m³ suministrados: <b>${c.m3.toFixed(1)}</b></div>` +
+      `<div style="font-size:12px">Pedidos completados: <b>${c.pedidosCompletados}</b></div>` +
+      `<div style="font-size:12px">Último suministro: <b>${fechaCortaMs(c.ultimoSuministroMs)}</b></div>` +
+      `</div>`;
+    return { id: c.clienteId, lat: c.lat, lng: c.lng, color, popupHtml };
+  });
+
+  // Leyenda: asesores presentes en el mapa filtrado (con su color fijo).
+  const leyenda = [...new Map(
+    cobertura.clientes.map((c) => [c.asesorId ?? -1, { nombre: c.asesorNombre, color: colorPorAsesor(c.asesorId) }]),
+  ).values()].sort((a, b) => a.nombre.localeCompare(b.nombre));
 
   return (
     <>
@@ -130,6 +181,57 @@ export default async function ComercialPage({
           zonaParam={zona}
           puedeEditar={puedeEditar}
         />
+      </Card>
+
+      {/* ── Mapa de cobertura de clientes atendidos ─────────────────────── */}
+      <Card className="mt-6 p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-ink">Mapa de cobertura</h2>
+          <MapaFiltroAsesor asesores={asesoresLista} valor={mapAsesorId != null ? String(mapAsesorId) : ""} />
+        </div>
+
+        {/* Resumen */}
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          <span className="text-ink">
+            <strong>{cobertura.clientes.length}</strong> clientes atendidos
+          </span>
+          {cobertura.sinUbicacion > 0 && (
+            <span className="text-amber-600">
+              {cobertura.sinUbicacion} sin ubicación registrada
+            </span>
+          )}
+          <span className="text-xs text-muted">
+            (con concreto entregado en {periodo}
+            {zona !== "todas" ? ` · ${zona}` : ""})
+          </span>
+        </div>
+
+        {puntos.length === 0 ? (
+          <p className="rounded-lg border border-border bg-content/40 py-10 text-center text-sm text-muted">
+            No hay clientes atendidos con ubicación registrada para estos filtros.
+          </p>
+        ) : (
+          <div className="relative">
+            <MapaLeaflet puntos={puntos} />
+            {/* Leyenda: asesor → color */}
+            {leyenda.length > 0 && (
+              <div className="pointer-events-none absolute right-3 top-3 z-[400] max-w-[220px] rounded-lg bg-white/95 p-2.5 text-xs shadow ring-1 ring-black/5">
+                <div className="mb-1 font-semibold text-slate-700">Asesores</div>
+                <ul className="space-y-1">
+                  {leyenda.map((l) => (
+                    <li key={l.nombre} className="flex items-center gap-2 text-slate-700">
+                      <span
+                        className="inline-block h-3 w-3 shrink-0 rounded-full ring-1 ring-black/10"
+                        style={{ backgroundColor: l.color }}
+                      />
+                      <span className="truncate">{l.nombre}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </Card>
     </>
   );

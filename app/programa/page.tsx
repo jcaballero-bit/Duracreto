@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { filtroPedidoPorZona, filtroPlantelPorZona } from "@/lib/auth/acceso";
+import type { Alcance } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { ZONAS } from "@/lib/auth/roles";
 import { textoResistencia } from "@/lib/formato";
@@ -20,6 +20,26 @@ const DOC = {
 
 // Paleta ejecutiva (sobria) para diferenciar las bombas: franja + etiqueta.
 const PALETA_BOMBA = ["#1F4E79", "#2F6F4E", "#B0730D", "#5B4B8A", "#1C6E7D", "#8A3B3B"];
+
+/**
+ * Zonas cuyo Programa DPCR-08 puede ver el usuario (enforcement server-side).
+ * Admin: ambas. Programador/Despachador/Laboratorista: su `zona` directa.
+ * Dosificador: la zona de su plantel asignado (derivada de planteles.zona, sin
+ * duplicar el dato en el usuario).
+ */
+async function zonasParaPrograma(alcance: Alcance): Promise<string[]> {
+  if (alcance.esAdmin) return [...ZONAS];
+  const zonas = new Set<string>();
+  if (alcance.zona) zonas.add(alcance.zona);
+  if (alcance.plantelAsignadoId != null) {
+    const pl = await prisma.planteles.findUnique({
+      where: { id: alcance.plantelAsignadoId },
+      select: { zona: true },
+    });
+    if (pl) zonas.add(pl.zona);
+  }
+  return [...zonas];
+}
 
 function ymd(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -70,11 +90,25 @@ export default async function ProgramaPage({
   const alcance = await requerirAcceso("/programa");
   const sp = await searchParams;
 
-  // Zonas que el usuario puede ver; Admin ve ambas.
-  const zonasPermitidas = alcance.esAdmin ? [...ZONAS] : alcance.zonasPermitidas;
-  const zonaPedida = sp.zona && zonasPermitidas.includes(sp.zona) ? sp.zona : null;
-  const zona = zonaPedida ?? zonasPermitidas[0] ?? ZONAS[0];
+  // Zonas que el usuario puede ver (server-side, no solo la UI). El Programa es un
+  // documento POR ZONA: Admin ve ambas; Programador/Despachador/Laboratorista por
+  // su zona directa; Dosificador por la zona de su plantel asignado.
+  const zonasPermitidas = await zonasParaPrograma(alcance);
   const fecha = sp.fecha ?? ymd(new Date());
+
+  if (zonasPermitidas.length === 0) {
+    return (
+      <div className="mx-auto max-w-lg rounded-xl border border-border bg-surface p-8 text-center">
+        <p className="text-sm text-muted">
+          No tienes una zona asignada para ver el Programa DPCR-08. Pide al
+          administrador que te asigne una zona (o un plantel, si eres Dosificador).
+        </p>
+      </div>
+    );
+  }
+
+  const zonaPedida = sp.zona && zonasPermitidas.includes(sp.zona) ? sp.zona : null;
+  const zona = zonaPedida ?? zonasPermitidas[0];
 
   const [y, m, d] = fecha.split("-").map(Number);
   const ini = new Date(y, m - 1, d, 0, 0, 0, 0);
@@ -82,7 +116,7 @@ export default async function ProgramaPage({
 
   const [planteles, pedidos] = await Promise.all([
     prisma.planteles.findMany({
-      where: { zona, ...filtroPlantelPorZona(alcance) },
+      where: { zona },
       include: { plantas: { select: { id: true } } },
     }),
     prisma.pedidos.findMany({
@@ -90,7 +124,6 @@ export default async function ProgramaPage({
         hora_solicitada: { gte: ini, lt: fin },
         estado_pedido: "Activo", // el programa no incluye pedidos cancelados
         plantel: { zona },
-        ...filtroPedidoPorZona(alcance),
       },
       include: {
         cliente: { include: { asesor: { select: { nombre: true } } } },

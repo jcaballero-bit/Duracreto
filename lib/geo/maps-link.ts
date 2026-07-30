@@ -20,11 +20,17 @@ export interface Coords {
 // qué grupo capturado es la latitud y cuál la longitud (algunos formatos internos
 // de Google ponen la longitud PRIMERO).
 //  1. `!3d<lat>!4d<lng>` — coordenadas exactas del lugar/pin (data param).
-//  2. `?q=`/`query=`/`ll=`/`destination=`/`center=`/`daddr=` = pares lat,lng.
-//  3. `@<lat>,<lng>` — centro del mapa (puede diferir un poco del pin).
-//  4. `!2d<lng>!3d<lat>` — formato embebido en HTML/protobuf (¡lng primero!).
-//  5. Un par `lat,lng` como segmento de ruta (`/14.08,-87.20`).
+//  2. `/maps/search|place|dir/<lat>,<lng>` — pin de un enlace COMPARTIDO (al soltar
+//     un pin, el enlace corto resuelve a `/maps/search/<lat>,+<lng>`; ojo con el
+//     `+`/espacio entre lat y lng). Es la coordenada exacta del pin.
+//  3. `?q=`/`query=`/`ll=`/`destination=`/`center=`/`daddr=` = pares lat,lng.
+//  4. `@<lat>,<lng>` — centro del mapa (puede diferir un poco del pin).
+//  5. `!2d<lng>!3d<lat>` — formato embebido en HTML/protobuf (¡lng primero!).
+//  6. Un par `lat,lng` como segmento de ruta (`/14.08,-87.20`).
 const NUM = "(-?\\d+(?:\\.\\d+)?)";
+// Separador entre lat y lng: coma seguida de un posible '+' o '%20' (espacio) que
+// Google inserta en rutas como `/search/15.49,+-88.04`.
+const SEP = ",(?:\\+|%20|\\s)*";
 interface Patron {
   re: RegExp;
   lat: number; // índice del grupo con la latitud
@@ -33,13 +39,18 @@ interface Patron {
 const PATRONES: Patron[] = [
   { re: new RegExp(`!3d${NUM}!4d${NUM}`), lat: 1, lng: 2 },
   {
-    re: new RegExp(`[?&](?:q|query|ll|destination|center|daddr)=${NUM},${NUM}`, "i"),
+    re: new RegExp(`/(?:search|place|dir)/${NUM}${SEP}${NUM}`),
+    lat: 1,
+    lng: 2,
+  },
+  {
+    re: new RegExp(`[?&](?:q|query|ll|destination|center|daddr)=${NUM}${SEP}${NUM}`, "i"),
     lat: 1,
     lng: 2,
   },
   { re: new RegExp(`@${NUM},${NUM}`), lat: 1, lng: 2 },
   { re: new RegExp(`!2d${NUM}!3d${NUM}`), lat: 2, lng: 1 },
-  { re: new RegExp(`/${NUM},${NUM}`), lat: 1, lng: 2 },
+  { re: new RegExp(`/${NUM}${SEP}${NUM}`), lat: 1, lng: 2 },
 ];
 
 /** ¿Las coordenadas son geográficamente plausibles (y no el (0,0) nulo)? */

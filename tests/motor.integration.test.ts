@@ -495,7 +495,7 @@ describe("despacho en vivo — avanzar estado (sella ts_*_real, NO toca hora_*)"
     expect(v1.ts_inicio_carga_real!.getTime()).toBe(ahora.getTime()); // real sellado
     expect(v1.hora_inicio_carga!.getTime()).toBe(programadoCarga); // programación intacta
 
-    for (const e of ["En ruta", "Descargando", "Regresando", "Completado"]) {
+    for (const e of ["En ruta", "Llegada", "Descargando", "Regresando", "Completado"]) {
       const res = await avanzarEstadoViaje(viajeId, e, ahora);
       expect(res.estado).toBe(e);
     }
@@ -513,6 +513,21 @@ describe("despacho en vivo — avanzar estado (sella ts_*_real, NO toca hora_*)"
     const salto = await avanzarEstadoViaje(viajeId, "Descargando");
     expect(salto.ok).toBe(false);
     expect(salto.mensaje).toMatch(/En carga/);
+  });
+
+  it("el paso Llegada sella ts_llegada_real, separado de la descarga", async () => {
+    const viajeId = await nuevoViaje();
+    const ahora = new Date("2026-08-01T09:00:00");
+    await avanzarEstadoViaje(viajeId, "En carga", ahora);
+    await avanzarEstadoViaje(viajeId, "En ruta", ahora);
+    const r = await avanzarEstadoViaje(viajeId, "Llegada", ahora);
+    expect(r.ok).toBe(true);
+    const v = await prisma.viajes.findUniqueOrThrow({ where: { id: viajeId } });
+    expect(v.ts_llegada_real!.getTime()).toBe(ahora.getTime());
+    expect(v.ts_inicio_descarga_real).toBeNull(); // llegó pero aún no descarga
+    await avanzarEstadoViaje(viajeId, "Descargando", ahora);
+    const v2 = await prisma.viajes.findUniqueOrThrow({ where: { id: viajeId } });
+    expect(v2.ts_inicio_descarga_real!.getTime()).toBe(ahora.getTime());
   });
 
   it("corregir hora real: valida orden lógico y registra en bitácora", async () => {
@@ -924,5 +939,100 @@ describe("bombas — traslape / margen en la alerta (hueco 2)", () => {
     expect(alertaBomba!.unidadId).toBe(bomba.id);
     // Descarga simultánea de la misma bomba → margen por debajo del mínimo.
     expect(alertaBomba!.margenMin).toBeLessThan(10);
+  });
+});
+
+describe("Hito 6 — mantenimiento excluye unidades del motor", () => {
+  const base = (clienteId: number, disenoId: number) => ({
+    cliente_id: clienteId,
+    diseno_id: disenoId,
+    volumen_total_m3: 8,
+    hora_solicitada: DIA,
+    tipo_descarga: "Canal directo",
+    creado_por: "test",
+  });
+
+  it("un mixer en mantenimiento ese día NO se asigna (queda sin cubrir si es el único)", async () => {
+    const p = await crearPlantel({ nombre: "M-Hub", zona: "Norte", esHub: true });
+    await crearMixers(p.plantelId, [[11, 1]]); // un solo mixer
+    const mixer = await prisma.mixers.findFirstOrThrow();
+    // Mantenimiento programado que cubre DIA.
+    await prisma.disponibilidad_flota.create({
+      data: {
+        unidad_tipo: "Mixer",
+        unidad_id: mixer.id,
+        fecha_inicio: new Date("2026-07-31T00:00:00"),
+        fecha_fin: new Date("2026-08-02T00:00:00"),
+        tipo_evento: "Mantenimiento_Programado",
+        estado: "Programado",
+        creado_por: "test",
+      },
+    });
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      ...base(clienteId, disenoId),
+      plantel_id: p.plantelId,
+      planta_id: p.plantaId,
+    });
+    // El único mixer está en mantenimiento → nada que asignar.
+    expect(r.volumenSinCubrir).toBeGreaterThan(0);
+  });
+
+  it("con mantenimiento en un mixer, el motor usa el otro disponible", async () => {
+    const p = await crearPlantel({ nombre: "M2-Hub", zona: "Norte", esHub: true });
+    await crearMixers(p.plantelId, [[11, 2]]);
+    const [m1, m2] = await prisma.mixers.findMany({ orderBy: { id: "asc" } });
+    await prisma.disponibilidad_flota.create({
+      data: {
+        unidad_tipo: "Mixer",
+        unidad_id: m1.id,
+        fecha_inicio: new Date("2026-08-01T00:00:00"),
+        fecha_fin: new Date("2026-08-01T00:00:00"),
+        tipo_evento: "Mantenimiento_Programado",
+        estado: "Programado",
+        creado_por: "test",
+      },
+    });
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      ...base(clienteId, disenoId),
+      plantel_id: p.plantelId,
+      planta_id: p.plantaId,
+    });
+    expect(r.volumenSinCubrir).toBe(0);
+    const viajes = await prisma.viajes.findMany({ where: { pedido_id: r.pedidoId } });
+    expect(viajes.every((v) => v.mixer_id !== m1.id)).toBe(true); // nunca el que está en mantenimiento
+    expect(viajes.some((v) => v.mixer_id === m2.id)).toBe(true);
+  });
+
+  it("reasignarMixer rechaza un mixer en mantenimiento con mensaje claro", async () => {
+    const p = await crearPlantel({ nombre: "M3-Hub", zona: "Norte", esHub: true });
+    await crearMixers(p.plantelId, [[11, 2]]);
+    const [m1, m2] = await prisma.mixers.findMany({ orderBy: { id: "asc" } });
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      ...base(clienteId, disenoId),
+      plantel_id: p.plantelId,
+      planta_id: p.plantaId,
+    });
+    const viaje = await prisma.viajes.findFirstOrThrow({ where: { pedido_id: r.pedidoId } });
+    const enMant = viaje.mixer_id === m1.id ? m2 : m1; // el mixer libre al que intentaremos mover
+    await prisma.disponibilidad_flota.create({
+      data: {
+        unidad_tipo: "Mixer",
+        unidad_id: enMant.id,
+        fecha_inicio: new Date("2026-08-01T00:00:00"),
+        fecha_fin: new Date("2026-08-03T00:00:00"),
+        tipo_evento: "Mantenimiento_Programado",
+        estado: "Programado",
+        creado_por: "test",
+      },
+    });
+    const res = await reasignarMixer(viaje.id, enMant.id);
+    expect(res.ok).toBe(false);
+    expect(res.motivo?.toLowerCase()).toContain("mantenimiento");
   });
 });

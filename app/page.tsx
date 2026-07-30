@@ -2,19 +2,22 @@ import Link from "next/link";
 import { CalendarClock, Container, Layers, Truck } from "lucide-react";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { alcanceActual } from "@/lib/auth/guard";
 import { Card } from "./components/ui";
 import { Saludo } from "./saludo";
 
 export const dynamic = "force-dynamic";
 
-async function resumen() {
+async function resumen(incluirFlota: boolean) {
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
 
+  // La disponibilidad de flota NO se consulta cuando no debe mostrarse (Asesor):
+  // no se le envían al cliente datos de flota, no solo se ocultan con CSS.
   const [planteles, mixersDisp, mixersTotal, prox] = await Promise.all([
     prisma.planteles.count(),
-    prisma.mixers.count({ where: { estado: "Disponible" } }),
-    prisma.mixers.count(),
+    incluirFlota ? prisma.mixers.count({ where: { estado: "Disponible" } }) : Promise.resolve(null),
+    incluirFlota ? prisma.mixers.count() : Promise.resolve(null),
     prisma.pedidos.findMany({
       where: { hora_solicitada: { gte: hoy } },
       orderBy: { hora_solicitada: "asc" },
@@ -41,7 +44,21 @@ async function resumen() {
 }
 
 export default async function Panel() {
-  const r = await resumen();
+  const alcance = await alcanceActual();
+  // El Asesor NO ve disponibilidad de flota. Un usuario con algún rol operativo
+  // (aunque también sea Asesor) sí la ve.
+  const puedeVerFlota =
+    !!alcance &&
+    (alcance.esAdmin ||
+      alcance.esProgramador ||
+      alcance.esDespachador ||
+      alcance.esJefePlanta ||
+      alcance.esDosificador ||
+      alcance.esLaboratorista ||
+      alcance.esJefeLaboratorio);
+  const ocultarFlota = !!alcance && alcance.esAsesor && !puedeVerFlota;
+
+  const r = await resumen(!ocultarFlota);
   const sesion = await auth();
   // Primer nombre del usuario logueado (el saludo cambia según quién ve la página).
   const nombre = (sesion?.user?.name ?? "").trim().split(/\s+/)[0] || "usuario";
@@ -67,11 +84,13 @@ export default async function Panel() {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat icon={<Container size={20} />} label="Planteles" valor={r.planteles} />
-        <Stat
-          icon={<Truck size={20} />}
-          label="Mixers disponibles"
-          valor={`${r.mixersDisp} / ${r.mixersTotal}`}
-        />
+        {!ocultarFlota && (
+          <Stat
+            icon={<Truck size={20} />}
+            label="Mixers disponibles"
+            valor={`${r.mixersDisp} / ${r.mixersTotal}`}
+          />
+        )}
         <Stat
           icon={<Layers size={20} />}
           label="Volumen próximo día"

@@ -5,6 +5,10 @@ export const ROLES = [
   "Despachador",
   "Asesor",
   "GerenteComercial",
+  "JefePlanta",
+  "Dosificador",
+  "Laboratorista",
+  "JefeLaboratorio",
 ] as const;
 export type Rol = (typeof ROLES)[number];
 

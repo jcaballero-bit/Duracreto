@@ -66,6 +66,8 @@ async function crearUsuario(
       passwordHash: await bcrypt.hash(password, 10),
       activo: true,
       zona,
+      // Usuarios de ejemplo: no forzar cambio (para pruebas locales cómodas).
+      debe_cambiar_password: false,
       roles: { create: roles.map((rol) => ({ rol })) },
     },
   });

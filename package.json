@@ -13,6 +13,7 @@
     "lint": "eslint",
     "predb:seed": "npm run db:up",
     "db:seed": "tsx prisma/seed.ts",
+    "db:admin": "tsx scripts/seed-admin.ts",
     "predb:reset": "npm run db:up",
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",

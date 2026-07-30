@@ -11,6 +11,8 @@ export type Catalogo =
   | "plantas"
   | "mixers"
   | "bombas"
+  | "camiones"
+  | "pickups"
   | "operadores"
   | "asesores"
   | "disenos";
@@ -58,6 +60,14 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         estado: s(d.estado) || "Disponible",
         plantel_base_id: int(d.plantel_base_id),
       };
+    case "camiones":
+    case "pickups":
+      return {
+        identificador: s(d.identificador),
+        placa: sNull(d.placa),
+        estado: s(d.estado) || "Disponible",
+        plantel_base_id: int(d.plantel_base_id),
+      };
     case "operadores":
       return { nombre: s(d.nombre), estado: s(d.estado) || "Disponible" };
     case "asesores":
@@ -85,6 +95,8 @@ function modelo(catalogo: Catalogo) {
     plantas: prisma.plantas,
     mixers: prisma.mixers,
     bombas: prisma.bombas,
+    camiones: prisma.camiones,
+    pickups: prisma.pickups,
     operadores: prisma.operadores,
     asesores: prisma.asesores,
     disenos: prisma.disenos_mezcla,

@@ -332,6 +332,107 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
   };
 }
 
+// ── Mapa de cobertura: clientes ATENDIDOS (con concreto entregado) ───────────
+// Un cliente cuenta como atendido si tuvo ≥1 pedido con ≥1 viaje `Completado` en
+// el periodo/filtros (misma definición de "suministrado" que m³ vendidos). Se
+// agrega UNA vez por cliente aunque haya recibido varias veces.
+
+export interface ClienteMapa {
+  clienteId: number;
+  empresa: string;
+  proyecto: string;
+  asesorId: number | null;
+  asesorNombre: string;
+  lat: number;
+  lng: number;
+  m3: number; // Σ volumen_asignado de viajes Completado en el periodo
+  pedidosCompletados: number; // # de pedidos con ≥1 viaje Completado
+  ultimoSuministroMs: number; // fecha del suministro más reciente en el periodo
+}
+export interface CoberturaComercial {
+  clientes: ClienteMapa[]; // atendidos CON ubicación (van al mapa)
+  sinUbicacion: number; // atendidos SIN coordenadas (no se pueden ubicar)
+}
+
+export interface FiltroCobertura {
+  anio: number;
+  mes: number;
+  zona: string | null; // null = todas
+  asesorId: number | null; // null = todos
+}
+
+export async function clientesAtendidos(f: FiltroCobertura): Promise<CoberturaComercial> {
+  const ini = new Date(f.anio, f.mes - 1, 1);
+  const fin = new Date(f.anio, f.mes, 1);
+
+  const pedidos = await prisma.pedidos.findMany({
+    where: {
+      hora_solicitada: { gte: ini, lt: fin },
+      ...(f.zona ? { plantel: { zona: f.zona } } : {}),
+      ...(f.asesorId != null ? { cliente: { asesor_id: f.asesorId } } : {}),
+      // Al menos un viaje entregado (concreto suministrado de verdad). Los pedidos
+      // cancelados no tienen viajes Completado → quedan excluidos naturalmente.
+      viajes: { some: { estado: "Completado" } },
+    },
+    select: {
+      hora_solicitada: true,
+      cliente: {
+        select: {
+          id: true,
+          empresa: true,
+          proyecto: true,
+          latitud: true,
+          longitud: true,
+          asesor_id: true,
+          asesor: { select: { nombre: true } },
+        },
+      },
+      viajes: {
+        where: { estado: "Completado" },
+        select: { volumen_asignado_m3: true },
+      },
+    },
+  });
+
+  const porCliente = new Map<number, ClienteMapa>();
+  const sinUbic = new Set<number>();
+
+  for (const p of pedidos) {
+    const c = p.cliente;
+    const m3 = p.viajes.reduce((s, v) => s + v.volumen_asignado_m3, 0);
+    if (m3 <= 0) continue; // sin volumen entregado real
+    if (c.latitud == null || c.longitud == null) {
+      sinUbic.add(c.id); // atendido pero sin coordenadas → no va al mapa
+      continue;
+    }
+    let e = porCliente.get(c.id);
+    if (!e) {
+      e = {
+        clienteId: c.id,
+        empresa: c.empresa,
+        proyecto: c.proyecto ?? "",
+        asesorId: c.asesor_id,
+        asesorNombre: c.asesor?.nombre ?? "Sin asesor",
+        lat: c.latitud,
+        lng: c.longitud,
+        m3: 0,
+        pedidosCompletados: 0,
+        ultimoSuministroMs: 0,
+      };
+      porCliente.set(c.id, e);
+    }
+    e.m3 += m3;
+    e.pedidosCompletados += 1;
+    e.ultimoSuministroMs = Math.max(e.ultimoSuministroMs, p.hora_solicitada.getTime());
+  }
+
+  const clientes = [...porCliente.values()].map((e) => ({
+    ...e,
+    m3: redondear(e.m3),
+  }));
+  return { clientes, sinUbicacion: sinUbic.size };
+}
+
 // ── Registro mensual de adiciones/cancelaciones POR ASESOR ───────────────────
 // Para el detalle del asesor (/comercial/asesor/[id]): la misma detección que
 // arriba, pero de TODO el historial del asesor, tabulado por mes con subtotales.

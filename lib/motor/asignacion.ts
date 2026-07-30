@@ -104,24 +104,72 @@ interface MetaMixer {
  * (si el plantel tiene hub distinto) la flota del hub de zona. Solo mixers
  * Disponible. El agendador escoge de aquí el mixer concreto de cada viaje.
  */
+// ── Mantenimiento / disponibilidad de flota (Hito 6) ─────────────────────────
+export type UnidadTipo = "Mixer" | "Bomba" | "Camion" | "Pickup";
+
+/** IDs de unidades de un tipo con mantenimiento/baja ACTIVO (Programado/En_curso)
+ *  cuyo rango de fechas cubre el DÍA de `fecha`. El motor las trata como no
+ *  disponibles ese día (igual que si su estado fuera "Fuera de servicio"). */
+export async function unidadesEnMantenimiento(
+  unidadTipo: UnidadTipo,
+  fecha: Date,
+): Promise<Set<number>> {
+  const dia = inicioDelDia(fecha);
+  const regs = await prisma.disponibilidad_flota.findMany({
+    where: {
+      unidad_tipo: unidadTipo,
+      estado: { in: ["Programado", "En_curso"] },
+      fecha_inicio: { lte: dia },
+      fecha_fin: { gte: dia },
+    },
+    select: { unidad_id: true },
+  });
+  return new Set(regs.map((r) => r.unidad_id));
+}
+
+/** Registro de mantenimiento/baja activo de UNA unidad el DÍA de `fecha` (o null).
+ *  Sirve para rechazar una asignación manual con un mensaje claro del rango. */
+export async function mantenimientoDeUnidad(
+  unidadTipo: UnidadTipo,
+  unidadId: number,
+  fecha: Date,
+) {
+  const dia = inicioDelDia(fecha);
+  return prisma.disponibilidad_flota.findFirst({
+    where: {
+      unidad_tipo: unidadTipo,
+      unidad_id: unidadId,
+      estado: { in: ["Programado", "En_curso"] },
+      fecha_inicio: { lte: dia },
+      fecha_fin: { gte: dia },
+    },
+  });
+}
+
 async function candidatosDePlanta(
   plantelId: number,
   hubId: number | null,
+  dia: Date,
 ): Promise<MetaMixer[]> {
   const plantelesFuente =
     hubId != null && hubId !== plantelId ? [plantelId, hubId] : [plantelId];
-  return prisma.mixers.findMany({
-    where: {
-      estado: ESTADO_DISPONIBLE,
-      plantel_base_id: { in: plantelesFuente },
-    },
-    select: {
-      id: true,
-      capacidad_m3: true,
-      plantel_base_id: true,
-      operador_asignado_id: true,
-    },
-  });
+  const [mixers, enMantenimiento] = await Promise.all([
+    prisma.mixers.findMany({
+      where: {
+        estado: ESTADO_DISPONIBLE,
+        plantel_base_id: { in: plantelesFuente },
+      },
+      select: {
+        id: true,
+        capacidad_m3: true,
+        plantel_base_id: true,
+        operador_asignado_id: true,
+      },
+    }),
+    // Un mixer con mantenimiento/baja ese día NO es candidato (Hito 6).
+    unidadesEnMantenimiento("Mixer", dia),
+  ]);
+  return mixers.filter((m) => !enMantenimiento.has(m.id));
 }
 
 // ── Cascada de horarios (consciente de mixers) ───────────────────────────────
@@ -162,7 +210,7 @@ export async function recalcularCascadaPlanta(
     select: { id: true, hub_id: true },
   });
 
-  const candidatos = await candidatosDePlanta(plantel.id, plantel.hub_id);
+  const candidatos = await candidatosDePlanta(plantel.id, plantel.hub_id, dia);
   // Metadatos de TODOS los mixers (para viajes fijos/manuales cuyo mixer podría
   // no estar entre los candidatos, p. ej. un refuerzo de otro plantel).
   const metaTodos = new Map<number, MetaMixer>();
@@ -663,8 +711,13 @@ async function asignarViajesDePedido(
     where: { id: entrada.plantel_id },
   });
 
-  // Capacidades disponibles = tamaños distintos de la flota propia + hub.
-  const candidatos = await candidatosDePlanta(entrada.plantel_id, plantel.hub_id);
+  // Capacidades disponibles = tamaños distintos de la flota propia + hub (excluye
+  // mixers en mantenimiento la fecha del pedido).
+  const candidatos = await candidatosDePlanta(
+    entrada.plantel_id,
+    plantel.hub_id,
+    entrada.hora_solicitada,
+  );
   const capacidades = [...new Set(candidatos.map((m) => m.capacidad_m3))];
 
   const plan = planificarCombinacion(entrada.volumen_total_m3, capacidades);
@@ -872,6 +925,24 @@ export async function reasignarMixer(
     return {
       ok: false,
       motivo: `El mixer ${nuevoMixerId} no está disponible (estado: ${mixer.estado}).`,
+      alertasMargen: [],
+    };
+  }
+
+  // Rechazar si el mixer tiene mantenimiento/baja programado que cubre la fecha
+  // del viaje (Hito 6): no se puede forzar una unidad en mantenimiento.
+  const mant = await mantenimientoDeUnidad(
+    "Mixer",
+    nuevoMixerId,
+    viaje.pedido.hora_solicitada,
+  );
+  if (mant) {
+    const fmt = (d: Date) =>
+      d.toLocaleDateString("es-HN", { day: "2-digit", month: "2-digit", year: "numeric" });
+    const etq = mant.tipo_evento === "Mantenimiento_Programado" ? "mantenimiento programado" : "baja de servicio";
+    return {
+      ok: false,
+      motivo: `El mixer ${mixer.identificador ?? `#${nuevoMixerId}`} tiene ${etq} del ${fmt(mant.fecha_inicio)} al ${fmt(mant.fecha_fin)} — no se puede asignar en esa fecha.`,
       alertasMargen: [],
     };
   }
@@ -1337,8 +1408,11 @@ export async function avanzarEstadoViaje(
       data.ts_fin_carga_real = ahora;
       data.ts_salida_real = ahora;
       break;
-    case "Descargando":
+    case "Llegada":
+      // Llegó a la obra: el Laboratorista revisa el concreto antes de descargar.
       data.ts_llegada_real = ahora;
+      break;
+    case "Descargando":
       data.ts_inicio_descarga_real = ahora;
       break;
     case "Regresando":

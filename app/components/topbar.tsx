@@ -1,25 +1,24 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { LogOut } from "lucide-react";
 import { tituloDeRuta } from "./nav";
 import { MobileNav } from "./mobile-nav";
-import { cerrarSesionAction } from "../auth-actions";
 
 export interface UsuarioSesion {
   nombre: string;
+  email: string;
   roles: string[];
   zona: string | null;
 }
 
 export function Topbar({ usuario }: { usuario: UsuarioSesion }) {
   const pathname = usePathname();
-  const seccion = tituloDeRuta(pathname);
+  const seccion = tituloDeRuta(pathname, usuario.roles);
 
   return (
     <header className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-surface px-4 py-3 md:px-6">
       <div className="flex items-center gap-2">
-        <MobileNav roles={usuario.roles} />
+        <MobileNav usuario={usuario} />
         <div className="leading-tight">
           <div className="text-sm font-semibold text-ink">{seccion}</div>
           <div className="text-xs text-muted">
@@ -29,7 +28,9 @@ export function Topbar({ usuario }: { usuario: UsuarioSesion }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
+      {/* Roles (informativo). El cierre de sesión vive en el menú de usuario del
+          sidebar / drawer, no aquí. */}
+      <div className="hidden items-center gap-2 sm:flex">
         {usuario.roles.length > 0 ? (
           usuario.roles.map((rol) => (
             <span
@@ -44,17 +45,6 @@ export function Topbar({ usuario }: { usuario: UsuarioSesion }) {
             Sin rol
           </span>
         )}
-
-        <form action={cerrarSesionAction}>
-          <button
-            type="submit"
-            title="Cerrar sesión"
-            className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:bg-content hover:text-ink"
-          >
-            <LogOut size={15} />
-            Salir
-          </button>
-        </form>
       </div>
     </header>
   );

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { calcularAlcance, puedeOperarEnFecha } from "@/lib/auth/acceso";
+import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA } from "@/lib/auth/acceso";
 import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
 import {
@@ -14,6 +14,7 @@ import {
   confirmarRefuerzo,
   corregirHoraReal,
   editarVolumenViaje,
+  mantenimientoDeUnidad,
   modificarPedido,
   programarPedido,
   reasignarMixer,
@@ -28,11 +29,17 @@ import {
 
 type Permiso = { ok: true } | { ok: false; mensaje: string };
 
-/** ¿El usuario puede operar en la zona de este plantel? */
+/** ¿El usuario puede operar en la zona/plantel de este plantel? */
 async function autorizarZonaPlantel(plantelId: number): Promise<Permiso> {
   const alcance = await alcanceActual();
   if (!alcance) return { ok: false, mensaje: "Sesión no válida." };
-  if (alcance.esAdmin || alcance.esAsesor) return { ok: true };
+  if (alcance.esAdmin || alcance.esAsesor || alcance.esLaboratorista) return { ok: true };
+  // JefePlanta / Dosificador: SOLO su plantel asignado (alcance por plantel).
+  if (alcance.esJefePlanta || alcance.esDosificador) {
+    return alcance.plantelAsignadoId === plantelId
+      ? { ok: true }
+      : { ok: false, mensaje: "Solo puedes operar tu plantel asignado." };
+  }
   const plantel = await prisma.planteles.findUnique({
     where: { id: plantelId },
     select: { zona: true },
@@ -87,6 +94,18 @@ async function autorizarPorPedido(pedidoId: number): Promise<Permiso> {
   return autorizarFecha(pedido.hora_solicitada);
 }
 
+/** Rechaza si la bomba elegida tiene mantenimiento/baja que cubre la fecha del
+ *  pedido (Hito 6). Devuelve mensaje o null si está libre. */
+async function validarBombaMantenimiento(entrada: EntradaPedido): Promise<string | null> {
+  if (entrada.bomba_id == null) return null;
+  const mant = await mantenimientoDeUnidad("Bomba", entrada.bomba_id, entrada.hora_solicitada);
+  if (!mant) return null;
+  const fmt = (d: Date) =>
+    d.toLocaleDateString("es-HN", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const etq = mant.tipo_evento === "Mantenimiento_Programado" ? "mantenimiento programado" : "baja de servicio";
+  return `La bomba elegida tiene ${etq} del ${fmt(mant.fecha_inicio)} al ${fmt(mant.fecha_fin)} — no se puede asignar en esa fecha.`;
+}
+
 /** Autoriza operar sobre un viaje (zona + fecha del rol, por su pedido). */
 async function autorizarPorViaje(viajeId: number): Promise<Permiso> {
   const viaje = await prisma.viajes.findUnique({
@@ -97,6 +116,24 @@ async function autorizarPorViaje(viajeId: number): Promise<Permiso> {
   const zona = await autorizarZonaPlantel(viaje.pedido.plantel_id);
   if (!zona.ok) return zona;
   return autorizarFecha(viaje.pedido.hora_solicitada);
+}
+
+/** Solo estos roles editan CAMPOS del viaje (volumen/mixer/motorista/hora real).
+ *  Laboratorista, Asesor y JefeLaboratorio NO. */
+async function autorizarEdicionCampos(): Promise<Permiso> {
+  const a = await alcanceActual();
+  if (!a) return { ok: false, mensaje: "Sesión no válida." };
+  if (a.esAdmin || a.esDespachador || a.esJefePlanta || a.esDosificador) return { ok: true };
+  return { ok: false, mensaje: "Tu rol no permite editar este dato del viaje." };
+}
+
+/** ¿El viaje pertenece a un PROGRAMA (pedido) asignado a este laboratorista? */
+async function viajeEsDeLaboratorista(viajeId: number, userId: string): Promise<boolean> {
+  const v = await prisma.viajes.findUnique({
+    where: { id: viajeId },
+    select: { pedido: { select: { asignacion_lab: { select: { laboratorista_id: true } } } } },
+  });
+  return v?.pedido.asignacion_lab?.laboratorista_id === userId;
 }
 
 export interface EstadoFormulario {
@@ -240,6 +277,8 @@ export async function crearPedidoAction(
       entrada!.hora_solicitada,
     );
     if (!permiso.ok) return { ok: false, mensaje: permiso.mensaje };
+    const errBomba = await validarBombaMantenimiento(entrada!);
+    if (errBomba) return { ok: false, mensaje: errBomba };
     const r = await programarPedido(entrada!);
 
     // Si el pedido nació de una solicitud anticipada (proyección semanal),
@@ -283,6 +322,8 @@ export async function modificarPedidoAction(
       entrada!.hora_solicitada,
     );
     if (!permisoDestino.ok) return { ok: false, mensaje: permisoDestino.mensaje };
+    const errBomba = await validarBombaMantenimiento(entrada!);
+    if (errBomba) return { ok: false, mensaje: errBomba };
     const r = await modificarPedido(pedidoId, entrada!);
     revalidarPantallas();
     return { ok: true, resultado: mapResultado(r) };
@@ -349,6 +390,8 @@ export async function reasignarMixerAction(
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const permiso = await autorizarPorViaje(viajeId);
   if (!permiso.ok) return permiso;
+  const ed = await autorizarEdicionCampos();
+  if (!ed.ok) return ed;
   const res = await reasignarMixer(viajeId, nuevoMixerId);
   if (res.ok) revalidarPantallas();
   return { ok: res.ok, mensaje: res.motivo };
@@ -365,6 +408,27 @@ export async function avanzarEstadoAction(
 ): Promise<{ ok: boolean; estado?: string; mensaje?: string }> {
   const permiso = await autorizarPorViaje(viajeId);
   if (!permiso.ok) return permiso;
+
+  // Restricciones de rol para avanzar estados.
+  const alcance = await alcanceActual();
+  const rolPlenoDespacho =
+    alcance?.esAdmin || alcance?.esDespachador || alcance?.esJefePlanta || alcance?.esDosificador;
+  if (alcance && !rolPlenoDespacho) {
+    if (alcance.esLaboratorista) {
+      // Laboratorista: solo Llegada/Descargando/Regresando y solo sus proyectos.
+      if (!(ESTADOS_LABORATORISTA as readonly string[]).includes(nuevoEstado)) {
+        return { ok: false, mensaje: "Como Laboratorista solo puedes marcar Llegada, Descargando o Regresando." };
+      }
+      const sesion = await auth();
+      const uid = sesion?.user?.id ?? "";
+      if (!(await viajeEsDeLaboratorista(viajeId, uid))) {
+        return { ok: false, mensaje: "Ese viaje no es de un proyecto asignado a ti." };
+      }
+    } else {
+      return { ok: false, mensaje: "Tu rol no permite avanzar el estado de los viajes." };
+    }
+  }
+
   const res = await avanzarEstadoViaje(viajeId, nuevoEstado);
   if (res.ok) revalidarPantallas();
   return res;
@@ -377,6 +441,8 @@ export async function editarVolumenAction(
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const permiso = await autorizarPorViaje(viajeId);
   if (!permiso.ok) return permiso;
+  const ed = await autorizarEdicionCampos();
+  if (!ed.ok) return ed;
   const res = await editarVolumenViaje(viajeId, nuevoVolumen, "despachador");
   if (res.ok) revalidarPantallas();
   return res;
@@ -401,6 +467,8 @@ export async function cambiarOperadorAction(
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const permiso = await autorizarPorViaje(viajeId);
   if (!permiso.ok) return permiso;
+  const ed = await autorizarEdicionCampos();
+  if (!ed.ok) return ed;
   const res = await cambiarOperadorViaje(viajeId, operadorId);
   if (res.ok) revalidarPantallas();
   return res;
@@ -419,6 +487,8 @@ export async function corregirHoraRealAction(
   if (!valorLocal) return { ok: false, mensaje: "Hora inválida." };
   const permiso = await autorizarPorViaje(viajeId);
   if (!permiso.ok) return permiso;
+  const ed = await autorizarEdicionCampos();
+  if (!ed.ok) return ed;
   const res = await corregirHoraReal(
     viajeId,
     campo,

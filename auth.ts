@@ -12,6 +12,8 @@ type DatosToken = {
   roles?: string[];
   zona?: string | null;
   nombre?: string | null;
+  debeCambiar?: boolean;
+  plantelAsignado?: number | null;
 };
 
 // Google solo se habilita si hay credenciales en el entorno (env-gated).
@@ -45,8 +47,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     ...(googleHabilitado ? [Google] : []),
   ],
   callbacks: {
+    // El callback `session` (puro) viene de authConfig (edge-safe, compartido con
+    // el middleware). Aquí solo el `jwt`, que sí lee la BD (runtime Node).
     ...authConfig.callbacks,
-    // Al iniciar sesión, carga roles + zona a la vez del usuario en el token.
+    // Al iniciar sesión, carga roles + zona + bandera de cambio al token.
     async jwt({ token, user }) {
       if (user?.id) {
         const dbu = await prisma.user.findUnique({
@@ -58,18 +62,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         t.roles = dbu?.roles.map((r) => r.rol) ?? [];
         t.zona = dbu?.zona ?? null;
         t.nombre = dbu?.name ?? null;
+        t.debeCambiar = dbu?.debe_cambiar_password ?? false;
+        t.plantelAsignado = dbu?.plantel_asignado_id ?? null;
       }
       return token;
-    },
-    async session({ session, token }) {
-      const t = token as DatosToken;
-      if (session.user) {
-        session.user.id = t.uid ?? "";
-        session.user.roles = t.roles ?? [];
-        session.user.zona = t.zona ?? null;
-        if (t.nombre) session.user.name = t.nombre;
-      }
-      return session;
     },
   },
 });

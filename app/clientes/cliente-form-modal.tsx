@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition, type FormEvent } from "react";
-import { MapPin, X } from "lucide-react";
+import { LocateFixed, MapPin, X } from "lucide-react";
 import {
   actualizarClienteAction,
   crearClienteAction,
@@ -68,6 +68,54 @@ export function ClienteFormModal({
   const [procesando, setProcesando] = useState(false);
   const [errorEnlace, setErrorEnlace] = useState<string | null>(null);
   const [avisoEnlace, setAvisoEnlace] = useState<string | null>(null);
+  // Cómo se capturó la ubicación (para el registro): "GPS en sitio" | "Enlace de
+  // Maps" | "Manual". `precision` = metros reportados por el GPS del celular.
+  const [origen, setOrigen] = useState(editando?.valores.ubicacion_origen ?? "");
+  const [precision, setPrecision] = useState(editando?.valores.ubicacion_precision_m ?? "");
+  const [gpsCargando, setGpsCargando] = useState(false);
+  const [gpsError, setGpsError] = useState<string | null>(null);
+
+  // Toma la ubicación ACTUAL del dispositivo (GPS del celular en sitio), con la
+  // mayor precisión posible. Requiere HTTPS (o localhost) y permiso del usuario.
+  const usarMiUbicacion = () => {
+    setGpsError(null);
+    setErrorEnlace(null);
+    setAvisoEnlace(null);
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setGpsError("Este dispositivo/navegador no permite geolocalización.");
+      return;
+    }
+    const habiaCoords = lat.trim() !== "" || lng.trim() !== "";
+    if (
+      habiaCoords &&
+      !confirm("Este cliente ya tiene una ubicación. ¿Reemplazarla con tu ubicación actual (GPS)?")
+    ) {
+      return;
+    }
+    setGpsCargando(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const metros = Math.round(pos.coords.accuracy);
+        setLat(pos.coords.latitude.toFixed(6));
+        setLng(pos.coords.longitude.toFixed(6));
+        setPrecision(String(metros));
+        setOrigen("GPS en sitio");
+        setGpsCargando(false);
+        setAvisoEnlace(`Ubicación tomada en sitio (GPS) · precisión ±${metros} m`);
+      },
+      (err) => {
+        setGpsCargando(false);
+        setGpsError(
+          err.code === err.PERMISSION_DENIED
+            ? "Permiso de ubicación denegado. Actívalo en el navegador e intenta de nuevo."
+            : err.code === err.TIMEOUT
+              ? "Se agotó el tiempo esperando el GPS. Intenta al aire libre."
+              : "No se pudo obtener tu ubicación.",
+        );
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    );
+  };
 
   // Lee el enlace pegado y autocompleta lat/long (enlace largo = regex directo;
   // enlace corto = el servidor resuelve la redirección). NO bloquea el guardado.
@@ -98,7 +146,9 @@ export function ClienteFormModal({
       }
       setLat(String(res.lat));
       setLng(String(res.lng));
-      setAvisoEnlace(`Ubicación leída: ${res.lat}, ${res.lng}`);
+      setPrecision(""); // el enlace no reporta precisión
+      setOrigen("Enlace de Maps");
+      setAvisoEnlace(`Ubicación leída del enlace: ${res.lat}, ${res.lng}`);
     } finally {
       setProcesando(false);
     }
@@ -113,6 +163,8 @@ export function ClienteFormModal({
     datos.google_maps_url = googleUrl.trim();
     datos.latitud = lat.trim();
     datos.longitud = lng.trim();
+    datos.ubicacion_origen = origen;
+    datos.ubicacion_precision_m = precision;
     if (esAdmin) datos.asesor_id = String(fd.get("asesor_id") ?? "");
     startTransition(async () => {
       const res = editando
@@ -190,6 +242,32 @@ export function ClienteFormModal({
               Abre Google Maps en tu celular, deja caer un pin en el sitio del
               proyecto, toca Compartir y pega aquí el enlace.
             </p>
+
+            {/* Tomar la ubicación actual (GPS en sitio) */}
+            <div className="mt-3 flex items-center gap-2">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-[11px] uppercase tracking-wide text-muted">o</span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+            <button
+              type="button"
+              onClick={usarMiUbicacion}
+              disabled={gpsCargando}
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-accent px-3 py-2 text-sm font-medium text-accent hover:bg-accent/5 disabled:opacity-50"
+            >
+              <LocateFixed size={16} />
+              {gpsCargando ? "Obteniendo ubicación…" : "Usar mi ubicación actual (GPS)"}
+            </button>
+            <p className="mt-1 text-xs text-muted">
+              Estando <strong>en la obra</strong>, toma el punto GPS de tu celular.
+              El navegador te pedirá permiso de ubicación.
+            </p>
+
+            {gpsError && (
+              <p className="mt-2 rounded-md bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
+                {gpsError}
+              </p>
+            )}
             {errorEnlace && (
               <p className="mt-2 rounded-md bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
                 {errorEnlace}
@@ -208,7 +286,11 @@ export function ClienteFormModal({
                   type="number"
                   step="any"
                   value={lat}
-                  onChange={(e) => setLat(e.target.value)}
+                  onChange={(e) => {
+                    setLat(e.target.value);
+                    setOrigen("Manual");
+                    setPrecision("");
+                  }}
                   placeholder="15.5041"
                   className={inputCls}
                 />
@@ -219,12 +301,23 @@ export function ClienteFormModal({
                   type="number"
                   step="any"
                   value={lng}
-                  onChange={(e) => setLng(e.target.value)}
+                  onChange={(e) => {
+                    setLng(e.target.value);
+                    setOrigen("Manual");
+                    setPrecision("");
+                  }}
                   placeholder="-88.0250"
                   className={inputCls}
                 />
               </label>
             </div>
+
+            {origen && (
+              <p className="mt-2 text-xs text-muted">
+                Origen de la ubicación: <strong className="text-ink">{origen}</strong>
+                {origen === "GPS en sitio" && precision ? ` · ±${precision} m` : ""}
+              </p>
+            )}
           </div>
 
           {esAdmin && (

@@ -3,7 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { puedeAccederRuta } from "@/lib/auth/acceso";
-import { NAV } from "./nav";
+import { NAV, etiquetaNav } from "./nav";
+import { UserMenu } from "./user-menu";
+
+export interface UsuarioShell {
+  nombre: string;
+  email: string;
+  roles: string[];
+  zona: string | null;
+}
 
 /** ¿La ruta actual corresponde a este ítem de navegación? */
 function esActivo(pathname: string, href: string, activePrefixes?: string[]): boolean {
@@ -12,10 +20,10 @@ function esActivo(pathname: string, href: string, activePrefixes?: string[]): bo
   return prefijos.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-export function Sidebar({ roles }: { roles: string[] }) {
+export function Sidebar({ usuario }: { usuario: UsuarioShell }) {
   const pathname = usePathname();
   // Solo se muestran los ítems a los que el rol tiene acceso.
-  const items = NAV.filter((item) => puedeAccederRuta(roles, item.href));
+  const items = NAV.filter((item) => puedeAccederRuta(usuario.roles, item.href));
 
   return (
     <aside className="fixed inset-y-0 left-0 z-20 hidden w-[260px] flex-col bg-sidebar text-sidebar-text md:flex">
@@ -53,13 +61,16 @@ export function Sidebar({ roles }: { roles: string[] }) {
               }`}
             >
               <Icon size={18} className="shrink-0" />
-              <span>{item.label}</span>
+              <span>{etiquetaNav(item, usuario.roles)}</span>
             </Link>
           );
         })}
       </nav>
 
-      <div className="px-5 py-4 text-[11px] text-slate-500">DPCR-08 · v0.1</div>
+      {/* Menú de usuario (correo, Configuración, Cerrar sesión) */}
+      <div className="border-t border-white/5">
+        <UserMenu nombre={usuario.nombre} email={usuario.email} roles={usuario.roles} />
+      </div>
     </aside>
   );
 }

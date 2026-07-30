@@ -49,6 +49,8 @@ export default async function ClientesPage() {
       latitud: c.latitud != null ? String(c.latitud) : "",
       longitud: c.longitud != null ? String(c.longitud) : "",
       google_maps_url: c.google_maps_url ?? "",
+      ubicacion_origen: c.ubicacion_origen ?? "",
+      ubicacion_precision_m: c.ubicacion_precision_m != null ? String(c.ubicacion_precision_m) : "",
       contacto: c.contacto ?? "",
       telefono: c.telefono ?? "",
       activo: c.activo ? "true" : "false",
