@@ -50,21 +50,37 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // El callback `session` (puro) viene de authConfig (edge-safe, compartido con
     // el middleware). Aquí solo el `jwt`, que sí lee la BD (runtime Node).
     ...authConfig.callbacks,
-    // Al iniciar sesión, carga roles + zona + bandera de cambio al token.
+    // Se ejecuta en CADA verificación de sesión (auth()). Revalida contra la BD:
+    //  · Si el usuario fue ELIMINADO o desactivado → devuelve null = REVOCA la
+    //    sesión (se cierra en cualquier dispositivo en su próxima petición). Es la
+    //    forma de "cerrar sesión" con JWT sin estado de sesión en servidor.
+    //  · Si sigue activo, refresca roles/zona/plantel/bandera para que los cambios
+    //    apliquen sin necesidad de volver a iniciar sesión.
     async jwt({ token, user }) {
-      if (user?.id) {
-        const dbu = await prisma.user.findUnique({
-          where: { id: user.id },
+      const t = token as DatosToken;
+      if (user?.id) t.uid = user.id; // al iniciar sesión
+      const id = t.uid ?? token.sub;
+      if (!id) return null;
+
+      let dbu;
+      try {
+        dbu = await prisma.user.findUnique({
+          where: { id },
           include: { roles: true },
         });
-        const t = token as DatosToken;
-        t.uid = user.id;
-        t.roles = dbu?.roles.map((r) => r.rol) ?? [];
-        t.zona = dbu?.zona ?? null;
-        t.nombre = dbu?.name ?? null;
-        t.debeCambiar = dbu?.debe_cambiar_password ?? false;
-        t.plantelAsignado = dbu?.plantel_asignado_id ?? null;
+      } catch {
+        // Error transitorio de BD: no forzar el cierre de sesión (fail-open).
+        return token;
       }
+      // Usuario eliminado o inactivo: sesión revocada.
+      if (!dbu || !dbu.activo) return null;
+
+      t.uid = dbu.id;
+      t.roles = dbu.roles.map((r) => r.rol);
+      t.zona = dbu.zona ?? null;
+      t.nombre = dbu.name ?? null;
+      t.debeCambiar = dbu.debe_cambiar_password ?? false;
+      t.plantelAsignado = dbu.plantel_asignado_id ?? null;
       return token;
     },
   },
