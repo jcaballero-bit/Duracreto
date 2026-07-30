@@ -16,8 +16,9 @@ export const metadata: Metadata = {
     title: "DURACRETO Logistics",
     statusBarStyle: "default",
   },
+  // El favicon (icono de pestaña) sale de app/favicon.ico + app/icon.png (la marca
+  // DURACRETO). Aquí solo se declara el apple-touch-icon (icono al instalar en iOS).
   icons: {
-    icon: "/icon-192.png",
     apple: "/apple-touch-icon.png",
   },
 };
