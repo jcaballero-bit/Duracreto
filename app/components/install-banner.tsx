@@ -15,7 +15,7 @@ const CLAVE = "duracreto_pwa_banner_v1";
 export function InstallBanner() {
   const { modo, instalar } = useInstalacion();
   const [oculto, setOculto] = useState(true); // oculto hasta leer localStorage
-  const [ayudaIOS, setAyudaIOS] = useState(false);
+  const [ayuda, setAyuda] = useState(false); // mostrar instrucciones (ios/manual)
 
   useEffect(() => {
     try {
@@ -37,12 +37,12 @@ export function InstallBanner() {
   };
 
   const onInstalar = async () => {
-    if (modo === "ios") {
-      setAyudaIOS(true);
+    if (modo === "android") {
+      await instalar();
+      cerrar();
       return;
     }
-    await instalar();
-    cerrar();
+    setAyuda(true); // ios / manual → mostrar cómo agregar a inicio
   };
 
   return (
@@ -65,13 +65,21 @@ export function InstallBanner() {
           </button>
         </div>
 
-        {modo === "ios" && ayudaIOS ? (
+        {ayuda ? (
           <p className="mt-3 flex items-start gap-1.5 rounded-lg bg-content px-3 py-2 text-xs leading-snug text-slate-600">
             <Share size={14} className="mt-0.5 shrink-0" />
-            <span>
-              En Safari toca <strong>Compartir</strong> y luego{" "}
-              <strong>“Agregar a inicio”</strong>.
-            </span>
+            {modo === "ios" ? (
+              <span>
+                En Safari toca <strong>Compartir</strong> y luego{" "}
+                <strong>“Agregar a inicio”</strong>.
+              </span>
+            ) : (
+              <span>
+                Abre el menú del navegador (<strong>⋮</strong>) y elige{" "}
+                <strong>“Instalar aplicación”</strong> o{" "}
+                <strong>“Agregar a pantalla de inicio”</strong>.
+              </span>
+            )}
           </p>
         ) : (
           <button

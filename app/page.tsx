@@ -2,7 +2,7 @@ import Link from "next/link";
 import { CalendarClock, Container, Layers, Truck } from "lucide-react";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { alcanceActual } from "@/lib/auth/guard";
+import { alcanceActual, requerirPasswordAlDia } from "@/lib/auth/guard";
 import { Card } from "./components/ui";
 import { Saludo } from "./saludo";
 
@@ -44,6 +44,8 @@ async function resumen(incluirFlota: boolean) {
 }
 
 export default async function Panel() {
+  // Primer ingreso: si debe cambiar contraseña, al panel tampoco entra.
+  await requerirPasswordAlDia();
   const alcance = await alcanceActual();
   // El Asesor NO ve disponibilidad de flota. Un usuario con algún rol operativo
   // (aunque también sea Asesor) sí la ve.

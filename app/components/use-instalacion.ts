@@ -8,14 +8,19 @@ interface PromptInstalacion extends Event {
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 }
 
-/** "no" = no instalable / ya instalada / escritorio; "android" = prompt nativo;
- *  "ios" = Safari (sin botón: requiere instrucciones manuales). */
-export type ModoInstalacion = "no" | "android" | "ios";
+/**
+ * "no"      = no aplica (escritorio o ya instalada) → no mostrar nada.
+ * "android" = hay prompt nativo disponible (instalación con un toque).
+ * "ios"     = iOS/Safari: requiere instrucciones manuales (Compartir → Agregar a inicio).
+ * "manual"  = móvil/tablet sin prompt nativo aún: se muestra igual, con instrucciones
+ *             del menú del navegador (segunda opción por si el banner no se usó).
+ */
+export type ModoInstalacion = "no" | "android" | "ios" | "manual";
 
 /**
- * Detecta si el sistema se puede instalar como PWA en ESTE dispositivo y expone
- * `instalar()`. Solo se activa en celular/tablet (puntero táctil) y si no está ya
- * instalada. Comparte la lógica entre el botón del menú y el banner.
+ * Detecta si conviene ofrecer "Instalar app" en ESTE dispositivo y expone `instalar()`.
+ * Se activa en celular/tablet (puntero táctil) y si no está ya instalada. Comparte
+ * la lógica entre el botón del menú y el banner de primer inicio.
  */
 export function useInstalacion() {
   const [modo, setModo] = useState<ModoInstalacion>("no");
@@ -42,6 +47,9 @@ export function useInstalacion() {
       return;
     }
 
+    // Móvil/tablet no-iOS: por defecto "manual" (siempre visible con instrucciones);
+    // sube a "android" si el navegador ofrece el prompt nativo de instalación.
+    setModo("manual");
     const onPrompt = (e: Event) => {
       e.preventDefault();
       setPrompt(e as PromptInstalacion);
@@ -59,14 +67,16 @@ export function useInstalacion() {
     };
   }, []);
 
-  /** Lanza el prompt nativo (Android). En iOS no hace nada (el caller muestra ayuda). */
-  const instalar = useCallback(async () => {
+  /** Lanza el prompt nativo (Android). Devuelve true si se lanzó; false si no había. */
+  const instalar = useCallback(async (): Promise<boolean> => {
     if (modo === "android" && prompt) {
       await prompt.prompt();
       await prompt.userChoice;
       setPrompt(null);
       setModo("no");
+      return true;
     }
+    return false;
   }, [modo, prompt]);
 
   return { modo, instalar };

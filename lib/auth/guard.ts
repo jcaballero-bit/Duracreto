@@ -29,13 +29,25 @@ export async function alcanceActual(): Promise<Alcance | null> {
 }
 
 /**
+ * Si el usuario debe cambiar su contraseña (primer ingreso), lo manda a
+ * /configuracion. Enforcement server-side (Node) — confiable, a diferencia del
+ * middleware edge. La propia /configuracion NO llama a este guard, así que no hay
+ * bucle. Llamar al inicio de cada página protegida (requerirAcceso ya lo hace).
+ */
+export async function requerirPasswordAlDia(): Promise<void> {
+  const sesion = await auth();
+  if (sesion?.user?.debeCambiarPassword) redirect("/configuracion");
+}
+
+/**
  * Exige que el usuario pueda acceder a `ruta`. Si no hay sesión → /login;
- * si no tiene el rol → vuelve al panel. Devuelve el alcance para usarlo en la
- * página (p. ej. para filtrar por zona).
+ * si debe cambiar contraseña → /configuracion; si no tiene el rol → vuelve al
+ * panel. Devuelve el alcance para usarlo en la página (p. ej. filtrar por zona).
  */
 export async function requerirAcceso(ruta: string): Promise<Alcance> {
   const sesion = await auth();
   if (!sesion?.user) redirect("/login");
+  if (sesion.user.debeCambiarPassword) redirect("/configuracion");
   const roles = sesion.user.roles ?? [];
   if (!puedeAccederRuta(roles, ruta)) redirect("/?denegado=1");
   return calcularAlcance(roles, sesion.user.zona ?? null, sesion.user.plantelAsignadoId ?? null);

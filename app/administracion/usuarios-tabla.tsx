@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { Plus, Trash2, X } from "lucide-react";
+import { KeyRound, Plus, Trash2, X } from "lucide-react";
 import { ROLES, ZONAS } from "@/lib/auth/roles";
 import {
   alternarActivoAction,
@@ -11,6 +11,7 @@ import {
   eliminarUsuarioAction,
   fijarPlantelAsignadoAction,
   fijarZonaAction,
+  forzarCambioPasswordAction,
 } from "./actions";
 
 export interface UsuarioAdmin {
@@ -48,6 +49,15 @@ export function UsuariosTabla({
   const eliminar = (u: UsuarioAdmin) => {
     if (!confirm(`¿Eliminar al usuario ${u.nombre} (${u.correo})?`)) return;
     accion(() => eliminarUsuarioAction(u.id));
+  };
+
+  const forzarCambio = (u: UsuarioAdmin) => {
+    if (!confirm(`¿Pedirle a ${u.nombre} que cambie su contraseña en el próximo ingreso?`)) return;
+    accion(async () => {
+      const res = await forzarCambioPasswordAction(u.id);
+      if (res.ok) alert(`${u.nombre} deberá cambiar su contraseña la próxima vez que entre.`);
+      return res;
+    });
   };
 
   return (
@@ -150,14 +160,24 @@ export function UsuariosTabla({
                   </button>
                 </td>
                 <td className="px-3 py-2">
-                  <button
-                    disabled={pendiente}
-                    onClick={() => eliminar(u)}
-                    title="Eliminar usuario"
-                    className="rounded-md p-1.5 text-danger hover:bg-red-50 disabled:opacity-50"
-                  >
-                    <Trash2 size={16} />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      disabled={pendiente}
+                      onClick={() => forzarCambio(u)}
+                      title="Forzar cambio de contraseña en el próximo ingreso"
+                      className="rounded-md p-1.5 text-muted hover:bg-content hover:text-accent disabled:opacity-50"
+                    >
+                      <KeyRound size={16} />
+                    </button>
+                    <button
+                      disabled={pendiente}
+                      onClick={() => eliminar(u)}
+                      title="Eliminar usuario"
+                      className="rounded-md p-1.5 text-danger hover:bg-red-50 disabled:opacity-50"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

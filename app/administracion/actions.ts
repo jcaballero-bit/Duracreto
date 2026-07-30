@@ -147,6 +147,21 @@ export async function crearUsuarioAction(
   return { ok: true };
 }
 
+/**
+ * Marca a un usuario para que deba cambiar su contraseña en su próximo ingreso
+ * (`debe_cambiar_password = true`). Sirve para forzar el cambio a usuarios que ya
+ * existían (los nuevos ya nacen con la bandera en true).
+ */
+export async function forzarCambioPasswordAction(
+  userId: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const guard = await exigirAdmin();
+  if (!guard.ok) return guard;
+  await prisma.user.update({ where: { id: userId }, data: { debe_cambiar_password: true } });
+  revalidatePath("/administracion");
+  return { ok: true };
+}
+
 /** Elimina un usuario (desvincula asesor si lo hubiera). No puedes borrarte a ti. */
 export async function eliminarUsuarioAction(
   userId: string,
