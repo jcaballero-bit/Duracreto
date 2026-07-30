@@ -148,6 +148,49 @@ export async function crearUsuarioAction(
 }
 
 /**
+ * Edita los datos base de un usuario: nombre, correo y (opcional) nueva contraseña.
+ * Los roles/zona/plantel/activo se editan inline en la tabla. Si se fija una nueva
+ * contraseña, se exige que el usuario la cambie en su próximo ingreso (buena
+ * práctica al resetear desde Admin). El correo debe ser único.
+ */
+export async function actualizarUsuarioAction(
+  userId: string,
+  nombre: string,
+  correo: string,
+  password: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const guard = await exigirAdmin();
+  if (!guard.ok) return guard;
+
+  const email = correo.toLowerCase().trim();
+  if (!nombre.trim() || !email) {
+    return { ok: false, mensaje: "Nombre y correo son obligatorios." };
+  }
+  if (password && password.length < 6) {
+    return { ok: false, mensaje: "La nueva contraseña debe tener al menos 6 caracteres." };
+  }
+  // El correo no puede chocar con OTRO usuario.
+  const otro = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+  if (otro && otro.id !== userId) {
+    return { ok: false, mensaje: "Ya existe otro usuario con ese correo." };
+  }
+
+  const data: {
+    name: string;
+    email: string;
+    passwordHash?: string;
+    debe_cambiar_password?: boolean;
+  } = { name: nombre.trim(), email };
+  if (password) {
+    data.passwordHash = await bcrypt.hash(password, 10);
+    data.debe_cambiar_password = true; // deberá cambiarla él en su próximo ingreso
+  }
+  await prisma.user.update({ where: { id: userId }, data });
+  revalidatePath("/administracion");
+  return { ok: true };
+}
+
+/**
  * Marca a un usuario para que deba cambiar su contraseña en su próximo ingreso
  * (`debe_cambiar_password = true`). Sirve para forzar el cambio a usuarios que ya
  * existían (los nuevos ya nacen con la bandera en true).

@@ -2,9 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { KeyRound, Plus, Trash2, X } from "lucide-react";
+import { KeyRound, Pencil, Plus, Trash2, X } from "lucide-react";
 import { ROLES, ZONAS } from "@/lib/auth/roles";
 import {
+  actualizarUsuarioAction,
   alternarActivoAction,
   alternarRolAction,
   crearUsuarioAction,
@@ -38,6 +39,7 @@ export function UsuariosTabla({
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
   const [nuevoAbierto, setNuevoAbierto] = useState(false);
+  const [editando, setEditando] = useState<UsuarioAdmin | null>(null);
 
   const accion = (fn: () => Promise<{ ok: boolean; mensaje?: string }>) =>
     startTransition(async () => {
@@ -163,6 +165,14 @@ export function UsuariosTabla({
                   <div className="flex items-center gap-1">
                     <button
                       disabled={pendiente}
+                      onClick={() => setEditando(u)}
+                      title="Editar usuario (nombre, correo, contraseña)"
+                      className="rounded-md p-1.5 text-muted hover:bg-content hover:text-accent disabled:opacity-50"
+                    >
+                      <Pencil size={16} />
+                    </button>
+                    <button
+                      disabled={pendiente}
                       onClick={() => forzarCambio(u)}
                       title="Forzar cambio de contraseña en el próximo ingreso"
                       className="rounded-md p-1.5 text-muted hover:bg-content hover:text-accent disabled:opacity-50"
@@ -195,7 +205,99 @@ export function UsuariosTabla({
           }}
         />
       )}
+
+      {editando && (
+        <EditarUsuarioModal
+          usuario={editando}
+          onCerrar={() => setEditando(null)}
+          onExito={() => {
+            setEditando(null);
+            router.refresh();
+          }}
+        />
+      )}
     </>
+  );
+}
+
+function EditarUsuarioModal({
+  usuario,
+  onCerrar,
+  onExito,
+}: {
+  usuario: UsuarioAdmin;
+  onCerrar: () => void;
+  onExito: () => void;
+}) {
+  const [pendiente, startTransition] = useTransition();
+  const inputCls =
+    "w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent";
+
+  const guardar = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    startTransition(async () => {
+      const res = await actualizarUsuarioAction(
+        usuario.id,
+        String(fd.get("nombre") ?? ""),
+        String(fd.get("correo") ?? ""),
+        String(fd.get("password") ?? ""),
+      );
+      if (res.ok) onExito();
+      else alert(res.mensaje ?? "No se pudo guardar.");
+    });
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-8"
+      onClick={onCerrar}
+    >
+      <div className="w-full max-w-lg rounded-xl bg-surface shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <h2 className="text-lg font-bold text-ink">Editar usuario</h2>
+          <button onClick={onCerrar} className="rounded-md p-1 text-muted hover:bg-content hover:text-ink" aria-label="Cerrar">
+            <X size={20} />
+          </button>
+        </div>
+        <form onSubmit={guardar} className="space-y-3 p-5">
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-ink">Nombre</span>
+            <input name="nombre" required defaultValue={usuario.nombre} className={inputCls} />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-ink">Correo</span>
+            <input type="email" name="correo" required defaultValue={usuario.correo} className={inputCls} />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-ink">Nueva contraseña (opcional)</span>
+            <input
+              type="password"
+              name="password"
+              minLength={6}
+              placeholder="Dejar en blanco para no cambiarla"
+              autoComplete="new-password"
+              className={inputCls}
+            />
+            <span className="mt-1 block text-xs text-muted">
+              Si la cambias, el usuario deberá elegir una nueva en su próximo ingreso.
+            </span>
+          </label>
+          <p className="rounded-md bg-content px-3 py-2 text-xs text-muted">
+            Los roles, la zona, el plantel y el estado activo se editan directamente en la
+            fila de la tabla.
+          </p>
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onCerrar} className="rounded-lg border border-border px-4 py-2 text-sm text-ink hover:bg-content">
+              Cancelar
+            </button>
+            <button type="submit" disabled={pendiente} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+              {pendiente ? "Guardando…" : "Guardar cambios"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
