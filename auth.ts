@@ -14,7 +14,13 @@ type DatosToken = {
   nombre?: string | null;
   debeCambiar?: boolean;
   plantelAsignado?: number | null;
+  revalMs?: number; // última revalidación contra la BD (epoch ms)
 };
+
+// Cada cuánto se revalida el usuario contra la BD (revocación de sesión). Un valor
+// pequeño reescribiría la cookie en cada request (causa carreras en móvil); 30 s da
+// revocación casi inmediata sin ese costo.
+const REVAL_INTERVALO_MS = 30_000;
 
 // Google solo se habilita si hay credenciales en el entorno (env-gated).
 const googleHabilitado =
@@ -50,17 +56,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // El callback `session` (puro) viene de authConfig (edge-safe, compartido con
     // el middleware). Aquí solo el `jwt`, que sí lee la BD (runtime Node).
     ...authConfig.callbacks,
-    // Se ejecuta en CADA verificación de sesión (auth()). Revalida contra la BD:
-    //  · Si el usuario fue ELIMINADO o desactivado → devuelve null = REVOCA la
-    //    sesión (se cierra en cualquier dispositivo en su próxima petición). Es la
-    //    forma de "cerrar sesión" con JWT sin estado de sesión en servidor.
-    //  · Si sigue activo, refresca roles/zona/plantel/bandera para que los cambios
-    //    apliquen sin necesidad de volver a iniciar sesión.
+    // Revalida el usuario contra la BD (con throttle) para revocar la sesión si fue
+    // eliminado/desactivado, y refrescar roles/zona sin re-login.
+    //  · SOLO se devuelve null (revoca) cuando la BD CONFIRMA que el usuario ya no
+    //    existe o está inactivo. Nunca por un token sin id ni por un error de BD:
+    //    eso cerraría sesiones válidas (bug que sacaba al admin en móvil).
     async jwt({ token, user }) {
       const t = token as DatosToken;
-      if (user?.id) t.uid = user.id; // al iniciar sesión
+      if (user?.id) {
+        t.uid = user.id; // al iniciar sesión
+        t.revalMs = 0; // fuerza la primera revalidación
+      }
       const id = t.uid ?? token.sub;
-      if (!id) return null;
+      if (!id) return token; // sin id no se puede validar: NO cerrar sesión
+
+      // Throttle: revalidar como máximo cada REVAL_INTERVALO_MS. Entre chequeos el
+      // token vuelve intacto (no se reescribe la cookie en cada request).
+      const ahora = Date.now();
+      if (t.revalMs && ahora - t.revalMs < REVAL_INTERVALO_MS) return token;
 
       let dbu;
       try {
@@ -81,6 +94,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       t.nombre = dbu.name ?? null;
       t.debeCambiar = dbu.debe_cambiar_password ?? false;
       t.plantelAsignado = dbu.plantel_asignado_id ?? null;
+      t.revalMs = ahora;
       return token;
     },
   },
