@@ -1,7 +1,11 @@
 "use client";
 
-import { useState, useTransition, type FormEvent } from "react";
+import { useEffect, useRef, useState, useTransition, type FormEvent } from "react";
 import { LocateFixed, MapPin, X } from "lucide-react";
+
+// Precisión objetivo del GPS (metros) y tiempo máximo afinando la lectura.
+const PRECISION_OBJETIVO_M = 15;
+const GPS_TIEMPO_MAX_MS = 25000;
 import {
   actualizarClienteAction,
   crearClienteAction,
@@ -74,9 +78,50 @@ export function ClienteFormModal({
   const [precision, setPrecision] = useState(editando?.valores.ubicacion_precision_m ?? "");
   const [gpsCargando, setGpsCargando] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsEstado, setGpsEstado] = useState<string | null>(null); // texto en vivo mientras afina
 
-  // Toma la ubicación ACTUAL del dispositivo (GPS del celular en sitio), con la
-  // mayor precisión posible. Requiere HTTPS (o localhost) y permiso del usuario.
+  // watchPosition entrega varias lecturas que van mejorando; guardamos la mejor.
+  const watchRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mejorRef = useRef<{ lat: number; lng: number; acc: number } | null>(null);
+
+  const detenerWatch = () => {
+    if (watchRef.current != null && typeof navigator !== "undefined" && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchRef.current);
+    }
+    watchRef.current = null;
+    if (timerRef.current != null) clearTimeout(timerRef.current);
+    timerRef.current = null;
+  };
+
+  // Al cerrar el modal, cancelar cualquier watch activo.
+  useEffect(() => () => detenerWatch(), []);
+
+  /** Fija la mejor lectura en el formulario y avisa si alcanzó o no la precisión objetivo. */
+  const aplicarGps = (p: { lat: number; lng: number; acc: number }) => {
+    const metros = Math.round(p.acc);
+    const alcanzo = p.acc <= PRECISION_OBJETIVO_M;
+    setLat(p.lat.toFixed(6));
+    setLng(p.lng.toFixed(6));
+    setPrecision(String(metros));
+    setOrigen("GPS en sitio");
+    setGpsCargando(false);
+    setGpsEstado(null);
+    if (alcanzo) {
+      setGpsError(null);
+      setAvisoEnlace(`Ubicación tomada en sitio (GPS) · precisión ±${metros} m`);
+    } else {
+      setAvisoEnlace(null);
+      setGpsError(
+        `La mejor precisión lograda fue ±${metros} m (mayor a ${PRECISION_OBJETIVO_M} m). ` +
+          `Muévete a un lugar más despejado y reintenta; si te sirve así, ya quedó guardada.`,
+      );
+    }
+  };
+
+  // Toma la ubicación ACTUAL del dispositivo (GPS del celular en sitio). Afina con
+  // watchPosition hasta lograr precisión ≤ PRECISION_OBJETIVO_M (o hasta el tope de
+  // tiempo, usando la mejor lectura). Requiere HTTPS (o localhost) y permiso.
   const usarMiUbicacion = () => {
     setGpsError(null);
     setErrorEnlace(null);
@@ -92,19 +137,37 @@ export function ClienteFormModal({
     ) {
       return;
     }
+    detenerWatch();
+    mejorRef.current = null;
     setGpsCargando(true);
-    navigator.geolocation.getCurrentPosition(
+    setGpsEstado("Obteniendo señal GPS…");
+
+    watchRef.current = navigator.geolocation.watchPosition(
       (pos) => {
-        const metros = Math.round(pos.coords.accuracy);
-        setLat(pos.coords.latitude.toFixed(6));
-        setLng(pos.coords.longitude.toFixed(6));
-        setPrecision(String(metros));
-        setOrigen("GPS en sitio");
-        setGpsCargando(false);
-        setAvisoEnlace(`Ubicación tomada en sitio (GPS) · precisión ±${metros} m`);
+        const acc = pos.coords.accuracy;
+        const prev = mejorRef.current;
+        const mejor =
+          !prev || acc < prev.acc
+            ? { lat: pos.coords.latitude, lng: pos.coords.longitude, acc }
+            : prev;
+        mejorRef.current = mejor;
+        setGpsEstado(
+          `Afinando ubicación… mejor precisión ±${Math.round(mejor.acc)} m (objetivo ≤ ${PRECISION_OBJETIVO_M} m)`,
+        );
+        // Alcanzó la precisión objetivo: fijar y detener.
+        if (mejor.acc <= PRECISION_OBJETIVO_M) {
+          detenerWatch();
+          aplicarGps(mejor);
+        }
       },
       (err) => {
+        detenerWatch();
+        if (mejorRef.current) {
+          aplicarGps(mejorRef.current); // hubo alguna lectura: usarla (con aviso si > objetivo)
+          return;
+        }
         setGpsCargando(false);
+        setGpsEstado(null);
         setGpsError(
           err.code === err.PERMISSION_DENIED
             ? "Permiso de ubicación denegado. Actívalo en el navegador e intenta de nuevo."
@@ -113,8 +176,29 @@ export function ClienteFormModal({
               : "No se pudo obtener tu ubicación.",
         );
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+      { enableHighAccuracy: true, timeout: GPS_TIEMPO_MAX_MS, maximumAge: 0 },
     );
+
+    // Tope de tiempo: usar la mejor lectura obtenida hasta ese momento.
+    timerRef.current = setTimeout(() => {
+      detenerWatch();
+      if (mejorRef.current) aplicarGps(mejorRef.current);
+      else {
+        setGpsCargando(false);
+        setGpsEstado(null);
+        setGpsError("Se agotó el tiempo esperando el GPS. Intenta al aire libre.");
+      }
+    }, GPS_TIEMPO_MAX_MS);
+  };
+
+  /** Detiene el afinado y usa la mejor lectura lograda hasta ahora. */
+  const detenerYUsar = () => {
+    detenerWatch();
+    if (mejorRef.current) aplicarGps(mejorRef.current);
+    else {
+      setGpsCargando(false);
+      setGpsEstado(null);
+    }
   };
 
   // Lee el enlace pegado y autocompleta lat/long (enlace largo = regex directo;
@@ -255,13 +339,30 @@ export function ClienteFormModal({
               disabled={gpsCargando}
               className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-accent px-3 py-2 text-sm font-medium text-accent hover:bg-accent/5 disabled:opacity-50"
             >
-              <LocateFixed size={16} />
-              {gpsCargando ? "Obteniendo ubicación…" : "Usar mi ubicación actual (GPS)"}
+              <LocateFixed size={16} className={gpsCargando ? "animate-pulse" : ""} />
+              {gpsCargando ? "Afinando ubicación…" : "Usar mi ubicación actual (GPS)"}
             </button>
             <p className="mt-1 text-xs text-muted">
-              Estando <strong>en la obra</strong>, toma el punto GPS de tu celular.
+              Estando <strong>en la obra</strong>, toma el punto GPS de tu celular. Se
+              afina hasta lograr una precisión <strong>menor a {PRECISION_OBJETIVO_M} m</strong>.
               El navegador te pedirá permiso de ubicación.
             </p>
+
+            {gpsCargando && (
+              <div className="mt-2 rounded-md bg-sky-50 px-2.5 py-2 text-xs text-sky-800">
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block h-2 w-2 animate-ping rounded-full bg-sky-500" />
+                  {gpsEstado ?? "Obteniendo señal GPS…"}
+                </div>
+                <button
+                  type="button"
+                  onClick={detenerYUsar}
+                  className="mt-1.5 font-medium text-sky-700 underline hover:text-sky-900"
+                >
+                  Detener y usar la mejor lograda
+                </button>
+              </div>
+            )}
 
             {gpsError && (
               <p className="mt-2 rounded-md bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
