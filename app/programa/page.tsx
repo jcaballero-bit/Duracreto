@@ -28,7 +28,8 @@ const PALETA_BOMBA = ["#1F4E79", "#2F6F4E", "#B0730D", "#5B4B8A", "#1C6E7D", "#8
  * duplicar el dato en el usuario).
  */
 async function zonasParaPrograma(alcance: Alcance): Promise<string[]> {
-  if (alcance.esAdmin) return [...ZONAS];
+  // Admin y Gerencia Comercial: consulta de ambas zonas.
+  if (alcance.esAdmin || alcance.esGerenteComercial) return [...ZONAS];
   const zonas = new Set<string>();
   if (alcance.zona) zonas.add(alcance.zona);
   if (alcance.plantelAsignadoId != null) {

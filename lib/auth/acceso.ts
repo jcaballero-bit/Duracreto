@@ -8,7 +8,9 @@
 //  · Programador: programación (hoy en adelante), solo su zona.
 //  · Despachador: solo hoy, solo su zona; crea de último momento.
 //  · Asesor: solo sus propios clientes, sin límite de zona.
-//  · GerenteComercial: dashboard comercial (solo consulta).
+//  · GerenteComercial: dashboard comercial + CONSULTA (solo lectura, todas las
+//    zonas) de Panel principal, Programación, Despacho en vivo y Programa DPCR-08.
+//    Nunca edita ni opera pedidos.
 //  · JefePlanta: Programación + Despacho de SU plantel (alcance por plantel, más
 //    fino que por zona). Edita.
 //  · Dosificador: Despacho de SU plantel (edita) + Programa DPCR-08 (ver, SOLO de
@@ -80,12 +82,12 @@ export function calcularAlcance(
 export const ACCESO_RUTAS: Record<string, Rol[]> = {
   "/": [
     "Administrador", "Programador", "Despachador", "Asesor",
-    "JefePlanta", "Dosificador", "Laboratorista", "JefeLaboratorio",
+    "JefePlanta", "Dosificador", "Laboratorista", "JefeLaboratorio", "GerenteComercial",
   ],
-  "/programacion": ["Administrador", "Programador", "JefePlanta", "JefeLaboratorio"],
+  "/programacion": ["Administrador", "Programador", "JefePlanta", "JefeLaboratorio", "GerenteComercial"],
   "/despacho": [
     "Administrador", "Despachador", "Asesor",
-    "JefePlanta", "Dosificador", "Laboratorista", "JefeLaboratorio",
+    "JefePlanta", "Dosificador", "Laboratorista", "JefeLaboratorio", "GerenteComercial",
   ],
   "/confirmaciones": ["Administrador", "Asesor"],
   "/clientes/semana": ["Administrador", "Asesor", "Programador"],
@@ -93,7 +95,7 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   "/comercial": ["Administrador", "GerenteComercial"],
   "/flota": ["Administrador"],
   "/reportes": ["Administrador", "JefePlanta"],
-  "/programa": ["Administrador", "Programador", "Despachador", "Dosificador", "Laboratorista"],
+  "/programa": ["Administrador", "Programador", "Despachador", "Dosificador", "Laboratorista", "GerenteComercial"],
   "/laboratorio": ["Administrador", "JefeLaboratorio", "Laboratorista"],
   "/administracion": ["Administrador"],
   "/bitacora": ["Administrador"],
@@ -125,7 +127,8 @@ export function filtroPlantelPorZona(
     alcance.esAdmin ||
     alcance.esAsesor ||
     alcance.esLaboratorista ||
-    alcance.esJefeLaboratorio
+    alcance.esJefeLaboratorio ||
+    alcance.esGerenteComercial // consulta comercial: ve todas las zonas
   )
     return {};
   return { zona: { in: alcance.zonasPermitidas } };
@@ -142,7 +145,8 @@ export function filtroPedidoPorZona(
     alcance.esAdmin ||
     alcance.esAsesor ||
     alcance.esLaboratorista ||
-    alcance.esJefeLaboratorio
+    alcance.esJefeLaboratorio ||
+    alcance.esGerenteComercial // consulta comercial: ve todas las zonas
   )
     return {};
   return { plantel: { zona: { in: alcance.zonasPermitidas } } };
@@ -184,7 +188,7 @@ export function puedeOperarEnFecha(
   // Despachador, Dosificador, Laboratorista: solo el día de hoy (despacho).
   if ((alcance.esDespachador || alcance.esDosificador || alcance.esLaboratorista) && f === h)
     return true;
-  // Asesor y JefeLaboratorio: sin permiso de escritura sobre pedidos.
+  // Asesor, JefeLaboratorio y GerenteComercial: sin escritura sobre pedidos (consulta).
   return false;
 }
 

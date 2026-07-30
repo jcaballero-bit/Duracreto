@@ -117,8 +117,8 @@ export default async function DespachoPage({
     scopePedido = filtroPedidoPorLaboratorista(userId);
     soloLectura = true;
     estadosEditables = [...ESTADOS_LABORATORISTA]; // Llegada/Descargando/Regresando
-  } else if (alcance.esJefeLaboratorio) {
-    scopePedido = {}; // ve todo, solo lectura
+  } else if (alcance.esJefeLaboratorio || alcance.esGerenteComercial) {
+    scopePedido = {}; // ve TODAS las zonas, solo lectura
     soloLectura = true;
     estadosEditables = [];
   } else if (alcance.esAsesor) {
