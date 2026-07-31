@@ -7,7 +7,8 @@
 //  · Administrador: todo, ambas zonas.
 //  · Programador: programación (hoy en adelante), solo su zona.
 //  · Despachador: solo hoy, solo su zona; crea de último momento.
-//  · Asesor: solo sus propios clientes, sin límite de zona.
+//  · Asesor: solo sus propios clientes, sin límite de zona. Además puede CONSULTAR
+//    (solo lectura) el Programa DPCR-08 de ambas zonas.
 //  · GerenteComercial: dashboard comercial + CONSULTA (solo lectura, todas las
 //    zonas) de Panel principal, Programación, Despacho en vivo y Programa DPCR-08.
 //    Nunca edita ni opera pedidos.
@@ -97,7 +98,7 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   // pestaña Operadores (motoristas) — la página filtra las pestañas por rol.
   "/flota": ["Administrador", "Programador", "Despachador", "Dosificador", "JefePlanta"],
   "/reportes": ["Administrador", "JefePlanta"],
-  "/programa": ["Administrador", "Programador", "Despachador", "Dosificador", "Laboratorista", "GerenteComercial"],
+  "/programa": ["Administrador", "Programador", "Despachador", "Dosificador", "Laboratorista", "GerenteComercial", "Asesor"],
   "/laboratorio": ["Administrador", "JefeLaboratorio", "Laboratorista"],
   "/administracion": ["Administrador"],
   "/bitacora": ["Administrador"],
