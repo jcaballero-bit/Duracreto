@@ -1,3 +1,4 @@
+import { Factory } from "lucide-react";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { requerirAcceso } from "@/lib/auth/guard";
@@ -108,7 +109,7 @@ export default async function ComercialPage({
       lat: p.latitud as number,
       lng: p.longitud as number,
       color: PLANTEL_COLOR,
-      forma: "cuadro" as const,
+      forma: "planta" as const,
       popupHtml:
         `<div style="min-width:150px;line-height:1.35">` +
         `<div style="font-weight:600;color:#0f172a">Plantel: ${esc(p.nombre)}</div>` +
@@ -268,9 +269,11 @@ export default async function ComercialPage({
                 {puntosPlanteles.length > 0 && (
                   <div className={`flex items-center gap-2 text-slate-700 ${leyenda.length > 0 ? "mt-2 border-t border-slate-100 pt-2" : ""}`}>
                     <span
-                      className="inline-block h-3 w-3 shrink-0 rounded-[3px] ring-1 ring-black/10"
+                      className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ring-1 ring-black/10"
                       style={{ backgroundColor: "#1e293b" }}
-                    />
+                    >
+                      <Factory size={10} className="text-white" />
+                    </span>
                     <span className="truncate">Planteles</span>
                   </div>
                 )}

@@ -43,9 +43,16 @@ export interface PuntoMapa {
   lng: number;
   color: string;
   popupHtml: string;
-  // "circulo" (por defecto) = cliente; "cuadro" = plantel (marcador cuadrado).
-  forma?: "circulo" | "cuadro";
+  // "circulo" (por defecto) = cliente; "planta" = plantel (icono de planta industrial).
+  forma?: "circulo" | "planta";
 }
+
+// Icono de planta industrial (SVG factory de lucide), blanco, para el marcador de plantel.
+const SVG_PLANTA =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" ' +
+  'fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/>' +
+  '<path d="M17 18h1"/><path d="M12 18h1"/><path d="M7 18h1"/></svg>';
 
 /**
  * Mapa Leaflet + OpenStreetMap reutilizable. Dibuja un marcador circular por
@@ -87,15 +94,17 @@ export function MapaLeaflet({
         const coords: [number, number][] = [];
         for (const p of puntos) {
           let marcador;
-          if (p.forma === "cuadro") {
-            // Plantel: marcador cuadrado (se distingue de los círculos de cliente).
+          if (p.forma === "planta") {
+            // Plantel: badge redondo con icono de planta industrial (se distingue
+            // de los círculos de cliente).
             const icon = L.divIcon({
               className: "",
               html:
-                `<div style="width:16px;height:16px;background:${p.color};` +
-                `border:2px solid #fff;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>`,
-              iconSize: [16, 16],
-              iconAnchor: [8, 8],
+                `<div style="display:flex;align-items:center;justify-content:center;` +
+                `width:28px;height:28px;border-radius:9999px;background:${p.color};` +
+                `border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)">${SVG_PLANTA}</div>`,
+              iconSize: [28, 28],
+              iconAnchor: [14, 14],
             });
             marcador = L.marker([p.lat, p.lng], { icon }).addTo(map);
           } else {
