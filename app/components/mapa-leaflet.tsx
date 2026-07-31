@@ -43,6 +43,8 @@ export interface PuntoMapa {
   lng: number;
   color: string;
   popupHtml: string;
+  // "circulo" (por defecto) = cliente; "cuadro" = plantel (marcador cuadrado).
+  forma?: "circulo" | "cuadro";
 }
 
 /**
@@ -84,13 +86,27 @@ export function MapaLeaflet({
 
         const coords: [number, number][] = [];
         for (const p of puntos) {
-          const marcador = L.circleMarker([p.lat, p.lng], {
-            radius: 9,
-            color: "#ffffff",
-            weight: 2,
-            fillColor: p.color,
-            fillOpacity: 0.9,
-          }).addTo(map);
+          let marcador;
+          if (p.forma === "cuadro") {
+            // Plantel: marcador cuadrado (se distingue de los círculos de cliente).
+            const icon = L.divIcon({
+              className: "",
+              html:
+                `<div style="width:16px;height:16px;background:${p.color};` +
+                `border:2px solid #fff;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>`,
+              iconSize: [16, 16],
+              iconAnchor: [8, 8],
+            });
+            marcador = L.marker([p.lat, p.lng], { icon }).addTo(map);
+          } else {
+            marcador = L.circleMarker([p.lat, p.lng], {
+              radius: 9,
+              color: "#ffffff",
+              weight: 2,
+              fillColor: p.color,
+              fillOpacity: 0.9,
+            }).addTo(map);
+          }
           marcador.bindPopup(p.popupHtml);
           coords.push([p.lat, p.lng]);
         }

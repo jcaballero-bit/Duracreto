@@ -44,6 +44,11 @@ const s = (v?: string) => (v ?? "").trim();
 const sNull = (v?: string) => (s(v) === "" ? null : s(v));
 const int = (v?: string) => Number.parseInt(s(v), 10);
 const idNull = (v?: string) => (s(v) === "" ? null : Number.parseInt(s(v), 10));
+const floatNull = (v?: string) => {
+  if (s(v) === "") return null;
+  const n = Number.parseFloat(s(v));
+  return Number.isFinite(n) ? n : null;
+};
 
 /** Construye el objeto de datos Prisma (whitelist) para cada catálogo. */
 function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
@@ -54,6 +59,8 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         zona: s(d.zona),
         capacidad_dosificacion_m3h: int(d.capacidad_dosificacion_m3h),
         hub_id: idNull(d.hub_id),
+        latitud: floatNull(d.latitud),
+        longitud: floatNull(d.longitud),
       };
     case "plantas":
       return {

@@ -62,7 +62,7 @@ export default async function ComercialPage({
 
   // ── Mapa de cobertura ────────────────────────────────────────────────────
   const mapAsesorId = /^\d+$/.test(sp.mapAsesor ?? "") ? Number(sp.mapAsesor) : null;
-  const [cobertura, asesoresLista] = await Promise.all([
+  const [cobertura, asesoresLista, plantelesUbicados] = await Promise.all([
     clientesAtendidos({
       anio,
       mes,
@@ -70,6 +70,15 @@ export default async function ComercialPage({
       asesorId: mapAsesorId,
     }),
     prisma.asesores.findMany({ orderBy: { nombre: "asc" }, select: { id: true, nombre: true } }),
+    prisma.planteles.findMany({
+      where: {
+        latitud: { not: null },
+        longitud: { not: null },
+        ...(zona !== "todas" ? { zona } : {}),
+      },
+      select: { id: true, nombre: true, zona: true, latitud: true, longitud: true },
+      orderBy: { nombre: "asc" },
+    }),
   ]);
 
   // Puntos del mapa (color determinista por asesor + popup con el detalle).
@@ -89,6 +98,24 @@ export default async function ComercialPage({
       `</div>`;
     return { id: c.clienteId, lat: c.lat, lng: c.lng, color, popupHtml };
   });
+
+  // Planteles con ubicación → marcador cuadrado (color navy fijo).
+  const PLANTEL_COLOR = "#1e293b";
+  const puntosPlanteles: PuntoMapa[] = plantelesUbicados
+    .filter((p) => p.latitud != null && p.longitud != null)
+    .map((p) => ({
+      id: `plantel-${p.id}`,
+      lat: p.latitud as number,
+      lng: p.longitud as number,
+      color: PLANTEL_COLOR,
+      forma: "cuadro" as const,
+      popupHtml:
+        `<div style="min-width:150px;line-height:1.35">` +
+        `<div style="font-weight:600;color:#0f172a">Plantel: ${esc(p.nombre)}</div>` +
+        `<div style="font-size:12px">Zona: <b>${esc(p.zona)}</b></div>` +
+        `</div>`,
+    }));
+  const puntosMapa = [...puntos, ...puntosPlanteles];
 
   // Leyenda: asesores presentes en el mapa filtrado (con su color fijo).
   const leyenda = [...new Map(
@@ -200,34 +227,53 @@ export default async function ComercialPage({
               {cobertura.sinUbicacion} sin ubicación registrada
             </span>
           )}
+          {puntosPlanteles.length > 0 && (
+            <span className="text-ink">
+              <strong>{puntosPlanteles.length}</strong> planteles ubicados
+            </span>
+          )}
           <span className="text-xs text-muted">
             (con concreto entregado en {periodo}
             {zona !== "todas" ? ` · ${zona}` : ""})
           </span>
         </div>
 
-        {puntos.length === 0 ? (
+        {puntosMapa.length === 0 ? (
           <p className="rounded-lg border border-border bg-content/40 py-10 text-center text-sm text-muted">
-            No hay clientes atendidos con ubicación registrada para estos filtros.
+            No hay ubicaciones que mostrar para estos filtros (ni clientes atendidos ni
+            planteles con ubicación registrada).
           </p>
         ) : (
           <div className="relative">
-            <MapaLeaflet puntos={puntos} />
-            {/* Leyenda: asesor → color */}
-            {leyenda.length > 0 && (
+            <MapaLeaflet puntos={puntosMapa} />
+            {/* Leyenda: asesor → color + planteles */}
+            {(leyenda.length > 0 || puntosPlanteles.length > 0) && (
               <div className="pointer-events-none absolute right-3 top-3 z-[400] max-w-[220px] rounded-lg bg-white/95 p-2.5 text-xs shadow ring-1 ring-black/5">
-                <div className="mb-1 font-semibold text-slate-700">Asesores</div>
-                <ul className="space-y-1">
-                  {leyenda.map((l) => (
-                    <li key={l.nombre} className="flex items-center gap-2 text-slate-700">
-                      <span
-                        className="inline-block h-3 w-3 shrink-0 rounded-full ring-1 ring-black/10"
-                        style={{ backgroundColor: l.color }}
-                      />
-                      <span className="truncate">{l.nombre}</span>
-                    </li>
-                  ))}
-                </ul>
+                {leyenda.length > 0 && (
+                  <>
+                    <div className="mb-1 font-semibold text-slate-700">Asesores</div>
+                    <ul className="space-y-1">
+                      {leyenda.map((l) => (
+                        <li key={l.nombre} className="flex items-center gap-2 text-slate-700">
+                          <span
+                            className="inline-block h-3 w-3 shrink-0 rounded-full ring-1 ring-black/10"
+                            style={{ backgroundColor: l.color }}
+                          />
+                          <span className="truncate">{l.nombre}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {puntosPlanteles.length > 0 && (
+                  <div className={`flex items-center gap-2 text-slate-700 ${leyenda.length > 0 ? "mt-2 border-t border-slate-100 pt-2" : ""}`}>
+                    <span
+                      className="inline-block h-3 w-3 shrink-0 rounded-[3px] ring-1 ring-black/10"
+                      style={{ backgroundColor: "#1e293b" }}
+                    />
+                    <span className="truncate">Planteles</span>
+                  </div>
+                )}
               </div>
             )}
           </div>

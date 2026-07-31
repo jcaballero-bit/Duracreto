@@ -38,6 +38,9 @@ model planteles {
   nombre                     String @unique
   zona                       String // "Norte" | "Centro Sur"
   capacidad_dosificacion_m3h Int // capacidad total informativa del plantel
+  // Ubicación geográfica del plantel (para el mapa de cobertura comercial).
+  latitud  Float?
+  longitud Float?
 
   // Hub de préstamo de flota de la zona. Los planteles sin flota propia
   // (Choloma, Villanueva, La Ceiba, Hazama) apuntan a su hub (Santa Marta /

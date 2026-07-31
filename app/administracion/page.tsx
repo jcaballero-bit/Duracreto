@@ -130,6 +130,7 @@ async function renderTab(tab: string, ctx: Ctx) {
   switch (tab) {
     case "planteles": {
       const detalle = await prisma.planteles.findMany({ orderBy: { nombre: "asc" } });
+      const coord = (v: number | null) => (v == null ? "—" : v.toFixed(5));
       const filasFull: FilaCatalogo[] = detalle.map((p) => ({
         id: p.id,
         celdas: {
@@ -137,29 +138,35 @@ async function renderTab(tab: string, ctx: Ctx) {
           zona: p.zona,
           cap: `${p.capacidad_dosificacion_m3h} m³/h`,
           hub: nombrePlantel(p.hub_id),
+          ubicacion: p.latitud != null && p.longitud != null ? `${coord(p.latitud)}, ${coord(p.longitud)}` : "—",
         },
         valores: {
           nombre: p.nombre,
           zona: p.zona,
           capacidad_dosificacion_m3h: String(p.capacidad_dosificacion_m3h),
           hub_id: p.hub_id ? String(p.hub_id) : "",
+          latitud: p.latitud != null ? String(p.latitud) : "",
+          longitud: p.longitud != null ? String(p.longitud) : "",
         },
       }));
       return bloque(
         "planteles",
         "plantel",
-        "Los 7 planteles y su zona. El hub define de dónde se presta flota.",
+        "Los 7 planteles y su zona. El hub define de dónde se presta flota. La ubicación (latitud/longitud) se muestra en el mapa de cobertura comercial.",
         [
           { key: "nombre", label: "Nombre" },
           { key: "zona", label: "Zona" },
           { key: "cap", label: "Cap. m³/h" },
           { key: "hub", label: "Hub" },
+          { key: "ubicacion", label: "Ubicación" },
         ],
         [
           { name: "nombre", label: "Nombre", tipo: "text", requerido: true },
           { name: "zona", label: "Zona", tipo: "select", opciones: zonaOpc, requerido: true },
           { name: "capacidad_dosificacion_m3h", label: "Capacidad m³/h", tipo: "number", requerido: true },
           { name: "hub_id", label: "Hub (plantel)", tipo: "select", opciones: ctx.opcPlanteles },
+          { name: "latitud", label: "Latitud", tipo: "number", placeholder: "15.50410" },
+          { name: "longitud", label: "Longitud", tipo: "number", placeholder: "-88.02500" },
         ],
         filasFull,
       );
