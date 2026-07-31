@@ -17,7 +17,6 @@ export const dynamic = "force-dynamic";
 const TABS: { key: string; label: string }[] = [
   { key: "planteles", label: "Planteles" },
   { key: "plantas", label: "Plantas" },
-  { key: "operadores", label: "Operadores" },
   { key: "asesores", label: "Asesores" },
   { key: "disenos", label: "Diseños de mezcla" },
   { key: "usuarios", label: "Usuarios y roles" },
@@ -35,23 +34,19 @@ export default async function AdministracionPage({
   const tab = (await searchParams).tab ?? "planteles";
 
   // Listas de opciones (tablas pequeñas).
-  const [planteles, operadores, asesores, usuarios] = await Promise.all([
+  const [planteles, asesores, usuarios] = await Promise.all([
     prisma.planteles.findMany({ orderBy: { nombre: "asc" } }),
-    prisma.operadores.findMany({ orderBy: { nombre: "asc" } }),
     prisma.asesores.findMany({ orderBy: { nombre: "asc" } }),
     prisma.user.findMany({ orderBy: { creado_en: "asc" }, include: { roles: true } }),
   ]);
   const opcPlanteles = opc(planteles.map((p) => ({ value: String(p.id), label: `${p.nombre} (${p.zona})` })));
-  const opcOperadores = opc(operadores.map((o) => ({ value: String(o.id), label: o.nombre })));
   const opcUsuarios = opc(usuarios.map((u) => ({ value: u.id, label: `${u.name ?? "?"} (${u.email ?? ""})` })));
 
   const contenido = await renderTab(tab, {
     planteles,
-    operadores,
     asesores,
     usuarios,
     opcPlanteles,
-    opcOperadores,
     opcUsuarios,
   });
 
@@ -90,7 +85,6 @@ export default async function AdministracionPage({
 
 interface Ctx {
   planteles: { id: number; nombre: string; zona: string }[];
-  operadores: { id: number; nombre: string; estado: string }[];
   asesores: { id: number; nombre: string }[];
   usuarios: {
     id: string;
@@ -102,7 +96,6 @@ interface Ctx {
     roles: { rol: string }[];
   }[];
   opcPlanteles: { value: string; label: string }[];
-  opcOperadores: { value: string; label: string }[];
   opcUsuarios: { value: string; label: string }[];
 }
 
@@ -207,36 +200,6 @@ async function renderTab(tab: string, ctx: Ctx) {
             label: "Tiempo de alistamiento (min)",
             tipo: "number",
             placeholder: "5",
-          },
-        ],
-        filas,
-      );
-    }
-    case "operadores": {
-      const filas: FilaCatalogo[] = ctx.operadores.map((o) => ({
-        id: o.id,
-        celdas: { nombre: o.nombre, estado: o.estado },
-        valores: { nombre: o.nombre, estado: o.estado },
-      }));
-      return bloque(
-        "operadores",
-        "operador",
-        "Motoristas. El estado indica su disponibilidad.",
-        [
-          { key: "nombre", label: "Nombre" },
-          { key: "estado", label: "Estado" },
-        ],
-        [
-          { name: "nombre", label: "Nombre", tipo: "text", requerido: true },
-          {
-            name: "estado",
-            label: "Estado",
-            tipo: "select",
-            opciones: [
-              { value: "Disponible", label: "Disponible" },
-              { value: "No disponible", label: "No disponible" },
-            ],
-            requerido: true,
           },
         ],
         filas,

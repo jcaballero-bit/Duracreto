@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { exigirAdmin } from "@/lib/auth/guard";
+import { alcanceActual } from "@/lib/auth/guard";
 import { normalizarEncabezado } from "./columnas";
 import { resolverFila, type Fila } from "./import-resolver";
 
@@ -19,6 +19,25 @@ export type Catalogo =
 
 type Datos = Record<string, string>;
 type Res = { ok: boolean; mensaje?: string };
+
+/**
+ * Autorización por catálogo. Administrador puede TODO. El catálogo `operadores`
+ * (motoristas) también lo gestionan roles operativos (Programador, Despachador,
+ * Dosificador, Jefe de Planta) — se administra desde /flota. El resto de catálogos
+ * sigue siendo solo del Administrador.
+ */
+async function autorizarCatalogo(catalogo: Catalogo): Promise<Res> {
+  const a = await alcanceActual();
+  if (!a) return { ok: false, mensaje: "Sesión no válida." };
+  if (a.esAdmin) return { ok: true };
+  if (
+    catalogo === "operadores" &&
+    (a.esProgramador || a.esDespachador || a.esDosificador || a.esJefePlanta)
+  ) {
+    return { ok: true };
+  }
+  return { ok: false, mensaje: "No tienes permiso para modificar este catálogo." };
+}
 
 // Helpers de parseo.
 const s = (v?: string) => (v ?? "").trim();
@@ -123,8 +142,14 @@ function traducirError(e: unknown): string {
   return e instanceof Error ? e.message : "Error inesperado.";
 }
 
+/** Refresca las dos vistas donde viven los catálogos (Admin y Flota). */
+function revalidarCatalogos() {
+  revalidatePath("/administracion");
+  revalidatePath("/flota");
+}
+
 export async function crearRegistro(catalogo: Catalogo, datos: Datos): Promise<Res> {
-  const guard = await exigirAdmin();
+  const guard = await autorizarCatalogo(catalogo);
   if (!guard.ok) return guard;
   try {
     const data = construir(catalogo, datos);
@@ -133,7 +158,7 @@ export async function crearRegistro(catalogo: Catalogo, datos: Datos): Promise<R
     }
     // @ts-expect-error delegado dinámico con data validada por whitelist
     await modelo(catalogo).create({ data });
-    revalidatePath("/administracion");
+    revalidarCatalogos();
     return { ok: true };
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };
@@ -145,13 +170,13 @@ export async function actualizarRegistro(
   id: number,
   datos: Datos,
 ): Promise<Res> {
-  const guard = await exigirAdmin();
+  const guard = await autorizarCatalogo(catalogo);
   if (!guard.ok) return guard;
   try {
     const data = construir(catalogo, datos);
     // @ts-expect-error delegado dinámico
     await modelo(catalogo).update({ where: { id }, data });
-    revalidatePath("/administracion");
+    revalidarCatalogos();
     return { ok: true };
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };
@@ -159,12 +184,12 @@ export async function actualizarRegistro(
 }
 
 export async function eliminarRegistro(catalogo: Catalogo, id: number): Promise<Res> {
-  const guard = await exigirAdmin();
+  const guard = await autorizarCatalogo(catalogo);
   if (!guard.ok) return guard;
   try {
     // @ts-expect-error delegado dinámico
     await modelo(catalogo).delete({ where: { id } });
-    revalidatePath("/administracion");
+    revalidarCatalogos();
     return { ok: true };
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };
@@ -185,7 +210,7 @@ export async function importarCatalogo(
   catalogo: Catalogo,
   filas: Fila[],
 ): Promise<ResultadoImport> {
-  const guard = await exigirAdmin();
+  const guard = await autorizarCatalogo(catalogo);
   if (!guard.ok) return { ok: false, mensaje: guard.mensaje, creados: 0, errores: [] };
 
   // Mapas nombre→id para resolver relaciones.
@@ -226,6 +251,6 @@ export async function importarCatalogo(
     }
   }
 
-  revalidatePath("/administracion");
+  revalidarCatalogos();
   return { ok: true, creados, errores };
 }

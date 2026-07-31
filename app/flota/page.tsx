@@ -4,8 +4,9 @@ import { ZONAS } from "@/lib/auth/roles";
 import { Card, PageHeader } from "../components/ui";
 import { Timeline, type FilaMixer } from "../timeline";
 import { FiltroFecha } from "./filtro-fecha";
-import { FlotaTabs } from "./flota-tabs";
+import { FlotaTabs, type TabFlota } from "./flota-tabs";
 import { EquipoCatalogos } from "./equipo-catalogos";
+import { OperadoresCatalogo } from "./operadores-catalogo";
 import { CalendarioMantenimiento, type TipoConUnidades } from "./calendario-mantenimiento";
 import { MantenimientoLista, type ItemMantenimiento } from "./mantenimiento-lista";
 import { HistorialFlota, type UnidadHist, type DiaCelda } from "./historial-flota";
@@ -77,20 +78,37 @@ export default async function FlotaPage({
 }: {
   searchParams: Promise<{ tab?: string; fecha?: string; equipo?: string; histTipo?: string; mes?: string }>;
 }) {
-  await requerirAcceso("/flota");
-  await autoTransicionar();
+  const alcance = await requerirAcceso("/flota");
   const sp = await searchParams;
-  const tab = ["panel", "equipo", "mantenimiento", "historial"].includes(sp.tab ?? "")
-    ? sp.tab!
-    : "panel";
+
+  // Admin ve toda la flota; los roles operativos (Programador/Despachador/
+  // Dosificador/Jefe de Planta) SOLO gestionan Operadores (motoristas).
+  const tabs: TabFlota[] = alcance.esAdmin
+    ? [
+        { key: "panel", label: "Panel" },
+        { key: "equipo", label: "Equipo" },
+        { key: "mantenimiento", label: "Mantenimiento" },
+        { key: "historial", label: "Historial" },
+        { key: "operadores", label: "Operadores" },
+      ]
+    : [{ key: "operadores", label: "Operadores" }];
+  const claves = tabs.map((t) => t.key);
+  const tab = claves.includes(sp.tab ?? "") ? sp.tab! : claves[0];
+
+  // Solo el Admin dispara la auto-transición de estados de mantenimiento.
+  if (alcance.esAdmin) await autoTransicionar();
 
   return (
     <>
       <PageHeader
         titulo="Flota"
-        descripcion="Equipo, uso diario y mantenimiento de la flota (las dos restricciones de zona por separado)."
+        descripcion={
+          alcance.esAdmin
+            ? "Equipo, uso diario y mantenimiento de la flota (las dos restricciones de zona por separado)."
+            : "Gestión de motoristas (operadores) de la flota."
+        }
       />
-      <FlotaTabs activo={tab} />
+      <FlotaTabs tabs={tabs} activo={tab} />
 
       {tab === "panel" && <PanelTab fecha={sp.fecha} />}
       {tab === "equipo" && (
@@ -100,6 +118,11 @@ export default async function FlotaPage({
       )}
       {tab === "mantenimiento" && <MantenimientoTab />}
       {tab === "historial" && <HistorialTab histTipo={sp.histTipo} mes={sp.mes} />}
+      {tab === "operadores" && (
+        <Card className="p-5">
+          <OperadoresCatalogo />
+        </Card>
+      )}
     </>
   );
 }

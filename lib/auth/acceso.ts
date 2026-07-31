@@ -93,7 +93,9 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   "/clientes/semana": ["Administrador", "Asesor", "Programador"],
   "/clientes": ["Administrador", "Asesor"],
   "/comercial": ["Administrador", "GerenteComercial"],
-  "/flota": ["Administrador"],
+  // Admin: toda la flota. Programador/Despachador/Dosificador/JefePlanta: SOLO la
+  // pestaña Operadores (motoristas) — la página filtra las pestañas por rol.
+  "/flota": ["Administrador", "Programador", "Despachador", "Dosificador", "JefePlanta"],
   "/reportes": ["Administrador", "JefePlanta"],
   "/programa": ["Administrador", "Programador", "Despachador", "Dosificador", "Laboratorista", "GerenteComercial"],
   "/laboratorio": ["Administrador", "JefeLaboratorio", "Laboratorista"],

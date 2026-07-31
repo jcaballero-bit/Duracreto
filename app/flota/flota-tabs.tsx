@@ -1,17 +1,17 @@
 import Link from "next/link";
 
-const TABS: { key: string; label: string }[] = [
-  { key: "panel", label: "Panel" },
-  { key: "equipo", label: "Equipo" },
-  { key: "mantenimiento", label: "Mantenimiento" },
-  { key: "historial", label: "Historial" },
-];
+export interface TabFlota {
+  key: string;
+  label: string;
+}
 
-/** Navegación de secciones de /flota (searchParam `tab`). */
-export function FlotaTabs({ activo }: { activo: string }) {
+/** Navegación de secciones de /flota (searchParam `tab`). Las pestañas visibles
+ *  dependen del rol (se calculan en la página). */
+export function FlotaTabs({ tabs, activo }: { tabs: TabFlota[]; activo: string }) {
+  if (tabs.length <= 1) return null; // un solo acceso: no hace falta la barra
   return (
     <div className="mb-4 flex flex-wrap gap-1 border-b border-border">
-      {TABS.map((t) => {
+      {tabs.map((t) => {
         const on = t.key === activo;
         return (
           <Link
