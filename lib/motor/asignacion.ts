@@ -47,6 +47,7 @@ export interface EntradaPedido {
   planta_id: number;
   bomba_id?: number | null;
   tipo_descarga: string; // "Canal directo" | "Bomba estacionaria" | "Bomba pluma"
+  revenimiento?: string | null; // rango de asentamiento (editable), null = usa el del diseño
   sacos_hielo_por_m3?: number; // 0 = sin control; 1-10
   asesor_id?: number | null; // asesor que gestiona el pedido (precargado del cliente)
   hora_bloqueada?: boolean; // true = hora de llegada fija (no reprogramar)
@@ -633,6 +634,7 @@ export async function programarPedido(
       planta_id: entrada.planta_id,
       bomba_id: entrada.bomba_id ?? null,
       tipo_descarga: entrada.tipo_descarga,
+      revenimiento: entrada.revenimiento ?? null,
       sacos_hielo_por_m3: entrada.sacos_hielo_por_m3 ?? 0,
       asesor_id: entrada.asesor_id ?? null,
       orden_dia: ordenDia,
@@ -676,6 +678,7 @@ export async function modificarPedido(
       planta_id: entrada.planta_id,
       bomba_id: entrada.bomba_id ?? null,
       tipo_descarga: entrada.tipo_descarga,
+      revenimiento: entrada.revenimiento ?? null,
       sacos_hielo_por_m3: entrada.sacos_hielo_por_m3 ?? 0,
       asesor_id: entrada.asesor_id ?? null,
       hora_bloqueada: entrada.hora_bloqueada ?? false,

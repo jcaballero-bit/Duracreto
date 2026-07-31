@@ -15,6 +15,8 @@ export interface PendienteVista {
   asesorNombre: string;
   volumen: number | null;
   tipoConcreto: string;
+  revenimiento: string;
+  tipoServicio: string;
   tipoDescarga: string; // "Bomba" | "Directo" | ""
   sacosHielo: number | null;
   elemento: string;
@@ -61,6 +63,10 @@ export function PendientesDelDia({
     frecuencia_entre_camiones_min: p.frecuencia ?? undefined,
     hora_local: `${fecha}T07:00`,
     solicitud_id: p.id,
+    // Datos de la proyección del asesor, para mostrarlos (solo lectura) al convertir.
+    tipoConcretoAsesor: p.tipoConcreto || undefined,
+    revenimientoAsesor: p.revenimiento || undefined,
+    tipoServicioAsesor: p.tipoServicio || undefined,
   });
 
   return (

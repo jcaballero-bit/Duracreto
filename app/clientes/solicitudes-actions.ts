@@ -9,6 +9,8 @@ type Res = { ok: boolean; mensaje?: string };
 
 export interface DatosCelda {
   tipo_concreto_estimado: string;
+  revenimiento: string; // '3" a 4"' … '9" a 10"'
+  tipo_servicio: string; // "Normal" | "Servicio de Construcción"
   tipo_descarga_estimado: string; // "Bomba" | "Directo" | ""
   volumen_estimado_m3: string;
   sacos_hielo_por_m3: string; // control de temperatura estimado (0-10)
@@ -116,6 +118,8 @@ export async function guardarSolicitudAction(
   const data = {
     volumen_estimado_m3: num(datos.volumen_estimado_m3),
     tipo_concreto_estimado: txt(datos.tipo_concreto_estimado),
+    revenimiento: txt(datos.revenimiento),
+    tipo_servicio: txt(datos.tipo_servicio),
     tipo_descarga_estimado: txt(datos.tipo_descarga_estimado),
     sacos_hielo_por_m3: int(datos.sacos_hielo_por_m3),
     elemento: txt(datos.elemento),

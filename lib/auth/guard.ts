@@ -17,6 +17,20 @@ export async function exigirAdmin(): Promise<
   return { ok: true, userId: sesion.user.id };
 }
 
+/** Gestión COMPLETA de la flota (ver todo + editar todo): Administrador, Jefe de
+ *  Planta, Despachador y Programador. El Dosificador NO (solo Operadores). */
+export async function exigirGestionFlota(): Promise<
+  { ok: true; userId: string } | { ok: false; mensaje: string }
+> {
+  const sesion = await auth();
+  if (!sesion?.user) return { ok: false, mensaje: "Sesión no válida." };
+  const a = calcularAlcance(sesion.user.roles ?? [], null);
+  if (a.esAdmin || a.esJefePlanta || a.esDespachador || a.esProgramador) {
+    return { ok: true, userId: sesion.user.id };
+  }
+  return { ok: false, mensaje: "No tienes permiso para gestionar la flota." };
+}
+
 /** Alcance del usuario logueado, o null si no hay sesión. */
 export async function alcanceActual(): Promise<Alcance | null> {
   const sesion = await auth();

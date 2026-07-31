@@ -301,6 +301,7 @@ model pedidos {
   planta_id         Int
   bomba_id          Int?
   tipo_descarga     String // "Canal directo" | "Bomba estacionaria" | "Bomba pluma"
+  revenimiento      String? // rango de asentamiento ('3" a 4"'…'9" a 10"'), editable por Programador/Jefe de Planta
   sacos_hielo_por_m3 Int    @default(0) // control de temperatura (0 = sin control; 1-10)
   asesor_id         Int? // asesor que gestiona el pedido (precargado del cliente, editable)
   // Orden de atención del pedido DENTRO de su plantel+fecha (1 = primero). Es la
@@ -367,6 +368,8 @@ model solicitudes_anticipadas {
   fecha_requerida        DateTime // día proyectado (se guarda a medianoche local)
   volumen_estimado_m3    Float?
   tipo_concreto_estimado String? // texto libre aproximado (el asesor no sabe el código exacto)
+  revenimiento           String? // revenimiento estimado ('3" a 4"'…'9" a 10"')
+  tipo_servicio          String? // "Normal" | "Servicio de Construcción"
   tipo_descarga_estimado String? // "Bomba" | "Directo" (sin bomba/mixer específico)
   sacos_hielo_por_m3     Int? // control de temperatura estimado (0-10)
   elemento               String? // elemento estructural (pavimento, losa, columna…)

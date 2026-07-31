@@ -38,6 +38,7 @@ export interface ViajeDespacho {
   proyecto: string;
   disenoCodigo: string;
   disenoEspec: string;
+  revenimiento: string;
   elemento: string;
   tipoDescarga: string;
   hieloTxt: string;
@@ -246,6 +247,7 @@ function FilaViaje({
         <Campo label="Tipo de concreto">
           <div className="text-sm font-semibold text-ink">{v.disenoCodigo}</div>
           <div className="text-xs text-muted">{v.disenoEspec}</div>
+          {v.revenimiento && <div className="text-xs text-muted">Rev: {v.revenimiento}</div>}
         </Campo>
 
         <Campo label="Elemento">

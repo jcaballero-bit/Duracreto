@@ -209,6 +209,7 @@ function construirEntrada(
       planta_id: Number(formData.get("planta_id")),
       bomba_id: Number(formData.get("bomba_id")) || null,
       tipo_descarga: String(formData.get("tipo_descarga")),
+      revenimiento: String(formData.get("revenimiento") || "") || null,
       sacos_hielo_por_m3: hielo,
       asesor_id: Number(formData.get("asesor_id")) || null,
       hora_bloqueada: !!formData.get("hora_bloqueada"),

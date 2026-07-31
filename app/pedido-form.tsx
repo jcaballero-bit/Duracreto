@@ -9,6 +9,7 @@ import {
 } from "./actions";
 import { Badge, PrimaryButton } from "./components/ui";
 import { BotonesMapa } from "./components/maps-buttons";
+import { REVENIMIENTOS } from "@/lib/revenimiento";
 
 interface Opcion {
   id: number;
@@ -45,6 +46,7 @@ export interface ValoresPedido {
   volumen_total_m3: number;
   hora_local: string; // "YYYY-MM-DDTHH:mm" para el input datetime-local
   tipo_descarga: string;
+  revenimiento: string | null;
   sacos_hielo_por_m3: number;
   bomba_id: number | null;
   asesor_id: number | null;
@@ -67,6 +69,11 @@ export interface PresetPedido {
   frecuencia_entre_camiones_min?: number | null;
   hora_local?: string; // "YYYY-MM-DDTHH:mm"
   solicitud_id?: number; // vincula el pedido a la solicitud al guardar
+  // Datos que el asesor escribió en el Programa Semana (solo lectura, informativos
+  // para que el Programador elija el diseño correcto). No se guardan en el pedido.
+  tipoConcretoAsesor?: string;
+  revenimientoAsesor?: string;
+  tipoServicioAsesor?: string;
 }
 
 const estadoInicial: EstadoFormulario = { ok: false };
@@ -268,6 +275,27 @@ export function PedidoForm({
           />
         </div>
 
+        {/* Lo que el asesor escribió en el Programa Semana (solo lectura): guía para
+            elegir el diseño y confirmar el revenimiento. Solo aparece al convertir. */}
+        {(preset?.tipoConcretoAsesor || preset?.revenimientoAsesor || preset?.tipoServicioAsesor) && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm sm:col-span-2">
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-800">
+              Lo que indicó el asesor (referencia)
+            </div>
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-amber-900">
+              <span>
+                Concreto: <strong>{preset.tipoConcretoAsesor || "—"}</strong>
+              </span>
+              <span>
+                Revenimiento: <strong>{preset.revenimientoAsesor || "—"}</strong>
+              </span>
+              <span>
+                Tipo de servicio: <strong>{preset.tipoServicioAsesor || "—"}</strong>
+              </span>
+            </div>
+          </div>
+        )}
+
         <Campo label="Diseño de mezcla">
           <select
             name="diseno_id"
@@ -278,6 +306,21 @@ export function PedidoForm({
             {disenos.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.etiqueta}
+              </option>
+            ))}
+          </select>
+        </Campo>
+
+        <Campo label="Revenimiento">
+          <select
+            name="revenimiento"
+            className={inputCls}
+            defaultValue={valores?.revenimiento ?? preset?.revenimientoAsesor ?? ""}
+          >
+            <option value="">Sin especificar</option>
+            {REVENIMIENTOS.map((r) => (
+              <option key={r} value={r}>
+                {r}
               </option>
             ))}
           </select>

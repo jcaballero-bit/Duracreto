@@ -64,6 +64,7 @@ export interface PedidoVista {
   proyecto: string;
   disenoCodigo: string;
   disenoEspec: string;
+  revenimiento: string;
   elemento: string;
   tipoDescarga: string;
   hieloTxt: string;
@@ -279,6 +280,7 @@ function FragmentoPedido({
         <td className="hidden px-3 py-2 sm:table-cell">
           <div className="font-medium text-ink">{p.disenoCodigo}</div>
           <div className="text-xs text-muted">{p.disenoEspec}</div>
+          {p.revenimiento && <div className="text-xs text-muted">Rev: {p.revenimiento}</div>}
         </td>
         <td className="hidden px-3 py-2 text-ink lg:table-cell">{p.elemento}</td>
         <td className="hidden px-3 py-2 md:table-cell">{p.tipoDescarga}</td>
@@ -335,7 +337,9 @@ function FragmentoPedido({
                 fila oculta columnas secundarias). */}
             <div className="mb-2 text-xs text-muted lg:hidden">
               <span className="font-medium text-ink">{p.disenoCodigo}</span>{" "}
-              {p.disenoEspec} · {p.elemento} · {p.tipoDescarga} · {p.hieloTxt}
+              {p.disenoEspec}
+              {p.revenimiento ? ` · Rev: ${p.revenimiento}` : ""} · {p.elemento} ·{" "}
+              {p.tipoDescarga} · {p.hieloTxt}
             </div>
             <div className="mb-2 flex items-center gap-2 text-xs text-muted">
               <span className="font-medium text-ink">Ubicación:</span>

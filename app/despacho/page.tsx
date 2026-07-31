@@ -241,6 +241,7 @@ export default async function DespachoPage({
         proyecto: p.cliente.proyecto ?? "",
         disenoCodigo: p.diseno.codigo,
         disenoEspec: especDiseno(p.diseno),
+        revenimiento: p.revenimiento ?? "",
         elemento: p.elemento ?? "—",
         tipoDescarga: descargaDisplay,
         hieloTxt: textoHielo(p.sacos_hielo_por_m3),

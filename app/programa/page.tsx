@@ -355,7 +355,9 @@ function renderPedido(
     <>
       <div className="font-bold">{resistencia}</div>
       <div>{hielo}</div>
-      {p.diseno.revenimiento && <div>Rev: {p.diseno.revenimiento}</div>}
+      {(p.revenimiento || p.diseno.revenimiento) && (
+        <div>Rev: {p.revenimiento || p.diseno.revenimiento}</div>
+      )}
       <div className="font-semibold">Total: {p.volumen_total_m3.toFixed(2)} m³</div>
       {color && (
         <span

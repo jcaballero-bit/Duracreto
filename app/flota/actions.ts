@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { exigirAdmin } from "@/lib/auth/guard";
+import { exigirGestionFlota } from "@/lib/auth/guard";
 
 const TIPOS = ["Mixer", "Bomba", "Camion", "Pickup"];
 const EVENTOS = ["Mantenimiento_Programado", "Fuera_de_Servicio", "Otro"];
@@ -25,7 +25,7 @@ export async function programarMantenimientoAction(
   tipoEvento: string,
   motivo: string,
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const g = await exigirAdmin();
+  const g = await exigirGestionFlota();
   if (!g.ok) return g;
   if (!TIPOS.includes(unidadTipo)) return { ok: false, mensaje: "Tipo de unidad no válido." };
   if (!EVENTOS.includes(tipoEvento)) return { ok: false, mensaje: "Tipo de evento no válido." };
@@ -69,7 +69,7 @@ export async function cambiarEstadoMantenimientoAction(
   id: number,
   estado: string,
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const g = await exigirAdmin();
+  const g = await exigirGestionFlota();
   if (!g.ok) return g;
   if (!ESTADOS.includes(estado)) return { ok: false, mensaje: "Estado no válido." };
   const sesion = await auth();

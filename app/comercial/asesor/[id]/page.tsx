@@ -194,6 +194,8 @@ async function ProgramacionSemana({
       id: s.id,
       volumen: s.volumen_estimado_m3,
       tipoConcreto: s.tipo_concreto_estimado ?? "",
+      revenimiento: s.revenimiento ?? "",
+      tipoServicio: s.tipo_servicio ?? "",
       tipoDescarga: s.tipo_descarga_estimado ?? "",
       sacosHielo: s.sacos_hielo_por_m3,
       elemento: s.elemento ?? "",

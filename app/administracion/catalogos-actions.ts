@@ -20,10 +20,20 @@ export type Catalogo =
 type Datos = Record<string, string>;
 type Res = { ok: boolean; mensaje?: string };
 
+// Catálogos que viven en /flota (equipo + motoristas).
+const CATALOGOS_FLOTA = new Set<Catalogo>([
+  "mixers",
+  "bombas",
+  "camiones",
+  "pickups",
+  "operadores",
+]);
+
 /**
- * Autorización por catálogo. Administrador puede TODO. El catálogo `operadores`
- * (motoristas) también lo gestionan roles operativos (Programador, Despachador,
- * Dosificador, Jefe de Planta) — se administra desde /flota. El resto de catálogos
+ * Autorización por catálogo. Administrador puede TODO. Los catálogos de /flota
+ * (mixers, bombas, camiones, pickups, operadores) los gestionan también Jefe de
+ * Planta, Despachador y Programador (ven y editan toda la flota). El Dosificador
+ * solo `operadores`. El resto de catálogos (planteles, plantas, asesores, diseños)
  * sigue siendo solo del Administrador.
  */
 async function autorizarCatalogo(catalogo: Catalogo): Promise<Res> {
@@ -31,11 +41,12 @@ async function autorizarCatalogo(catalogo: Catalogo): Promise<Res> {
   if (!a) return { ok: false, mensaje: "Sesión no válida." };
   if (a.esAdmin) return { ok: true };
   if (
-    catalogo === "operadores" &&
-    (a.esProgramador || a.esDespachador || a.esDosificador || a.esJefePlanta)
+    CATALOGOS_FLOTA.has(catalogo) &&
+    (a.esJefePlanta || a.esDespachador || a.esProgramador)
   ) {
     return { ok: true };
   }
+  if (catalogo === "operadores" && a.esDosificador) return { ok: true };
   return { ok: false, mensaje: "No tienes permiso para modificar este catálogo." };
 }
 

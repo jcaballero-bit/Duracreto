@@ -6,6 +6,7 @@ import { useMemo, useState, useTransition } from "react";
 import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import { guardarSolicitudAction } from "../solicitudes-actions";
 import { ClienteFormModal, type Opcion } from "../cliente-form-modal";
+import { REVENIMIENTOS, TIPOS_SERVICIO } from "@/lib/revenimiento";
 
 export interface DiaSemana {
   iso: string;
@@ -20,6 +21,8 @@ export interface Celda {
   id: number;
   volumen: number | null;
   tipoConcreto: string;
+  revenimiento: string;
+  tipoServicio: string;
   tipoDescarga: string;
   sacosHielo: number | null;
   elemento: string;
@@ -526,7 +529,15 @@ function CeldaVista({
           {celda.volumen != null ? `${celda.volumen} m³` : "—"}
         </span>
       </div>
-      {celda.tipoConcreto && <div className="text-muted">{celda.tipoConcreto}</div>}
+      {(celda.tipoConcreto || celda.revenimiento) && (
+        <div className="text-muted">
+          {celda.tipoConcreto}
+          {celda.revenimiento ? `${celda.tipoConcreto ? " · " : ""}Rev ${celda.revenimiento}` : ""}
+        </div>
+      )}
+      {celda.tipoServicio === "Servicio de Construcción" && (
+        <div className="text-[10px] font-medium text-accent">Servicio de Construcción</div>
+      )}
       {celda.elemento && <div className="text-[10px] text-muted">{celda.elemento}</div>}
       <div className="text-[10px] text-muted">
         {celda.tipoDescarga && <span>{celda.tipoDescarga}</span>}
@@ -576,6 +587,8 @@ function CeldaEditor({
 }) {
   const [plantelId, setPlantelId] = useState(celda?.plantelId != null ? String(celda.plantelId) : "");
   const [tipoConcreto, setTipoConcreto] = useState(celda?.tipoConcreto ?? "");
+  const [revenimiento, setRevenimiento] = useState(celda?.revenimiento ?? "");
+  const [tipoServicio, setTipoServicio] = useState(celda?.tipoServicio ?? "");
   const [tipoDescarga, setTipoDescarga] = useState(celda?.tipoDescarga ?? "");
   const [volumen, setVolumen] = useState(celda?.volumen != null ? String(celda.volumen) : "");
   const [hielo, setHielo] = useState(celda?.sacosHielo != null ? String(celda.sacosHielo) : "");
@@ -591,6 +604,8 @@ function CeldaEditor({
         iso,
         {
           tipo_concreto_estimado: tipoConcreto,
+          revenimiento,
+          tipo_servicio: tipoServicio,
           tipo_descarga_estimado: tipoDescarga,
           volumen_estimado_m3: volumen,
           sacos_hielo_por_m3: hielo,
@@ -622,6 +637,32 @@ function CeldaEditor({
         value={tipoConcreto}
         onChange={(e) => setTipoConcreto(e.target.value)}
       />
+      <select
+        className={inputCls}
+        value={revenimiento}
+        onChange={(e) => setRevenimiento(e.target.value)}
+        title="Revenimiento"
+      >
+        <option value="">Revenimiento…</option>
+        {REVENIMIENTOS.map((r) => (
+          <option key={r} value={r}>
+            {r}
+          </option>
+        ))}
+      </select>
+      <select
+        className={inputCls}
+        value={tipoServicio}
+        onChange={(e) => setTipoServicio(e.target.value)}
+        title="Tipo de servicio"
+      >
+        <option value="">Tipo de servicio…</option>
+        {TIPOS_SERVICIO.map((t) => (
+          <option key={t} value={t}>
+            {t}
+          </option>
+        ))}
+      </select>
       <input
         className={inputCls}
         placeholder="Elemento (pavimento, losa…)"

@@ -81,9 +81,11 @@ export default async function FlotaPage({
   const alcance = await requerirAcceso("/flota");
   const sp = await searchParams;
 
-  // Admin ve toda la flota; los roles operativos (Programador/Despachador/
-  // Dosificador/Jefe de Planta) SOLO gestionan Operadores (motoristas).
-  const tabs: TabFlota[] = alcance.esAdmin
+  // Admin, Jefe de Planta, Despachador y Programador ven y editan TODA la flota.
+  // El Dosificador solo gestiona Operadores (motoristas).
+  const flotaCompleta =
+    alcance.esAdmin || alcance.esJefePlanta || alcance.esDespachador || alcance.esProgramador;
+  const tabs: TabFlota[] = flotaCompleta
     ? [
         { key: "panel", label: "Panel" },
         { key: "equipo", label: "Equipo" },
@@ -95,15 +97,15 @@ export default async function FlotaPage({
   const claves = tabs.map((t) => t.key);
   const tab = claves.includes(sp.tab ?? "") ? sp.tab! : claves[0];
 
-  // Solo el Admin dispara la auto-transición de estados de mantenimiento.
-  if (alcance.esAdmin) await autoTransicionar();
+  // La auto-transición de estados de mantenimiento la dispara quien gestiona flota.
+  if (flotaCompleta) await autoTransicionar();
 
   return (
     <>
       <PageHeader
         titulo="Flota"
         descripcion={
-          alcance.esAdmin
+          flotaCompleta
             ? "Equipo, uso diario y mantenimiento de la flota (las dos restricciones de zona por separado)."
             : "Gestión de motoristas (operadores) de la flota."
         }
