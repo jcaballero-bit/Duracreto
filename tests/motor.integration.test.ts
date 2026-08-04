@@ -422,6 +422,52 @@ describe("traslape de mixer — nunca doble reserva", () => {
     expect(objetivo.mixer_id).toBe(mixer7.id);
     expect(objetivo.volumen_asignado_m3).toBe(7);
   });
+
+  it("permite tomar un mixer cuyo viaje traslapado YA se completó (por horas reales)", async () => {
+    // Dos mixers -> dos pedidos con mixers distintos. El viaje A se COMPLETA con
+    // horas reales que terminan antes de que el viaje B cargue (real), aunque sus
+    // ventanas PROGRAMADAS se traslapen. Reasignar B al mixer de A debe permitirse.
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Reales", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[9, 2]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const base = {
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 8, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    };
+    const rA = await programarPedido(base);
+    const rB = await programarPedido(base);
+    const viajeA = await prisma.viajes.findFirstOrThrow({ where: { pedido_id: rA.pedidoId, mixer_id: { not: null } } });
+    const viajeB = await prisma.viajes.findFirstOrThrow({ where: { pedido_id: rB.pedidoId, mixer_id: { not: null } } });
+    const mixerA = viajeA.mixer_id!;
+    expect(viajeB.mixer_id).not.toBe(mixerA);
+
+    const h = (hhmm: string) => new Date(`2026-08-01T${hhmm}:00`);
+    // A: programado 07:18-08:58 pero COMPLETADO real 07:50-09:45.
+    await prisma.viajes.update({
+      where: { id: viajeA.id },
+      data: {
+        estado: "Completado",
+        hora_inicio_carga: h("07:18"), hora_regreso_planta: h("08:58"),
+        ts_inicio_carga_real: h("07:50"), ts_regreso_real: h("09:45"),
+      },
+    });
+    // B: programado 08:38-10:18 (se traslapa con A programado y con A real) pero
+    // su carga REAL fue 10:03 (después de que A regresó de verdad).
+    await prisma.viajes.update({
+      where: { id: viajeB.id },
+      data: {
+        estado: "Regresando",
+        hora_inicio_carga: h("08:38"), hora_regreso_planta: h("10:18"),
+        ts_inicio_carga_real: h("10:03"),
+      },
+    });
+
+    const res = await reasignarMixer(viajeB.id, mixerA);
+    expect(res.ok).toBe(true); // por horas REALES no hay traslape
+    const vb = await prisma.viajes.findUniqueOrThrow({ where: { id: viajeB.id } });
+    expect(vb.mixer_id).toBe(mixerA);
+  });
 });
 
 describe("bombas — préstamo por hub (mapa propio)", () => {

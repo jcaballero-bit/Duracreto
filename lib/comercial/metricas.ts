@@ -264,10 +264,15 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
     }
   }
 
-  // Con una zona seleccionada, la tabla lista SOLO los asesores con actividad en
-  // esa zona (los pedidos ya vienen acotados por zona, así que `acc` solo contiene
-  // a los asesores que trabajaron ahí). Con "todas" se listan todos los asesores.
-  const asesoresVisibles = f.zona != null ? asesores.filter((as) => acc.has(as.id)) : asesores;
+  // Con una zona seleccionada, la tabla lista los asesores ASIGNADOS a esa zona
+  // (asesores.zona_asignada) MÁS los que tuvieron actividad ahí (por si un asesor
+  // sin zona fija atendió pedidos de esa zona; los pedidos ya vienen acotados por
+  // zona, así que `acc` solo contiene a los que trabajaron ahí). Con "todas" se
+  // listan todos los asesores.
+  const asesoresVisibles =
+    f.zona != null
+      ? asesores.filter((as) => as.zona_asignada === f.zona || acc.has(as.id))
+      : asesores;
 
   const filas: DesempenoAsesor[] = asesoresVisibles.map((as) => {
     const a = acc.get(as.id);

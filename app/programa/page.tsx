@@ -24,38 +24,38 @@ const PALETA_BOMBA = ["#1F4E79", "#2F6F4E", "#B0730D", "#5B4B8A", "#1C6E7D", "#8
 
 /**
  * Zonas cuyo Programa DPCR-08 puede ver el usuario (enforcement server-side).
- * Admin: ambas. Programador/Despachador/Laboratorista: su `zona` directa.
- * Dosificador: la zona de su plantel asignado (derivada de planteles.zona, sin
- * duplicar el dato en el usuario). La PRIMERA de la lista es la que se preselecciona.
+ * Regla: TODOS los roles pueden verlo. Si el usuario tiene una zona ASIGNADA, se
+ * filtra a esa zona; si NO tiene ninguna asignada, ve ambas. La zona asignada se
+ * resuelve según el rol:
+ *  · Admin y Gerencia Comercial: sin límite → ambas zonas.
+ *  · Asesor: `asesores.zona_asignada` (fresca de BD).
+ *  · Dosificador / Jefe de Planta: la zona de su plantel asignado.
+ *  · Programador / Despachador / Laboratorista / Jefe de Laboratorio: `User.zona`.
  */
 async function zonasParaPrograma(alcance: Alcance, userId: string | null): Promise<string[]> {
-  // Admin y Gerencia Comercial: ambas zonas (sin límite).
+  // Roles globales: siempre ambas zonas.
   if (alcance.esAdmin || alcance.esGerenteComercial) return [...ZONAS];
-  // Asesor: ve ambas, pero se PRESELECCIONA su zona asignada (va primera). Si no
-  // tiene zona asignada, se muestran ambas en el orden por defecto.
-  if (alcance.esAsesor) {
-    const yo = userId
-      ? await prisma.asesores.findFirst({
-          where: { usuario_auth_id: userId },
-          select: { zona_asignada: true },
-        })
-      : null;
-    const suya = yo?.zona_asignada;
-    if (suya && (ZONAS as readonly string[]).includes(suya)) {
-      return [suya, ...ZONAS.filter((z) => z !== suya)];
-    }
-    return [...ZONAS];
-  }
+
+  // Reunir la(s) zona(s) asignada(s) del usuario desde todas las fuentes posibles.
   const zonas = new Set<string>();
-  if (alcance.zona) zonas.add(alcance.zona);
+  if (alcance.esAsesor && userId) {
+    const yo = await prisma.asesores.findFirst({
+      where: { usuario_auth_id: userId },
+      select: { zona_asignada: true },
+    });
+    if (yo?.zona_asignada) zonas.add(yo.zona_asignada);
+  }
+  if (alcance.zona) zonas.add(alcance.zona); // User.zona (Programador/Despachador/etc.)
   if (alcance.plantelAsignadoId != null) {
     const pl = await prisma.planteles.findUnique({
       where: { id: alcance.plantelAsignadoId },
       select: { zona: true },
     });
-    if (pl) zonas.add(pl.zona);
+    if (pl) zonas.add(pl.zona); // Dosificador / Jefe de Planta
   }
-  return [...zonas];
+
+  // Con zona asignada → se FILTRA a esa(s); sin ninguna → ve AMBAS.
+  return zonas.size > 0 ? [...zonas] : [...ZONAS];
 }
 
 function ymd(d: Date): string {

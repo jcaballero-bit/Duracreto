@@ -102,7 +102,12 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   // pestaña Operadores (motoristas) — la página filtra las pestañas por rol.
   "/flota": ["Administrador", "Programador", "Despachador", "Dosificador", "JefePlanta"],
   "/reportes": ["Administrador", "JefePlanta"],
-  "/programa": ["Administrador", "Programador", "Despachador", "Dosificador", "Laboratorista", "GerenteComercial", "Asesor"],
+  // Programa DPCR-08: lo pueden VER todos los roles. Si el usuario tiene una zona
+  // asignada, se filtra a esa zona; si no, ve ambas (ver `zonasParaPrograma`).
+  "/programa": [
+    "Administrador", "Programador", "Despachador", "Asesor", "GerenteComercial",
+    "JefePlanta", "Dosificador", "Laboratorista", "JefeLaboratorio",
+  ],
   "/laboratorio": ["Administrador", "JefeLaboratorio", "Laboratorista"],
   "/administracion": ["Administrador"],
   "/bitacora": ["Administrador"],

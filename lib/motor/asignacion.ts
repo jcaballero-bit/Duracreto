@@ -93,6 +93,26 @@ function ventanaDeViaje(v: {
   return { inicio: v.hora_inicio_carga, fin: v.hora_regreso_planta };
 }
 
+/**
+ * Ventana de OCUPACIÓN física del mixer para un viaje: usa las horas REALES cuando
+ * existen (`ts_inicio_carga_real` → `ts_regreso_real`) y cae a las programadas si
+ * no. Un viaje ya ejecutado/completado libera el mixer según lo que pasó de verdad,
+ * no según lo programado — así al reasignar no hay falsos traslapes (p. ej. un viaje
+ * Completado cuyo regreso real ya pasó no bloquea otro que carga más tarde).
+ */
+function ventanaOcupacion(v: {
+  ts_inicio_carga_real: Date | null;
+  ts_regreso_real: Date | null;
+  hora_inicio_carga: Date | null;
+  hora_regreso_planta: Date | null;
+}): VentanaViaje | null {
+  const inicio = v.ts_inicio_carga_real ?? v.hora_inicio_carga;
+  let fin = v.ts_regreso_real ?? v.hora_regreso_planta;
+  if (!inicio || !fin) return null;
+  if (fin < inicio) fin = inicio; // guardia contra ventana degenerada (viaje muy demorado)
+  return { inicio, fin };
+}
+
 /** Metadatos de un mixer usados por el agendador. */
 interface MetaMixer {
   id: number;
@@ -1110,7 +1130,9 @@ export async function reasignarMixer(
     };
   }
 
-  const ventana = ventanaDeViaje(viaje);
+  // Ventana de ocupación del viaje objetivo por horas REALES cuando existen (un
+  // viaje ya en curso ocupa el mixer según lo que realmente pasó, no lo programado).
+  const ventana = ventanaOcupacion(viaje);
   if (!ventana) {
     return {
       ok: false,
@@ -1125,6 +1147,8 @@ export async function reasignarMixer(
   // Otros viajes de ESTE mixer ese día que SE TRASLAPAN con la ventana del viaje
   // objetivo (excluyendo el propio viaje). Un mixer puede hacer varios viajes al
   // día si NO se traslapan (reutilización), así que solo nos importan los que sí.
+  // La comparación usa la ventana de OCUPACIÓN REAL: un viaje Completado cuyo
+  // regreso real ya pasó NO bloquea otro que carga más tarde (evita falso traslape).
   const otros = await prisma.viajes.findMany({
     where: {
       mixer_id: nuevoMixerId,
@@ -1135,7 +1159,7 @@ export async function reasignarMixer(
     include: { pedido: { select: { planta_id: true } } },
   });
   const conflictivos = otros.filter((o) => {
-    const w = ventanaDeViaje(o);
+    const w = ventanaOcupacion(o);
     return w != null && !unidadLibreEnVentana(ventana, [w]);
   });
 
