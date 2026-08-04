@@ -6,6 +6,7 @@ import { requerirAcceso } from "@/lib/auth/guard";
 import { registroAdicionesCancelaciones, type RegistroAsesor } from "@/lib/comercial/metricas";
 import { Badge, Card, PageHeader } from "../../../components/ui";
 import { SelectorMesRegistro } from "./selector-mes";
+import { BorrarCancelacion } from "./borrar-cancelacion";
 import {
   GridSemana,
   type Celda,
@@ -58,7 +59,8 @@ export default async function DetalleAsesorPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ tab?: string; periodo?: string; zona?: string; inicio?: string; regMes?: string }>;
 }) {
-  await requerirAcceso("/comercial");
+  const alcance = await requerirAcceso("/comercial");
+  const esAdmin = alcance.esAdmin;
   const { id } = await params;
   const asesorId = Number(id);
   const sp = await searchParams;
@@ -125,6 +127,7 @@ export default async function DetalleAsesorPage({
             periodo={periodo}
             zona={zona}
             regMes={regMes}
+            esAdmin={esAdmin}
           />
         )}
         {tab === "clientes" && <Clientes asesorId={asesorId} />}
@@ -149,12 +152,14 @@ async function ProgramacionSemana({
   periodo,
   zona,
   regMes,
+  esAdmin,
 }: {
   asesorId: number;
   lunes: Date;
   periodo: string;
   zona: string | null;
   regMes: string;
+  esAdmin: boolean;
 }) {
   const dias: DiaSemana[] = DIAS_LABEL.map((etq, i) => {
     const f = new Date(lunes);
@@ -229,7 +234,7 @@ async function ProgramacionSemana({
         basePath={`/comercial/asesor/${asesorId}`}
         paramsExtra={p.toString()}
       />
-      <RegistroMensual registro={registro} mesSel={regMes} />
+      <RegistroMensual registro={registro} mesSel={regMes} esAdmin={esAdmin} />
     </>
   );
 }
@@ -241,7 +246,15 @@ function capitalizar(s: string): string {
 
 /** Registro de adiciones y cancelaciones del asesor, tabulado por mes con totales.
  *  Con selector de mes (vacío = todos). */
-function RegistroMensual({ registro, mesSel }: { registro: RegistroAsesor; mesSel: string }) {
+function RegistroMensual({
+  registro,
+  mesSel,
+  esAdmin,
+}: {
+  registro: RegistroAsesor;
+  mesSel: string;
+  esAdmin: boolean;
+}) {
   // Meses mostrados según el selector (vacío = todos); los totales del encabezado
   // reflejan lo mostrado.
   const mesesMostrados =
@@ -307,6 +320,7 @@ function RegistroMensual({ registro, mesSel }: { registro: RegistroAsesor; mesSe
                           <th className="px-2 py-1.5">Cliente</th>
                           <th className="px-2 py-1.5 text-right">m³</th>
                           <th className="px-2 py-1.5">Motivo</th>
+                          {esAdmin && <th className="px-2 py-1.5 text-right">Acción</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -319,6 +333,13 @@ function RegistroMensual({ registro, mesSel }: { registro: RegistroAsesor; mesSe
                               <span className="text-ink">{c.motivo}</span>
                               {c.detalle && <span className="block text-xs text-muted">{c.detalle}</span>}
                             </td>
+                            {esAdmin && (
+                              <td className="px-2 py-1.5 text-right">
+                                {c.pedidoId != null && (
+                                  <BorrarCancelacion pedidoId={c.pedidoId} cliente={c.cliente} />
+                                )}
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>

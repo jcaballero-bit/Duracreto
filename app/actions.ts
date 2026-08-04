@@ -679,6 +679,68 @@ export async function cancelarPedidoAction(
 }
 
 /**
+ * Server action: cancela UN SOLO VIAJE (despacho en vivo). Ej.: un cliente tiene 3
+ * viajes programados pero solo requiere 2 → se cancela el último y quedan los demás.
+ * NO toca el pedido ni los otros viajes (no es una cancelación comercial del cliente:
+ * el pedido sigue Activo, así que no afecta el desempeño del asesor). Marca el viaje
+ * Cancelado, libera su mixer/operador y lo deja fuera del tablero. No se puede
+ * cancelar un viaje ya Completado (entregado).
+ */
+export async function cancelarViajeAction(
+  viajeId: number,
+  motivo?: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  try {
+    const permiso = await autorizarPorViaje(viajeId);
+    if (!permiso.ok) return permiso;
+    const ed = await autorizarEdicionCampos();
+    if (!ed.ok) return ed;
+
+    const viaje = await prisma.viajes.findUnique({
+      where: { id: viajeId },
+      select: {
+        estado: true,
+        pedido: { select: { id: true, cliente: { select: { empresa: true } } } },
+      },
+    });
+    if (!viaje) return { ok: false, mensaje: "Viaje no encontrado." };
+    if (viaje.estado === "Completado") {
+      return { ok: false, mensaje: "No se puede cancelar un viaje ya completado (entregado)." };
+    }
+
+    const sesion = await auth();
+    const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+    const nota = (motivo ?? "").trim();
+
+    await prisma.viajes.update({
+      where: { id: viajeId },
+      data: { estado: "Cancelado", mixer_id: null, operador_id: null },
+    });
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "viajes",
+        registro_id: viajeId,
+        usuario: quien,
+        campo_modificado: "estado",
+        valor_anterior: viaje.estado,
+        valor_nuevo: "Cancelado",
+        motivo: nota
+          ? `Viaje cancelado en despacho: ${nota}`
+          : `Viaje cancelado en despacho (pedido #${viaje.pedido.id}, ${viaje.pedido.cliente.empresa})`,
+      },
+    });
+
+    revalidarPantallas();
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      mensaje: e instanceof Error ? e.message : "No se pudo cancelar el viaje.",
+    };
+  }
+}
+
+/**
  * Server action: cancela (elimina) un pedido. Recalcula la cascada de horarios
  * de la planta afectada para ese día (vía cancelarPedido en el motor).
  */

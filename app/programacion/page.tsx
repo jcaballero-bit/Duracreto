@@ -118,6 +118,8 @@ export default async function ProgramacionPage({
         plantel: true,
         bomba: { select: { identificador: true } },
         viajes: {
+          // Los viajes cancelados en Despacho (1 viaje suelto) no se listan aquí.
+          where: { estado: { not: "Cancelado" } },
           orderBy: { id: "asc" },
           include: {
             mixer: {

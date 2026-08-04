@@ -12,7 +12,7 @@ import {
 } from "../actions";
 import { Badge } from "../components/ui";
 import { BotonesMapa, type UbicacionCliente } from "../components/maps-buttons";
-import { CancelarPedidoModal } from "../components/cancelar-pedido-modal";
+import { CancelarViajeModal } from "../components/cancelar-viaje-modal";
 import type { CampoTsReal } from "@/lib/motor/asignacion";
 
 export interface HitoVista {
@@ -216,19 +216,19 @@ function FilaViaje({
           {!soloLectura && v.estado !== "Completado" && (
             <button
               onClick={() => setCancelando(true)}
-              title="Cancelar el pedido (con motivo)"
+              title="Cancelar SOLO este viaje (los demás del pedido se conservan)"
               className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50"
             >
-              <Ban size={13} /> Cancelar
+              <Ban size={13} /> Cancelar viaje
             </button>
           )}
         </div>
       </div>
 
       {cancelando && (
-        <CancelarPedidoModal
-          pedidoId={v.pedidoId}
-          etiqueta={v.proyecto ? `${v.cliente} — ${v.proyecto}` : v.cliente}
+        <CancelarViajeModal
+          viajeId={v.id}
+          etiqueta={`${v.cliente} · Viaje ${v.numClienteDia} de ${v.totalClienteDia}`}
           onClose={() => setCancelando(false)}
           onCancelado={() => {
             setCancelando(false);

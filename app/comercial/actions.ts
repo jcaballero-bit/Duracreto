@@ -70,6 +70,65 @@ export async function guardarMetaAction(
   }
 }
 
+/**
+ * SOLO ADMINISTRADOR: elimina una cancelación hecha por error para que NO afecte el
+ * desempeño del asesor. Borra el pedido cancelado (y en cascada sus viajes); si venía
+ * de una proyección del Programa Semana, la devuelve a "Pendiente" para poder
+ * reprogramarla. Deja rastro en la bitácora. Solo aplica a pedidos ya CANCELADOS.
+ */
+export async function eliminarCancelacionAction(pedidoId: number): Promise<Res> {
+  const sesion = await auth();
+  if (!sesion?.user) return { ok: false, mensaje: "Sesión no válida." };
+  const alcance = calcularAlcance(sesion.user.roles ?? [], sesion.user.zona ?? null);
+  if (!alcance.esAdmin) {
+    return { ok: false, mensaje: "Solo el Administrador puede eliminar cancelaciones." };
+  }
+  const quien = sesion.user.name ?? sesion.user.email ?? "admin";
+
+  const pedido = await prisma.pedidos.findUnique({
+    where: { id: pedidoId },
+    select: {
+      estado_pedido: true,
+      volumen_programado: true,
+      volumen_total_m3: true,
+      motivo_cancelacion: true,
+      cliente: { select: { empresa: true } },
+    },
+  });
+  if (!pedido) return { ok: false, mensaje: "Pedido no encontrado." };
+  if (pedido.estado_pedido !== "Cancelado") {
+    return { ok: false, mensaje: "Solo se pueden eliminar cancelaciones (pedidos cancelados)." };
+  }
+
+  try {
+    const m3 = pedido.volumen_programado ?? pedido.volumen_total_m3;
+    // Bitácora ANTES de borrar (el pedido desaparece; registro_id no es FK).
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "pedidos",
+        registro_id: pedidoId,
+        usuario: quien,
+        campo_modificado: "estado_pedido",
+        valor_anterior: "Cancelado",
+        valor_nuevo: "(eliminado)",
+        motivo: `Cancelacion eliminada por error: ${pedido.cliente.empresa}, ${m3} m3 (motivo original: ${pedido.motivo_cancelacion ?? "-"})`,
+      },
+    });
+    // Si venía de una proyección semanal, devolverla a Pendiente (y soltar el vínculo).
+    await prisma.solicitudes_anticipadas.updateMany({
+      where: { pedido_id: pedidoId },
+      data: { estado: "Pendiente", pedido_id: null },
+    });
+    // Borrar el pedido; viajes y asignación de laboratorista caen en cascada.
+    await prisma.pedidos.delete({ where: { id: pedidoId } });
+
+    revalidatePath("/comercial");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, mensaje: e instanceof Error ? e.message : "No se pudo eliminar la cancelación." };
+  }
+}
+
 async function auditar(
   registroId: number,
   quien: string,

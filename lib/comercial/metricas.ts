@@ -454,6 +454,7 @@ export interface EventoRegistro {
   motivo?: string | null; // solo cancelaciones
   detalle?: string | null; // solo cancelaciones
   tipo?: "Nuevo (100%)" | "Volumen"; // solo adiciones
+  pedidoId?: number; // solo cancelaciones: para que el Admin pueda eliminarlas
 }
 export interface MesRegistro {
   clave: string; // "2026-07"
@@ -485,6 +486,7 @@ export async function registroAdicionesCancelaciones(
   const pedidos = await prisma.pedidos.findMany({
     where: { cliente: { asesor_id: asesorId } },
     select: {
+      id: true,
       volumen_total_m3: true,
       volumen_programado: true,
       hora_solicitada: true,
@@ -532,6 +534,7 @@ export async function registroAdicionesCancelaciones(
         m3: redondear(m3),
         motivo: p.motivo_cancelacion ?? "Sin motivo",
         detalle: p.detalle_cancelacion,
+        pedidoId: p.id,
       });
       b.totalCanceladoM3 += m3;
       continue;
