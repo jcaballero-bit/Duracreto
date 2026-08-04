@@ -222,26 +222,35 @@ async function renderTab(tab: string, ctx: Ctx) {
           nombre: a.nombre,
           correo: a.correo ?? "—",
           usuario: nombreUsuario(a.usuario_auth_id),
+          zona: a.zona_asignada ?? "Todas",
         },
         valores: {
           nombre: a.nombre,
           correo: a.correo ?? "",
           usuario_auth_id: a.usuario_auth_id ?? "",
+          zona_asignada: a.zona_asignada ?? "",
         },
       }));
       return bloque(
         "asesores",
         "asesor",
-        "Vendedores. Vincula un usuario para que (con rol Asesor) vea solo sus clientes.",
+        "Vendedores. Vincula un usuario para que (con rol Asesor) vea solo sus clientes. La zona limita qué ve en Programa Semana (solo su misma zona).",
         [
           { key: "nombre", label: "Nombre" },
           { key: "correo", label: "Correo" },
           { key: "usuario", label: "Usuario vinculado" },
+          { key: "zona", label: "Zona" },
         ],
         [
           { name: "nombre", label: "Nombre", tipo: "text", requerido: true },
           { name: "correo", label: "Correo", tipo: "text" },
           { name: "usuario_auth_id", label: "Usuario vinculado", tipo: "select", opciones: ctx.opcUsuarios },
+          {
+            name: "zona_asignada",
+            label: "Zona (Programa Semana)",
+            tipo: "select",
+            opciones: [{ value: "", label: "Todas (sin zona)" }, ...zonaOpc],
+          },
         ],
         filas,
       );

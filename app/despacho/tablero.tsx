@@ -32,6 +32,9 @@ export interface MixerBadge {
 export interface ViajeDespacho {
   id: number;
   pedidoId: number;
+  codigoViaje: string; // identificador del sistema, ej. "V-000045"
+  numClienteDia: number; // número de viaje del cliente ESE DÍA (1..N, dinámico)
+  totalClienteDia: number; // total de viajes del cliente ese día
   ordenCargaMs: number; // clave de orden cronológico (hora de carga real o programada)
   horaProgTxt: string;
   cliente: string;
@@ -201,7 +204,13 @@ function FilaViaje({
   return (
     <div className="rounded-lg border border-border bg-surface p-4">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs text-muted">Viaje #{v.id}</span>
+        <span className="text-xs text-muted">
+          <span className="font-mono">{v.codigoViaje}</span>
+          <span className="mx-1.5 text-muted/50">·</span>
+          <span className="font-medium text-ink">
+            Viaje {v.numClienteDia} de {v.totalClienteDia}
+          </span>
+        </span>
         <div className="flex items-center gap-2">
           <Badge tono={tonoEstado(v.estado)}>{v.estado}</Badge>
           {!soloLectura && v.estado !== "Completado" && (
@@ -448,6 +457,8 @@ function CampoMixer({
       const res = await reasignarMixerAction(viajeId, nuevo);
       if (res.ok) {
         setEditando(false);
+        // Aviso informativo (p. ej. flota insuficiente al recuperar un viaje).
+        if (res.mensaje) alert(res.mensaje);
         router.refresh();
       } else alert(res.mensaje ?? "No se pudo reasignar.");
     });

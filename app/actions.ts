@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA } from "@/lib/auth/acceso";
 import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
+import { UMBRAL_IMPACTO_INSERCION_MIN } from "@/lib/motor/config";
 import {
   avanzarEstadoViaje,
   cambiarOperadorViaje,
@@ -14,10 +15,12 @@ import {
   confirmarRefuerzo,
   corregirHoraReal,
   editarVolumenViaje,
+  llegadasPorPlanta,
   mantenimientoDeUnidad,
   modificarPedido,
   programarPedido,
   reasignarMixer,
+  recalcularCascadaPlanta,
   reordenarPedidoDia,
   sugerirHoraDisponible,
   type CampoTsReal,
@@ -139,6 +142,9 @@ async function viajeEsDeLaboratorista(viajeId: number, userId: string): Promise<
 export interface EstadoFormulario {
   ok: boolean;
   mensaje?: string;
+  // El pedido retrasaría a un cliente ya programado más del umbral: se revirtió y
+  // se pide confirmación explícita para continuar (reenviar con confirmar_impacto).
+  requiereConfirmacion?: boolean;
   resultado?: {
     pedidoId: number;
     volumenSinCubrir: number;
@@ -210,6 +216,7 @@ function construirEntrada(
       bomba_id: Number(formData.get("bomba_id")) || null,
       tipo_descarga: String(formData.get("tipo_descarga")),
       revenimiento: String(formData.get("revenimiento") || "") || null,
+      tipo_servicio: String(formData.get("tipo_servicio") || "") || null,
       sacos_hielo_por_m3: hielo,
       asesor_id: Number(formData.get("asesor_id")) || null,
       hora_bloqueada: !!formData.get("hora_bloqueada"),
@@ -280,7 +287,46 @@ export async function crearPedidoAction(
     if (!permiso.ok) return { ok: false, mensaje: permiso.mensaje };
     const errBomba = await validarBombaMantenimiento(entrada!);
     if (errBomba) return { ok: false, mensaje: errBomba };
+
+    // Impacto sobre la cola ya programada: snapshot de las llegadas ANTES de insertar.
+    const llegadasAntes = await llegadasPorPlanta(
+      entrada!.planta_id,
+      entrada!.hora_solicitada,
+    );
+
     const r = await programarPedido(entrada!);
+
+    // Si insertar este pedido retrasa la LLEGADA esperada de algún cliente ya
+    // programado más que el umbral, se REVIERTE y se pide confirmación explícita.
+    // Los pedidos con hora fija (hora_bloqueada) no se mueven, así que no disparan
+    // la advertencia. El Programador puede reenviar con confirmar_impacto=1.
+    const confirmarImpacto = !!formData.get("confirmar_impacto");
+    if (!confirmarImpacto) {
+      const llegadasDespues = await llegadasPorPlanta(
+        entrada!.planta_id,
+        entrada!.hora_solicitada,
+      );
+      let peor: { cliente: string; delta: number } | null = null;
+      for (const [pid, antes] of llegadasAntes) {
+        const despues = llegadasDespues.get(pid);
+        if (!despues) continue;
+        const delta = Math.round((despues.ms - antes.ms) / 60000);
+        if (delta > UMBRAL_IMPACTO_INSERCION_MIN && (!peor || delta > peor.delta)) {
+          peor = { cliente: antes.cliente, delta };
+        }
+      }
+      if (peor) {
+        // Revertir la inserción (aún no se confirma) y restaurar la cascada.
+        await prisma.viajes.deleteMany({ where: { pedido_id: r.pedidoId } });
+        await prisma.pedidos.delete({ where: { id: r.pedidoId } });
+        await recalcularCascadaPlanta(entrada!.planta_id, entrada!.hora_solicitada);
+        return {
+          ok: false,
+          requiereConfirmacion: true,
+          mensaje: `Insertar este pedido va a retrasar la llegada a ${peor.cliente} en aproximadamente ${peor.delta} minutos. ¿Deseas continuar?`,
+        };
+      }
+    }
 
     // Si el pedido nació de una solicitud anticipada (proyección semanal),
     // vincularla y marcarla como Programado (deja de estar Pendiente).
@@ -394,8 +440,32 @@ export async function reasignarMixerAction(
   const ed = await autorizarEdicionCampos();
   if (!ed.ok) return ed;
   const res = await reasignarMixer(viajeId, nuevoMixerId);
-  if (res.ok) revalidarPantallas();
-  return { ok: res.ok, mensaje: res.motivo };
+  if (!res.ok) return { ok: false, mensaje: res.motivo };
+
+  // Bitácora: quién reasignó, a qué mixer y qué viajes se vieron afectados
+  // (liberados/reprogramados o con volumen absorbido) + remanente sin cubrir.
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "usuario";
+  const afectados = [...(res.viajesAfectados ?? []), ...(res.viajesAgregados ?? [])];
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "viajes",
+      registro_id: viajeId,
+      usuario: quien,
+      campo_modificado: "mixer_id",
+      valor_anterior: null,
+      valor_nuevo: `Mixer ${nuevoMixerId}`,
+      motivo:
+        "Reasignacion manual de mixer" +
+        (afectados.length ? ` (viajes afectados: ${afectados.join(", ")})` : "") +
+        (res.volumenSinCubrir && res.volumenSinCubrir > 0
+          ? ` - ${res.volumenSinCubrir} m3 sin cubrir`
+          : ""),
+    },
+  });
+
+  revalidarPantallas();
+  return { ok: true, mensaje: res.aviso };
 }
 
 /**

@@ -13,9 +13,13 @@ export default async function ClientesPage() {
   const sesion = await auth();
   const userId = sesion?.user?.id ?? "";
   const esAdmin = alcance.esAdmin;
+  // GerenteComercial: CONSULTA de toda la cartera (todas las zonas) en solo lectura.
+  const esSupervisor = alcance.esGerenteComercial;
+  const veTodos = esAdmin || esSupervisor;
 
-  // Asesor: SOLO sus propios clientes (filtro server-side, no visual). Admin: todos.
-  const where = esAdmin ? {} : filtroClientePorAsesor(userId);
+  // Asesor: SOLO sus propios clientes (filtro server-side, no visual). Admin y
+  // Gerencia Comercial: todos. GerenteComercial no puede editar (solo lectura).
+  const where = veTodos ? {} : filtroClientePorAsesor(userId);
 
   const [clientes, asesores] = await Promise.all([
     prisma.clientes.findMany({
@@ -60,13 +64,13 @@ export default async function ClientesPage() {
     },
   }));
 
-  // La columna Asesor solo tiene sentido para el Admin (el Asesor ya sabe que
-  // todos son suyos).
+  // La columna Asesor tiene sentido para quien ve la cartera de varios asesores
+  // (Admin y Gerencia Comercial); el Asesor ya sabe que todos son suyos.
   const columnas = [
     { key: "empresa", label: "Cliente" },
     { key: "proyecto", label: "Proyecto" },
     { key: "ubicacion", label: "Ubicación" },
-    ...(esAdmin ? [{ key: "asesor", label: "Asesor" }] : []),
+    ...(veTodos ? [{ key: "asesor", label: "Asesor" }] : []),
     { key: "telefono", label: "Teléfono" },
     { key: "tiempos", label: "Transporte" },
     { key: "estado", label: "Activo" },
@@ -77,9 +81,11 @@ export default async function ClientesPage() {
       <PageHeader
         titulo="Clientes"
         descripcion={
-          esAdmin
-            ? "Clientes de todos los asesores. Incluye ubicación, coordenadas y tiempos de ruta de referencia."
-            : "Tus clientes. Incluye ubicación, coordenadas y tiempos de ruta de referencia."
+          esSupervisor
+            ? "Cartera de todos los asesores (consulta). Ubicación, coordenadas y tiempos de ruta de referencia."
+            : esAdmin
+              ? "Clientes de todos los asesores. Incluye ubicación, coordenadas y tiempos de ruta de referencia."
+              : "Tus clientes. Incluye ubicación, coordenadas y tiempos de ruta de referencia."
         }
       />
 
@@ -90,6 +96,7 @@ export default async function ClientesPage() {
           filas={filas}
           columnas={columnas}
           esAdmin={esAdmin}
+          soloLectura={esSupervisor}
           asesores={asesores.map((a) => ({ value: String(a.id), label: a.nombre }))}
         />
       </Card>

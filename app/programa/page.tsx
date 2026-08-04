@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { auth } from "@/auth";
 import type { Alcance } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { ZONAS } from "@/lib/auth/roles";
@@ -25,11 +26,26 @@ const PALETA_BOMBA = ["#1F4E79", "#2F6F4E", "#B0730D", "#5B4B8A", "#1C6E7D", "#8
  * Zonas cuyo Programa DPCR-08 puede ver el usuario (enforcement server-side).
  * Admin: ambas. Programador/Despachador/Laboratorista: su `zona` directa.
  * Dosificador: la zona de su plantel asignado (derivada de planteles.zona, sin
- * duplicar el dato en el usuario).
+ * duplicar el dato en el usuario). La PRIMERA de la lista es la que se preselecciona.
  */
-async function zonasParaPrograma(alcance: Alcance): Promise<string[]> {
-  // Admin, Gerencia Comercial y Asesor: consulta de ambas zonas (sin límite de zona).
-  if (alcance.esAdmin || alcance.esGerenteComercial || alcance.esAsesor) return [...ZONAS];
+async function zonasParaPrograma(alcance: Alcance, userId: string | null): Promise<string[]> {
+  // Admin y Gerencia Comercial: ambas zonas (sin límite).
+  if (alcance.esAdmin || alcance.esGerenteComercial) return [...ZONAS];
+  // Asesor: ve ambas, pero se PRESELECCIONA su zona asignada (va primera). Si no
+  // tiene zona asignada, se muestran ambas en el orden por defecto.
+  if (alcance.esAsesor) {
+    const yo = userId
+      ? await prisma.asesores.findFirst({
+          where: { usuario_auth_id: userId },
+          select: { zona_asignada: true },
+        })
+      : null;
+    const suya = yo?.zona_asignada;
+    if (suya && (ZONAS as readonly string[]).includes(suya)) {
+      return [suya, ...ZONAS.filter((z) => z !== suya)];
+    }
+    return [...ZONAS];
+  }
   const zonas = new Set<string>();
   if (alcance.zona) zonas.add(alcance.zona);
   if (alcance.plantelAsignadoId != null) {
@@ -89,12 +105,15 @@ export default async function ProgramaPage({
   searchParams: Promise<{ fecha?: string; zona?: string }>;
 }) {
   const alcance = await requerirAcceso("/programa");
+  const sesion = await auth();
+  const userId = sesion?.user?.id ?? null;
   const sp = await searchParams;
 
   // Zonas que el usuario puede ver (server-side, no solo la UI). El Programa es un
   // documento POR ZONA: Admin ve ambas; Programador/Despachador/Laboratorista por
-  // su zona directa; Dosificador por la zona de su plantel asignado.
-  const zonasPermitidas = await zonasParaPrograma(alcance);
+  // su zona directa; Dosificador por la zona de su plantel asignado; Asesor ambas
+  // pero con su zona asignada PRESELECCIONADA.
+  const zonasPermitidas = await zonasParaPrograma(alcance, userId);
   const fecha = sp.fecha ?? ymd(new Date());
 
   if (zonasPermitidas.length === 0) {

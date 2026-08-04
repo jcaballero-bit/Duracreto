@@ -17,11 +17,14 @@ export function ClientesTabla({
   columnas,
   esAdmin,
   asesores,
+  soloLectura = false,
 }: {
   filas: FilaCliente[];
   columnas: { key: string; label: string }[];
   esAdmin: boolean;
   asesores: Opcion[];
+  // Modo consulta (Gerencia Comercial): sin altas/ediciones/bajas ni toggle.
+  soloLectura?: boolean;
 }) {
   const router = useRouter();
   const [abierto, setAbierto] = useState(false);
@@ -48,17 +51,19 @@ export function ClientesTabla({
 
   return (
     <>
-      <div className="mb-3 flex justify-end">
-        <button
-          onClick={() => {
-            setEditando(null);
-            setAbierto(true);
-          }}
-          className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover"
-        >
-          <Plus size={16} /> Nuevo cliente
-        </button>
-      </div>
+      {!soloLectura && (
+        <div className="mb-3 flex justify-end">
+          <button
+            onClick={() => {
+              setEditando(null);
+              setAbierto(true);
+            }}
+            className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover"
+          >
+            <Plus size={16} /> Nuevo cliente
+          </button>
+        </div>
+      )}
 
       <div className="overflow-x-auto">
         <table className="w-full min-w-[640px] text-sm">
@@ -69,14 +74,14 @@ export function ClientesTabla({
                   {c.label}
                 </th>
               ))}
-              <th className="px-3 py-2">Acciones</th>
+              {!soloLectura && <th className="px-3 py-2">Acciones</th>}
             </tr>
           </thead>
           <tbody>
             {filas.length === 0 ? (
               <tr>
-                <td colSpan={columnas.length + 1} className="px-3 py-8 text-center text-muted">
-                  Sin clientes. Usa <strong>+ Nuevo cliente</strong>.
+                <td colSpan={columnas.length + (soloLectura ? 0 : 1)} className="px-3 py-8 text-center text-muted">
+                  {soloLectura ? "Sin clientes." : <>Sin clientes. Usa <strong>+ Nuevo cliente</strong>.</>}
                 </td>
               </tr>
             ) : (
@@ -90,28 +95,40 @@ export function ClientesTabla({
                   {columnas.map((c) =>
                     c.key === "estado" ? (
                       <td key={c.key} className="px-3 py-2">
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={f.valores.activo === "true"}
-                          aria-label={
-                            f.valores.activo === "true"
-                              ? "Cliente activo (clic para inactivar)"
-                              : "Cliente inactivo (clic para activar)"
-                          }
-                          onClick={() => alternarActivo(f)}
-                          disabled={pendiente}
-                          title={f.valores.activo === "true" ? "Activo" : "Inactivo"}
-                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
-                            f.valores.activo === "true" ? "bg-emerald-500" : "bg-slate-300"
-                          }`}
-                        >
+                        {soloLectura ? (
                           <span
-                            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                              f.valores.activo === "true" ? "translate-x-5" : "translate-x-0.5"
+                            className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                              f.valores.activo === "true"
+                                ? "bg-emerald-50 text-emerald-700"
+                                : "bg-slate-100 text-slate-500"
                             }`}
-                          />
-                        </button>
+                          >
+                            {f.valores.activo === "true" ? "Activo" : "Inactivo"}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={f.valores.activo === "true"}
+                            aria-label={
+                              f.valores.activo === "true"
+                                ? "Cliente activo (clic para inactivar)"
+                                : "Cliente inactivo (clic para activar)"
+                            }
+                            onClick={() => alternarActivo(f)}
+                            disabled={pendiente}
+                            title={f.valores.activo === "true" ? "Activo" : "Inactivo"}
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                              f.valores.activo === "true" ? "bg-emerald-500" : "bg-slate-300"
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                                f.valores.activo === "true" ? "translate-x-5" : "translate-x-0.5"
+                              }`}
+                            />
+                          </button>
+                        )}
                       </td>
                     ) : (
                       <td key={c.key} className="px-3 py-2 text-ink">
@@ -119,28 +136,30 @@ export function ClientesTabla({
                       </td>
                     ),
                   )}
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          setEditando({ id: f.id, valores: f.valores });
-                          setAbierto(true);
-                        }}
-                        title="Editar"
-                        className="rounded-md p-1.5 text-muted hover:bg-content"
-                      >
-                        <Pencil size={16} />
-                      </button>
-                      <button
-                        onClick={() => eliminar(f)}
-                        disabled={pendiente}
-                        title="Eliminar"
-                        className="rounded-md p-1.5 text-danger hover:bg-red-50 disabled:opacity-50"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </td>
+                  {!soloLectura && (
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            setEditando({ id: f.id, valores: f.valores });
+                            setAbierto(true);
+                          }}
+                          title="Editar"
+                          className="rounded-md p-1.5 text-muted hover:bg-content"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                        <button
+                          onClick={() => eliminar(f)}
+                          disabled={pendiente}
+                          title="Eliminar"
+                          className="rounded-md p-1.5 text-danger hover:bg-red-50 disabled:opacity-50"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))
             )}

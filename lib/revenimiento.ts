@@ -14,3 +14,22 @@ export const REVENIMIENTOS = [
 ];
 
 export const TIPOS_SERVICIO = ["Normal", "Servicio de Construcción"];
+
+/**
+ * ¿El diseño de mezcla (por su código) aplica al tipo de servicio elegido?
+ *  - "Normal": códigos que empiezan con "C" o "Pre".
+ *  - "Servicio de Construcción": códigos que empiezan con "Ser".
+ *  - Sin tipo de servicio (vacío/null): no se filtra (todos aplican).
+ * Comparación sin distinción de mayúsculas/minúsculas.
+ */
+export function disenoAplicaTipoServicio(
+  codigo: string,
+  tipoServicio: string | null | undefined,
+): boolean {
+  const t = (tipoServicio ?? "").trim();
+  if (!t) return true;
+  const c = (codigo ?? "").trim().toLowerCase();
+  if (t === "Servicio de Construcción") return c.startsWith("ser");
+  if (t === "Normal") return c.startsWith("c") || c.startsWith("pre");
+  return true;
+}

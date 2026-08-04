@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { X } from "lucide-react";
-import { PedidoForm, type ClienteOpcion } from "../pedido-form";
+import { PedidoForm, type ClienteOpcion, type DisenoOpcion } from "../pedido-form";
 import { PrimaryButton } from "../components/ui";
 
 interface Opcion {
@@ -14,6 +14,7 @@ interface PlantelOpcion {
   id: number;
   nombre: string;
   zona: string;
+  hubId: number | null;
   plantas: Opcion[];
 }
 interface BombaOpcion {
@@ -32,7 +33,7 @@ export function NuevoPedidoModal({
   fechaInicial,
 }: {
   clientes: ClienteOpcion[];
-  disenos: Opcion[];
+  disenos: DisenoOpcion[];
   planteles: PlantelOpcion[];
   bombas: BombaOpcion[];
   asesores: Opcion[];

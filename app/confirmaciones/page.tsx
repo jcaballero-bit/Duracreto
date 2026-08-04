@@ -15,9 +15,11 @@ export default async function ConfirmacionesPage() {
   const alcance = await requerirAcceso("/confirmaciones");
   const sesion = await auth();
   const userId = sesion?.user?.id ?? "";
+  // GerenteComercial: CONSULTA de todos los pedidos (solo lectura, no confirma).
+  const esSupervisor = alcance.esGerenteComercial;
 
-  // Asesor: solo pedidos de SUS clientes. Admin: todos.
-  const where = alcance.esAdmin ? {} : filtroPedidoPorAsesor(userId);
+  // Asesor: solo pedidos de SUS clientes. Admin y Gerencia Comercial: todos.
+  const where = alcance.esAdmin || esSupervisor ? {} : filtroPedidoPorAsesor(userId);
 
   // Se confirma el programa del DÍA SIGUIENTE. Excepción: el SÁBADO se confirma
   // el domingo (si hubiera pedidos) Y el lunes, porque el domingo casi no hay
@@ -103,12 +105,16 @@ export default async function ConfirmacionesPage() {
     <>
       <AutoRefresh />
       <PageHeader
-        titulo="Mis confirmaciones"
-        descripcion={`Confirma los pedidos del programa de ${etiquetaDias}.`}
+        titulo={esSupervisor ? "Confirmaciones" : "Mis confirmaciones"}
+        descripcion={
+          esSupervisor
+            ? `Estado de confirmación del programa de ${etiquetaDias} (consulta).`
+            : `Confirma los pedidos del programa de ${etiquetaDias}.`
+        }
       />
       <VentasTabs activo="/confirmaciones" roles={alcance.roles} />
       <Card className="p-5">
-        <ListaConfirmaciones pedidos={filas} />
+        <ListaConfirmaciones pedidos={filas} soloLectura={esSupervisor} />
       </Card>
     </>
   );

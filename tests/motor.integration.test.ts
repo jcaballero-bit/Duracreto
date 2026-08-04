@@ -333,7 +333,7 @@ describe("traslape de mixer — nunca doble reserva", () => {
     );
   });
 
-  it("reasignarMixer rechaza asignar un mixer ya ocupado en horario traslapado", async () => {
+  it("reasignarMixer libera el viaje en conflicto y lo reprograma con otro mixer", async () => {
     // Plantel con dos mixers → dos pedidos quedan cubiertos con mixers distintos.
     const { plantelId, plantaId } = await crearPlantel({
       nombre: "Dos Mixers",
@@ -355,16 +355,125 @@ describe("traslape de mixer — nunca doble reserva", () => {
       creado_por: "test",
     };
 
-    const r1 = await programarPedido(base);
-    const r2 = await programarPedido(base);
-    const mixerDe1 = r1.viajes.find((v) => v.mixerId != null)!.mixerId!;
-    const viaje2 = r2.viajes.find((v) => v.mixerId != null)!;
-    expect(viaje2.mixerId).not.toBe(mixerDe1);
+    const r1 = await programarPedido(base); // pedido 1 (orden de atención 1)
+    const r2 = await programarPedido(base); // pedido 2 (orden de atención 2, "más adelante")
+    const viaje1 = r1.viajes.find((v) => v.mixerId != null)!;
+    const mixerDe2 = r2.viajes.find((v) => v.mixerId != null)!.mixerId!;
+    expect(viaje1.mixerId).not.toBe(mixerDe2);
 
-    // Intentar mover el viaje del pedido 2 al mixer del pedido 1 (traslapado).
-    const res = await reasignarMixer(viaje2.id, mixerDe1);
-    expect(res.ok).toBe(false);
-    expect(res.motivo).toMatch(/traslapa/i);
+    // Mover el viaje del pedido 1 al mixer del pedido 2 (que lo tiene MÁS ADELANTE
+    // y se traslapa): en vez de rechazar, LIBERA el viaje futuro (pedido 2) y lo
+    // reprograma con el otro mixer.
+    const res = await reasignarMixer(viaje1.id, mixerDe2);
+    expect(res.ok).toBe(true);
+    expect(res.volumenSinCubrir).toBe(0);
+
+    const v1 = await prisma.viajes.findUniqueOrThrow({ where: { id: viaje1.id } });
+    expect(v1.mixer_id).toBe(mixerDe2); // el objetivo quedó con el mixer pedido
+    const v2 = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: r2.pedidoId, mixer_id: { not: null } },
+    });
+    expect(v2.mixer_id).not.toBe(mixerDe2); // el viaje futuro liberado tomó el otro mixer
+  });
+
+  it("reasignarMixer a un mixer más pequeño recalcula el volumen (viaje adicional)", async () => {
+    // Plantel con un mixer de 9 y dos de 7.
+    const { plantelId, plantaId } = await crearPlantel({
+      nombre: "Cap Mix",
+      zona: "Norte",
+      esHub: true,
+    });
+    await crearMixers(plantelId, [[9, 1], [7, 2]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+
+    const base = {
+      cliente_id: clienteId,
+      diseno_id: disenoId,
+      volumen_total_m3: 9,
+      hora_solicitada: DIA,
+      plantel_id: plantelId,
+      planta_id: plantaId,
+      tipo_descarga: "Directo",
+      creado_por: "test",
+    };
+
+    // 9 m³ → un solo viaje de 9 en el mixer de 9.
+    const r = await programarPedido(base);
+    expect(r.volumenSinCubrir).toBe(0);
+    const trip = r.viajes.find((v) => v.mixerId != null)!;
+    const mixer7 = await prisma.mixers.findFirstOrThrow({
+      where: { plantel_base_id: plantelId, capacidad_m3: 7 },
+    });
+
+    // Reasignar a un mixer de 7: el volumen se recorta a 7 y los 2 m³ restantes se
+    // cubren con un viaje adicional (mejor combinación de capacidades).
+    const res = await reasignarMixer(trip.id, mixer7.id);
+    expect(res.ok).toBe(true);
+    expect(res.volumenSinCubrir).toBe(0);
+
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, estado: { not: "Cancelado" }, mixer_id: { not: null } },
+    });
+    const totalVol = viajes.reduce((s, v) => s + v.volumen_asignado_m3, 0);
+    expect(Math.round(totalVol * 100) / 100).toBe(9);
+    expect(viajes.length).toBe(2);
+    const objetivo = viajes.find((v) => v.id === trip.id)!;
+    expect(objetivo.mixer_id).toBe(mixer7.id);
+    expect(objetivo.volumen_asignado_m3).toBe(7);
+  });
+});
+
+describe("bombas — préstamo por hub (mapa propio)", () => {
+  it("un plantel dependiente sin bomba propia toma la bomba del hub", async () => {
+    const hub = await crearPlantel({ nombre: "SM Hub B", zona: "Norte", esHub: true });
+    await crearMixers(hub.plantelId, [[9, 2]]);
+    const dep = await crearPlantel({ nombre: "Villanueva", zona: "Norte", hubId: hub.plantelId });
+    const bombaHub = await prisma.bombas.create({
+      data: { identificador: "SMB-1", estado: "Disponible", plantel_base_id: hub.plantelId },
+    });
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+
+    const r = await programarPedido({
+      cliente_id: clienteId,
+      diseno_id: disenoId,
+      volumen_total_m3: 8,
+      hora_solicitada: DIA,
+      plantel_id: dep.plantelId,
+      planta_id: dep.plantaId,
+      tipo_descarga: "Bomba estacionaria", // sin bomba_id -> auto por hub
+      creado_por: "test",
+    });
+    const pedido = await prisma.pedidos.findUniqueOrThrow({ where: { id: r.pedidoId } });
+    expect(pedido.bomba_id).toBe(bombaHub.id);
+  });
+
+  it("prefiere la bomba PROPIA antes que la del hub", async () => {
+    const hub = await crearPlantel({ nombre: "SM Hub C", zona: "Norte", esHub: true });
+    const dep = await crearPlantel({ nombre: "Pto Cortes", zona: "Norte", hubId: hub.plantelId });
+    await crearMixers(dep.plantelId, [[9, 1]]);
+    await prisma.bombas.create({
+      data: { identificador: "SMC-1", estado: "Disponible", plantel_base_id: hub.plantelId },
+    });
+    const bombaPropia = await prisma.bombas.create({
+      data: { identificador: "PC-1", estado: "Disponible", plantel_base_id: dep.plantelId },
+    });
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+
+    const r = await programarPedido({
+      cliente_id: clienteId,
+      diseno_id: disenoId,
+      volumen_total_m3: 8,
+      hora_solicitada: DIA,
+      plantel_id: dep.plantelId,
+      planta_id: dep.plantaId,
+      tipo_descarga: "Bomba estacionaria",
+      creado_por: "test",
+    });
+    const pedido = await prisma.pedidos.findUniqueOrThrow({ where: { id: r.pedidoId } });
+    expect(pedido.bomba_id).toBe(bombaPropia.id); // propia antes que la del hub
   });
 });
 

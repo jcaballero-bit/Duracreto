@@ -10,10 +10,11 @@
 //  · Asesor: solo sus propios clientes, sin límite de zona. Además puede CONSULTAR
 //    (solo lectura) el Programa DPCR-08 de ambas zonas.
 //  · GerenteComercial: dashboard comercial + CONSULTA (solo lectura, todas las
-//    zonas) de Panel principal, Programación, Despacho en vivo y Programa DPCR-08.
-//    Nunca edita ni opera pedidos.
+//    zonas) de Panel principal, Programación, Despacho en vivo, Programa DPCR-08 y
+//    la sección Ventas (Clientes, Programa Semana, Confirmaciones). Nunca edita ni
+//    opera pedidos.
 //  · JefePlanta: Programación + Despacho de SU plantel (alcance por plantel, más
-//    fino que por zona). Edita.
+//    fino que por zona). Edita. Además CONSULTA (solo lectura) el Programa Semana.
 //  · Dosificador: Despacho de SU plantel (edita) + Programa DPCR-08 (ver, SOLO de
 //    la zona de su plantel asignado — derivada de planteles.zona).
 //  · Laboratorista: Despacho SOLO de los proyectos que le asignaron PARA ESE DÍA;
@@ -90,9 +91,12 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
     "Administrador", "Despachador", "Asesor",
     "JefePlanta", "Dosificador", "Laboratorista", "JefeLaboratorio", "GerenteComercial",
   ],
-  "/confirmaciones": ["Administrador", "Asesor"],
-  "/clientes/semana": ["Administrador", "Asesor", "Programador"],
-  "/clientes": ["Administrador", "Asesor"],
+  // GerenteComercial: CONSULTA (solo lectura) de toda la sección Ventas.
+  // JefePlanta: CONSULTA (solo lectura) del Programa Semana (para ver la carga
+  // proyectada que llega a su plantel).
+  "/confirmaciones": ["Administrador", "Asesor", "GerenteComercial"],
+  "/clientes/semana": ["Administrador", "Asesor", "Programador", "GerenteComercial", "JefePlanta"],
+  "/clientes": ["Administrador", "Asesor", "GerenteComercial"],
   "/comercial": ["Administrador", "GerenteComercial"],
   // Admin: toda la flota. Programador/Despachador/Dosificador/JefePlanta: SOLO la
   // pestaña Operadores (motoristas) — la página filtra las pestañas por rol.

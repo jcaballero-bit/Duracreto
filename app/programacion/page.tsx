@@ -148,12 +148,14 @@ export default async function ProgramacionPage({
     })),
     disenos: disenos.map((di) => ({
       id: di.id,
+      codigo: di.codigo,
       etiqueta: `${di.codigo} — ${especDiseno(di)}`,
     })),
     planteles: planteles.map((p) => ({
       id: p.id,
       nombre: p.nombre,
       zona: p.zona,
+      hubId: p.hub_id,
       plantas: p.plantas.map((pl) => ({
         id: pl.id,
         etiqueta: `${pl.nombre} (${pl.capacidad_m3h} m³/h)`,
@@ -166,6 +168,25 @@ export default async function ProgramacionPage({
     })),
     asesores: asesores.map((a) => ({ id: a.id, etiqueta: a.nombre })),
   };
+
+  // Número de viaje por cliente y día (dinámico, NO se guarda) — mismo criterio que
+  // Despacho: 1..N por cliente ese día, ordenado por hora de carga programada. Solo
+  // viajes con mixer (los placeholders "Sin cubrir" no cuentan).
+  const porClienteDiaProg = new Map<number, { viajeId: number; ordenMs: number }[]>();
+  for (const p of pedidos) {
+    for (const v of p.viajes) {
+      if (v.mixer_id == null) continue;
+      const ordenMs = (v.hora_inicio_carga ?? p.hora_solicitada).getTime();
+      const arr = porClienteDiaProg.get(p.cliente_id) ?? [];
+      arr.push({ viajeId: v.id, ordenMs });
+      porClienteDiaProg.set(p.cliente_id, arr);
+    }
+  }
+  const numViajeClienteProg = new Map<number, { num: number; total: number }>();
+  for (const arr of porClienteDiaProg.values()) {
+    arr.sort((a, b) => a.ordenMs - b.ordenMs || a.viajeId - b.viajeId);
+    arr.forEach((x, i) => numViajeClienteProg.set(x.viajeId, { num: i + 1, total: arr.length }));
+  }
 
   // Serializar a la vista de la tabla, agrupada por plantel.
   const grupos = new Map<
@@ -230,8 +251,13 @@ export default async function ProgramacionPage({
       sugerencias,
       viajes: p.viajes
         .filter((v) => v.motivo_asignacion !== "Sin cubrir" || v.mixer_id == null)
-        .map((v) => ({
+        .map((v) => {
+          const numInfo = v.mixer_id != null ? numViajeClienteProg.get(v.id) : undefined;
+          return {
           id: v.id,
+          codigoViaje: `V-${String(v.id).padStart(6, "0")}`,
+          numClienteDia: numInfo?.num ?? null,
+          totalClienteDia: numInfo?.total ?? 0,
           mixerLabel: v.mixer ? (v.mixer.identificador ?? `#${v.mixer.id}`) : null,
           flota: v.mixer ? v.mixer.plantel_base.nombre : null,
           flotaPropia: v.mixer ? v.mixer.plantel_base_id === p.plantel_id : false,
@@ -242,7 +268,8 @@ export default async function ProgramacionPage({
           llegadaTxt: fmtHM(v.hora_llegada_proyecto),
           descargaTxt: `${fmtHM(v.hora_inicio_descarga)}–${fmtHM(v.hora_fin_descarga)}`,
           regresoTxt: fmtHM(v.hora_regreso_planta),
-        })),
+          };
+        }),
       ubicacion: {
         googleMapsUrl: p.cliente.google_maps_url,
         latitud: p.cliente.latitud,
@@ -257,6 +284,7 @@ export default async function ProgramacionPage({
         hora_local: toLocalInput(p.hora_solicitada),
         tipo_descarga: p.tipo_descarga,
         revenimiento: p.revenimiento,
+        tipo_servicio: p.tipo_servicio,
         sacos_hielo_por_m3: p.sacos_hielo_por_m3,
         bomba_id: p.bomba_id,
         asesor_id: p.asesor_id,

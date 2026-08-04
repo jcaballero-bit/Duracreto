@@ -206,6 +206,27 @@ export default async function DespachoPage({
     nombre: o.nombre,
   }));
 
+  // Número de viaje por CLIENTE y DÍA (dinámico, NO se guarda): reinicia en 1 cada
+  // día por cliente, ordenado por hora de carga (real si existe, si no la
+  // programada). Independiente del id del sistema; se recalcula si se reordena o se
+  // agregan/quitan viajes. Se calcula sobre TODOS los pedidos del cliente ese día
+  // (aunque sean de distintos planteles/pedidos).
+  const porClienteDia = new Map<number, { viajeId: number; ordenMs: number }[]>();
+  for (const p of pedidos) {
+    for (const v of p.viajes) {
+      if (!v.mixer) continue;
+      const ordenMs = (v.ts_inicio_carga_real ?? v.hora_inicio_carga ?? p.hora_solicitada).getTime();
+      const arr = porClienteDia.get(p.cliente_id) ?? [];
+      arr.push({ viajeId: v.id, ordenMs });
+      porClienteDia.set(p.cliente_id, arr);
+    }
+  }
+  const numViajeCliente = new Map<number, { num: number; total: number }>();
+  for (const arr of porClienteDia.values()) {
+    arr.sort((a, b) => a.ordenMs - b.ordenMs || a.viajeId - b.viajeId);
+    arr.forEach((x, i) => numViajeCliente.set(x.viajeId, { num: i + 1, total: arr.length }));
+  }
+
   // Agrupar viajes (con mixer) por plantel.
   const gruposMap = new Map<number, GrupoDespacho>();
   const filasTimeline = new Map<number, FilaMixer>();
@@ -230,9 +251,13 @@ export default async function DespachoPage({
         (v.estado === "Programado" || v.estado === "En carga") &&
         v.ts_fin_carga_real == null;
 
+      const numInfo = numViajeCliente.get(v.id);
       const fila: ViajeDespacho = {
         id: v.id,
         pedidoId: p.id,
+        codigoViaje: `V-${String(v.id).padStart(6, "0")}`,
+        numClienteDia: numInfo?.num ?? 1,
+        totalClienteDia: numInfo?.total ?? 1,
         // Orden cronológico FIJO por la hora PROGRAMADA de carga (no la real): así
         // el orden no cambia cuando el viaje se despacha o se registra su hora real.
         ordenCargaMs: (v.hora_inicio_carga ?? p.hora_solicitada).getTime(),
@@ -357,12 +382,14 @@ export default async function DespachoPage({
     })),
     disenos: disenos.map((di) => ({
       id: di.id,
+      codigo: di.codigo,
       etiqueta: `${di.codigo} — ${especDiseno(di)}`,
     })),
     planteles: planteles.map((p) => ({
       id: p.id,
       nombre: p.nombre,
       zona: p.zona,
+      hubId: p.hub_id,
       plantas: p.plantas.map((pl) => ({
         id: pl.id,
         etiqueta: `${pl.nombre} (${pl.capacidad_m3h} m³/h)`,

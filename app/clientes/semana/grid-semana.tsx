@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
-import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
-import { guardarSolicitudAction } from "../solicitudes-actions";
+import { ChevronLeft, ChevronRight, Plus, Trash2, X } from "lucide-react";
+import { eliminarSolicitudAction, guardarSolicitudAction } from "../solicitudes-actions";
 import { ClienteFormModal, type Opcion } from "../cliente-form-modal";
 import { REVENIMIENTOS, TIPOS_SERVICIO } from "@/lib/revenimiento";
 
@@ -95,6 +95,18 @@ export function GridSemana({
   const [agregarAbierto, setAgregarAbierto] = useState(false);
   const [agregados, setAgregados] = useState<number[]>([]);
   const [filtroPlantel, setFiltroPlantel] = useState<number>(0); // 0 = todos
+  const [, startEliminar] = useTransition();
+
+  // Elimina una proyección (solo Pendiente/Descartada; el servidor rechaza las ya
+  // Programado para conservar la trazabilidad).
+  const eliminarSolicitud = (id: number) => {
+    if (!confirm("¿Eliminar esta proyección del Programa Semana?")) return;
+    startEliminar(async () => {
+      const res = await eliminarSolicitudAction(id);
+      if (res.ok) router.refresh();
+      else alert(res.mensaje ?? "No se pudo eliminar.");
+    });
+  };
 
   const abbrDe = useMemo(() => {
     const m = new Map<number, string>();
@@ -301,6 +313,7 @@ export function GridSemana({
                   onEditar={(clienteId, iso, solicitudId) =>
                     setEditando({ clienteId, iso, solicitudId })
                   }
+                  onEliminar={eliminarSolicitud}
                   onCerrar={() => setEditando(null)}
                   onGuardado={() => {
                     setEditando(null);
@@ -371,6 +384,7 @@ function FragmentoGrupo({
   soloLectura,
   editando,
   onEditar,
+  onEliminar,
   onCerrar,
   onGuardado,
 }: {
@@ -386,6 +400,7 @@ function FragmentoGrupo({
   soloLectura: boolean;
   editando: { clienteId: number; iso: string; solicitudId: number | null } | null;
   onEditar: (clienteId: number, iso: string, solicitudId: number | null) => void;
+  onEliminar: (solicitudId: number) => void;
   onCerrar: () => void;
   onGuardado: () => void;
 }) {
@@ -449,6 +464,7 @@ function FragmentoGrupo({
                         editable={editable}
                         abbrDe={abbrDe}
                         onClick={() => editable && onEditar(c.id, d.iso, entrada.id)}
+                        onEliminar={() => onEliminar(entrada.id)}
                       />
                     ),
                   )}
@@ -498,11 +514,13 @@ function CeldaVista({
   editable,
   abbrDe,
   onClick,
+  onEliminar,
 }: {
   celda: Celda | null;
   editable: boolean;
   abbrDe: Map<number, string>;
   onClick: () => void;
+  onEliminar: () => void;
 }) {
   const base = "min-h-[46px] w-full rounded px-2 py-1 text-left text-xs";
   if (!celda) {
@@ -517,6 +535,32 @@ function CeldaVista({
       <div className={`${base} text-muted/40`}>—</div>
     );
   }
+  // Botón de eliminar: visible solo si el usuario puede editar esta fila. Si la
+  // proyección ya está Programado (se convirtió en pedido real) va deshabilitado
+  // con un texto de ayuda; si está Pendiente/Descartada, elimina el registro.
+  const yaProgramado = celda.estado === "Programado";
+  const botonEliminar = editable ? (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!yaProgramado) onEliminar();
+      }}
+      disabled={yaProgramado}
+      title={
+        yaProgramado
+          ? "Ya fue programado — no se puede eliminar desde aquí"
+          : "Eliminar esta proyección"
+      }
+      aria-label="Eliminar proyección"
+      className={`absolute right-0.5 top-0.5 z-10 rounded p-0.5 ${
+        yaProgramado
+          ? "cursor-not-allowed text-muted/30"
+          : "text-muted/60 hover:bg-red-50 hover:text-danger"
+      }`}
+    >
+      <Trash2 size={12} />
+    </button>
+  ) : null;
   const contenido = (
     <>
       <div className="flex items-center gap-1">
@@ -559,12 +603,18 @@ function CeldaVista({
     </>
   );
   const editableAhora = editable && celda.estado === "Pendiente";
-  return editableAhora ? (
-    <button onClick={onClick} className={`${base} border border-border hover:border-accent`}>
-      {contenido}
-    </button>
-  ) : (
-    <div className={`${base} border border-transparent`}>{contenido}</div>
+  const pad = botonEliminar ? " pr-5" : "";
+  return (
+    <div className="relative">
+      {editableAhora ? (
+        <button onClick={onClick} className={`${base}${pad} border border-border hover:border-accent`}>
+          {contenido}
+        </button>
+      ) : (
+        <div className={`${base}${pad} border border-transparent`}>{contenido}</div>
+      )}
+      {botonEliminar}
+    </div>
   );
 }
 

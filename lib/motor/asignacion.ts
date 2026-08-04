@@ -48,6 +48,7 @@ export interface EntradaPedido {
   bomba_id?: number | null;
   tipo_descarga: string; // "Canal directo" | "Bomba estacionaria" | "Bomba pluma"
   revenimiento?: string | null; // rango de asentamiento (editable), null = usa el del diseño
+  tipo_servicio?: string | null; // "Normal" | "Servicio de Construcción" (filtra diseños)
   sacos_hielo_por_m3?: number; // 0 = sin control; 1-10
   asesor_id?: number | null; // asesor que gestiona el pedido (precargado del cliente)
   hora_bloqueada?: boolean; // true = hora de llegada fija (no reprogramar)
@@ -607,6 +608,116 @@ export async function sugerirHoraDisponible(
   );
 }
 
+// ── Bombas: préstamo por hub (mismo Paso 1/2/3 que los mixers, mapa propio) ──
+// El mapa de dependencia de bombas es el mismo `planteles.hub_id` (Choloma, Puerto
+// Cortés, Villanueva, La Ceiba -> Santa Marta; Hazama -> Tegucigalpa). A diferencia
+// de los mixers, una bomba NO cicla: acompaña al pedido durante toda su descarga.
+// Prioridad: (1) bomba propia del plantel, (2) bomba del hub —reservando primero lo
+// que el hub necesita para su propio programa del día—, (3) refuerzo de otro plantel.
+
+export interface BombaCandidata {
+  id: number;
+  identificador: string;
+  plantelBaseId: number;
+  origen: "Propia" | "Préstamo" | "Refuerzo";
+  pedidosDelDia: number; // cuántos pedidos ya la usan ese día (carga)
+}
+
+/** Bombas candidatas para un pedido del plantel `plantelId`, ordenadas por
+ *  prioridad de hub (propia -> préstamo del hub -> refuerzo) y, dentro de cada
+ *  grupo, por menor carga del día. Excluye bombas en mantenimiento ese día. */
+export async function bombasParaPlantel(
+  plantelId: number,
+  hubId: number | null,
+  dia: Date,
+): Promise<BombaCandidata[]> {
+  const ini = inicioDelDia(dia);
+  const fin = finDelDia(dia);
+  const enMant = await unidadesEnMantenimiento("Bomba", dia);
+
+  const bombas = await prisma.bombas.findMany({
+    where: { estado: ESTADO_DISPONIBLE },
+    select: { id: true, identificador: true, plantel_base_id: true },
+  });
+  // Carga del día por bomba (# de pedidos activos que la usan).
+  const grupos = await prisma.pedidos.groupBy({
+    by: ["bomba_id"],
+    where: {
+      bomba_id: { not: null },
+      estado_pedido: "Activo",
+      hora_solicitada: { gte: ini, lt: fin },
+    },
+    _count: { _all: true },
+  });
+  const cargaDe = new Map<number, number>();
+  for (const g of grupos) if (g.bomba_id != null) cargaDe.set(g.bomba_id, g._count._all);
+
+  const hubReal = hubId ?? plantelId;
+  const propias: BombaCandidata[] = [];
+  const hubBombas: BombaCandidata[] = [];
+  const otras: BombaCandidata[] = [];
+  for (const b of bombas) {
+    if (enMant.has(b.id)) continue;
+    const base: BombaCandidata = {
+      id: b.id,
+      identificador: b.identificador,
+      plantelBaseId: b.plantel_base_id,
+      origen: "Propia",
+      pedidosDelDia: cargaDe.get(b.id) ?? 0,
+    };
+    if (b.plantel_base_id === plantelId) propias.push(base);
+    else if (b.plantel_base_id === hubReal && hubReal !== plantelId)
+      hubBombas.push({ ...base, origen: "Préstamo" });
+    else otras.push({ ...base, origen: "Refuerzo" });
+  }
+  const porCarga = (a: BombaCandidata, b: BombaCandidata) =>
+    a.pedidosDelDia - b.pedidosDelDia || a.id - b.id;
+  propias.sort(porCarga);
+  hubBombas.sort(porCarga);
+  otras.sort(porCarga);
+
+  // Reserva del hub: aparta para su propio programa tantas bombas como pedidos por
+  // bomba tenga ese día; solo el excedente se ofrece en préstamo.
+  let prestamo = hubBombas;
+  if (hubReal !== plantelId && hubBombas.length > 0) {
+    const need = await prisma.pedidos.count({
+      where: {
+        plantel_id: hubReal,
+        estado_pedido: "Activo",
+        tipo_descarga: { not: "Canal directo" },
+        hora_solicitada: { gte: ini, lt: fin },
+      },
+    });
+    const disponibles = Math.max(0, hubBombas.length - need);
+    prestamo = hubBombas.slice(0, disponibles);
+  }
+  return [...propias, ...prestamo, ...otras];
+}
+
+/** Elige automáticamente la mejor bomba PROPIA o de PRÉSTAMO (nunca refuerzo: eso
+ *  requiere elección consciente). Devuelve null si no hay ninguna disponible. */
+export async function elegirBombaAutomatica(
+  plantelId: number,
+  hubId: number | null,
+  dia: Date,
+): Promise<number | null> {
+  const cands = await bombasParaPlantel(plantelId, hubId, dia);
+  const auto = cands.find((b) => b.origen !== "Refuerzo");
+  return auto?.id ?? null;
+}
+
+/** Resuelve la bomba de un pedido: respeta la elección manual; si el pedido es por
+ *  bomba y no se eligió una, la auto-asigna por hub (propia -> hub). */
+async function resolverBombaPedido(entrada: EntradaPedido): Promise<number | null> {
+  if (entrada.bomba_id != null) return entrada.bomba_id; // elección manual
+  if (entrada.tipo_descarga === "Canal directo") return null; // sin bomba
+  const plantel = await prisma.planteles.findUnique({
+    where: { id: entrada.plantel_id },
+    select: { hub_id: true },
+  });
+  return elegirBombaAutomatica(entrada.plantel_id, plantel?.hub_id ?? null, entrada.hora_solicitada);
+}
+
 // ── Programación de un pedido (flujo principal) ──────────────────────────────
 
 /**
@@ -622,6 +733,8 @@ export async function programarPedido(
     entrada.plantel_id,
     entrada.hora_solicitada,
   );
+  // Bomba: elección manual o auto-asignación por hub (propia -> hub).
+  const bombaId = await resolverBombaPedido(entrada);
   const pedido = await prisma.pedidos.create({
     data: {
       cliente_id: entrada.cliente_id,
@@ -632,9 +745,10 @@ export async function programarPedido(
       hora_solicitada: entrada.hora_solicitada,
       plantel_id: entrada.plantel_id,
       planta_id: entrada.planta_id,
-      bomba_id: entrada.bomba_id ?? null,
+      bomba_id: bombaId,
       tipo_descarga: entrada.tipo_descarga,
       revenimiento: entrada.revenimiento ?? null,
+      tipo_servicio: entrada.tipo_servicio ?? null,
       sacos_hielo_por_m3: entrada.sacos_hielo_por_m3 ?? 0,
       asesor_id: entrada.asesor_id ?? null,
       orden_dia: ordenDia,
@@ -665,6 +779,8 @@ export async function modificarPedido(
   });
 
   await prisma.viajes.deleteMany({ where: { pedido_id: pedidoId } });
+  // Bomba: elección manual o auto-asignación por hub (propia -> hub).
+  const bombaId = await resolverBombaPedido(entrada);
   await prisma.pedidos.update({
     where: { id: pedidoId },
     data: {
@@ -676,9 +792,10 @@ export async function modificarPedido(
       hora_solicitada: entrada.hora_solicitada,
       plantel_id: entrada.plantel_id,
       planta_id: entrada.planta_id,
-      bomba_id: entrada.bomba_id ?? null,
+      bomba_id: bombaId,
       tipo_descarga: entrada.tipo_descarga,
       revenimiento: entrada.revenimiento ?? null,
+      tipo_servicio: entrada.tipo_servicio ?? null,
       sacos_hielo_por_m3: entrada.sacos_hielo_por_m3 ?? 0,
       asesor_id: entrada.asesor_id ?? null,
       hora_bloqueada: entrada.hora_bloqueada ?? false,
@@ -787,6 +904,39 @@ async function asignarViajesDePedido(
     alertasMargen,
     viajesRecalculados,
   };
+}
+
+/**
+ * Llegada (hora_llegada_proyecto) MÁS TEMPRANA por pedido activo de una planta+día.
+ * Sirve para medir el impacto de insertar/reprogramar un pedido sobre la hora de
+ * llegada esperada de los clientes que YA estaban programados en esa planta.
+ */
+export async function llegadasPorPlanta(
+  plantaId: number,
+  dia: Date,
+): Promise<Map<number, { ms: number; cliente: string }>> {
+  const viajes = await prisma.viajes.findMany({
+    where: {
+      hora_llegada_proyecto: { not: null },
+      pedido: {
+        planta_id: plantaId,
+        estado_pedido: "Activo",
+        hora_solicitada: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
+      },
+    },
+    select: {
+      pedido_id: true,
+      hora_llegada_proyecto: true,
+      pedido: { select: { cliente: { select: { empresa: true } } } },
+    },
+  });
+  const m = new Map<number, { ms: number; cliente: string }>();
+  for (const v of viajes) {
+    const t = v.hora_llegada_proyecto!.getTime();
+    const cur = m.get(v.pedido_id);
+    if (!cur || t < cur.ms) m.set(v.pedido_id, { ms: t, cliente: v.pedido.cliente.empresa });
+  }
+  return m;
 }
 
 /** Suma el volumen de los viajes del pedido que quedaron sin mixer. */
@@ -903,8 +1053,18 @@ async function calcularHolguraPorPlantel(dia: Date): Promise<Map<number, number>
 
 export interface ResultadoReasignacion {
   ok: boolean;
-  motivo?: string;
+  motivo?: string; // mensaje de ERROR (bloqueo)
   alertasMargen: AlertaMargen[];
+  // Aviso informativo (no bloqueante), p. ej. flota insuficiente al recuperar un
+  // viaje liberado o al cubrir el remanente de volumen.
+  aviso?: string;
+  // Viajes existentes que se vieron afectados por la reasignación (liberados y
+  // reprogramados, o a los que se les absorbió volumen). Para la bitácora.
+  viajesAfectados?: number[];
+  // Viajes NUEVOS creados para cubrir el remanente de volumen (cambio de capacidad).
+  viajesAgregados?: number[];
+  // Volumen que quedó SIN CUBRIR tras la reasignación (0 = todo cubierto).
+  volumenSinCubrir?: number;
 }
 
 /**
@@ -960,46 +1120,191 @@ export async function reasignarMixer(
   }
 
   const dia = viaje.pedido.hora_solicitada;
-  const ocupadas = await prisma.viajes.findMany({
+  const round = (n: number) => Math.round(n * 100) / 100;
+
+  // Otros viajes de ESTE mixer ese día que SE TRASLAPAN con la ventana del viaje
+  // objetivo (excluyendo el propio viaje). Un mixer puede hacer varios viajes al
+  // día si NO se traslapan (reutilización), así que solo nos importan los que sí.
+  const otros = await prisma.viajes.findMany({
     where: {
       mixer_id: nuevoMixerId,
       id: { not: viajeId },
       estado: { not: "Cancelado" },
       hora_inicio_carga: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
     },
-    select: { hora_inicio_carga: true, hora_regreso_planta: true },
+    include: { pedido: { select: { planta_id: true } } },
   });
-  const ventanas = ocupadas
-    .map(ventanaDeViaje)
-    .filter((v): v is VentanaViaje => v != null);
+  const conflictivos = otros.filter((o) => {
+    const w = ventanaDeViaje(o);
+    return w != null && !unidadLibreEnVentana(ventana, [w]);
+  });
 
-  if (!unidadLibreEnVentana(ventana, ventanas)) {
+  // Un viaje en conflicto que YA inició su carga (o está Completado) no se puede
+  // liberar: el mixer ya está físicamente comprometido. En ese caso se bloquea.
+  const enCurso = conflictivos.find(
+    (o) => o.ts_inicio_carga_real != null || o.estado === ESTADO_VIAJE_COMPLETADO,
+  );
+  if (enCurso) {
     return {
       ok: false,
-      motivo: `El mixer ${nuevoMixerId} ya tiene un viaje que se traslapa en ese horario.`,
+      motivo: `El mixer ${mixer.identificador ?? `#${nuevoMixerId}`} ya está cargando/completó el viaje #${enCurso.id} que se traslapa con este horario — no se puede tomar.`,
       alertasMargen: [],
     };
   }
 
-  // Recomputar la procedencia (motivo) según el plantel del nuevo mixer y
-  // arrastrar el motorista habitual del mixer al viaje.
+  // Procedencia según el plantel del nuevo mixer.
   const motivo =
     mixer.plantel_base_id === viaje.pedido.plantel_id
       ? "Flota propia"
       : "Préstamo de zona";
 
+  // Cambio de capacidad: si el nuevo mixer es MÁS PEQUEÑO que el volumen que
+  // llevaba el viaje, se recorta a la capacidad y el remanente se redistribuye.
+  const nuevaCap = mixer.capacidad_m3;
+  const volCapado = Math.min(viaje.volumen_asignado_m3, nuevaCap);
+  let remanente = round(viaje.volumen_asignado_m3 - volCapado);
+
+  // Asignar el mixer al viaje objetivo (arrastra el motorista del mixer).
   await prisma.viajes.update({
     where: { id: viajeId },
     data: {
       mixer_id: nuevoMixerId,
-      capacidad_asignada_m3: mixer.capacidad_m3,
+      capacidad_asignada_m3: nuevaCap,
+      volumen_asignado_m3: volCapado,
       operador_id: mixer.operador_asignado_id,
       motivo_asignacion: motivo,
       ajustado_manualmente: true,
     },
   });
 
-  return { ok: true, alertasMargen: await detectarAlertasMargen(dia) };
+  const viajesAfectados: number[] = [];
+  const viajesAgregados: number[] = [];
+  const plantasRecalc = new Set<number>([viaje.pedido.planta_id]);
+
+  // ── Liberar los viajes futuros en conflicto y dejar que el motor los reasigne ──
+  for (const o of conflictivos) {
+    await prisma.viajes.update({
+      where: { id: o.id },
+      data: {
+        mixer_id: null,
+        ajustado_manualmente: false, // que la cascada le busque otro mixer
+        operador_id: null,
+        motivo_asignacion: "Flota propia", // tentativo; la cascada recomputa
+        hora_inicio_carga: null,
+        hora_fin_carga: null,
+        hora_salida_planta: null,
+        hora_llegada_proyecto: null,
+        hora_inicio_descarga: null,
+        hora_fin_descarga: null,
+        hora_regreso_planta: null,
+      },
+    });
+    viajesAfectados.push(o.id);
+    plantasRecalc.add(o.pedido.planta_id);
+  }
+
+  // ── Recalcular volumen del pedido si el cambio de capacidad dejó remanente ──
+  if (remanente > 0.001) {
+    // 1) Absorber en otros viajes del MISMO pedido que tengan margen dentro de la
+    //    capacidad de su propio mixer ya asignado (sin tocar viajes ya iniciados).
+    const hermanos = await prisma.viajes.findMany({
+      where: {
+        pedido_id: viaje.pedido_id,
+        id: { not: viajeId },
+        estado: { not: "Cancelado" },
+        motivo_asignacion: { not: "Sin cubrir" },
+      },
+      orderBy: { id: "asc" },
+    });
+    for (const h of hermanos) {
+      if (remanente <= 0.001) break;
+      if (h.ts_inicio_carga_real != null || h.estado === ESTADO_VIAJE_COMPLETADO) continue;
+      const margen = round(h.capacidad_asignada_m3 - h.volumen_asignado_m3);
+      if (margen <= 0.001) continue;
+      const add = Math.min(margen, remanente);
+      await prisma.viajes.update({
+        where: { id: h.id },
+        data: { volumen_asignado_m3: round(h.volumen_asignado_m3 + add) },
+      });
+      remanente = round(remanente - add);
+      viajesAfectados.push(h.id);
+    }
+
+    // 2) Si aún queda remanente, generar viaje(s) adicional(es) con el mismo motor
+    //    de "mejor combinación de capacidades". El mixer lo asigna la cascada.
+    if (remanente > 0.001) {
+      const plantelPedido = await prisma.planteles.findUniqueOrThrow({
+        where: { id: viaje.pedido.plantel_id },
+        select: { id: true, hub_id: true },
+      });
+      const candidatos = await candidatosDePlanta(
+        plantelPedido.id,
+        plantelPedido.hub_id,
+        dia,
+      );
+      const caps = [...new Set(candidatos.map((m) => m.capacidad_m3))];
+      const plan = planificarCombinacion(remanente, caps);
+      for (const vp of plan.viajes) {
+        const nuevo = await prisma.viajes.create({
+          data: {
+            pedido_id: viaje.pedido_id,
+            mixer_id: null,
+            capacidad_asignada_m3: vp.capacidad,
+            volumen_asignado_m3: vp.volumen,
+            hora_solicitada: viaje.pedido.hora_solicitada,
+            motivo_asignacion: "Flota propia",
+            estado_confirmacion: "Pendiente",
+          },
+        });
+        viajesAgregados.push(nuevo.id);
+      }
+      if (plan.volumenSinCubrir > 0.001) {
+        await prisma.viajes.create({
+          data: {
+            pedido_id: viaje.pedido_id,
+            mixer_id: null,
+            capacidad_asignada_m3: 0,
+            volumen_asignado_m3: round(plan.volumenSinCubrir),
+            hora_solicitada: viaje.pedido.hora_solicitada,
+            motivo_asignacion: "Sin cubrir",
+            estado_confirmacion: "Pendiente",
+          },
+        });
+      }
+    }
+  }
+
+  // ── Recalcular la cascada de todas las plantas afectadas (target primero, para
+  //    que la ocupación del mixer fijado se propague al resto). ──
+  for (const pid of plantasRecalc) {
+    await recalcularCascadaPlanta(pid, dia);
+  }
+
+  // Volumen sin cubrir tras todo (target + viajes liberados de otros pedidos).
+  const pedidosAfectados = new Set<number>([viaje.pedido_id]);
+  const liberados = await prisma.viajes.findMany({
+    where: { id: { in: viajesAfectados } },
+    select: { pedido_id: true },
+  });
+  for (const l of liberados) pedidosAfectados.add(l.pedido_id);
+  let volumenSinCubrir = 0;
+  for (const pid of pedidosAfectados) {
+    volumenSinCubrir = round(volumenSinCubrir + (await volumenSinCubrirDePedido(pid)));
+  }
+
+  const aviso =
+    volumenSinCubrir > 0.001
+      ? `Flota insuficiente: quedaron ${volumenSinCubrir} m³ sin cubrir tras la reasignación. Revisa las sugerencias de refuerzo.`
+      : undefined;
+
+  return {
+    ok: true,
+    alertasMargen: await detectarAlertasMargen(dia),
+    aviso,
+    viajesAfectados,
+    viajesAgregados,
+    volumenSinCubrir,
+  };
 }
 
 // ── Alerta de margen insuficiente (red de seguridad) ─────────────────────────

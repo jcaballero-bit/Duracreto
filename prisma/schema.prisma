@@ -246,6 +246,10 @@ model asesores {
   nombre          String
   correo          String?
   usuario_auth_id String? @unique // enlaza a User.id (rol Asesor)
+  // Zona principal del asesor ("Norte" | "Centro Sur"). En Programa Semana un asesor
+  // CON zona ve (solo lectura) las filas de otros asesores de SU misma zona, nunca
+  // las de la otra zona. Un asesor SIN zona (null) ve todas (hasta que se le asigne).
+  zona_asignada   String?
 
   usuario     User?                     @relation(fields: [usuario_auth_id], references: [id])
   clientes    clientes[]
@@ -302,6 +306,10 @@ model pedidos {
   bomba_id          Int?
   tipo_descarga     String // "Canal directo" | "Bomba estacionaria" | "Bomba pluma"
   revenimiento      String? // rango de asentamiento ('3" a 4"'…'9" a 10"'), editable por Programador/Jefe de Planta
+  // Tipo de servicio ("Normal" | "Servicio de Construcción"): lo elige el asesor en
+  // la solicitud y filtra el catálogo de diseños de mezcla en Programación (Normal
+  // -> códigos que empiezan con C/Pre; Servicio de Construcción -> códigos con Ser).
+  tipo_servicio     String?
   sacos_hielo_por_m3 Int    @default(0) // control de temperatura (0 = sin control; 1-10)
   asesor_id         Int? // asesor que gestiona el pedido (precargado del cliente, editable)
   // Orden de atención del pedido DENTRO de su plantel+fecha (1 = primero). Es la

@@ -8,7 +8,12 @@ import {
   eliminarPedidoAction,
   reordenarPedidoAction,
 } from "../actions";
-import { PedidoForm, type ClienteOpcion, type ValoresPedido } from "../pedido-form";
+import {
+  PedidoForm,
+  type ClienteOpcion,
+  type DisenoOpcion,
+  type ValoresPedido,
+} from "../pedido-form";
 import { Badge } from "../components/ui";
 import { BotonesMapa, type UbicacionCliente } from "../components/maps-buttons";
 import { CancelarPedidoModal } from "../components/cancelar-pedido-modal";
@@ -21,6 +26,7 @@ interface PlantelOpcion {
   id: number;
   nombre: string;
   zona: string;
+  hubId: number | null;
   plantas: Opcion[];
 }
 interface BombaOpcion {
@@ -30,7 +36,7 @@ interface BombaOpcion {
 }
 export interface OpcionesModal {
   clientes: ClienteOpcion[];
-  disenos: Opcion[];
+  disenos: DisenoOpcion[];
   planteles: PlantelOpcion[];
   bombas: BombaOpcion[];
   asesores: Opcion[];
@@ -38,6 +44,9 @@ export interface OpcionesModal {
 
 export interface ViajeVista {
   id: number;
+  codigoViaje: string; // identificador del sistema, ej. "V-000045"
+  numClienteDia: number | null; // número de viaje del cliente ese día (1..N); null si no aplica
+  totalClienteDia: number; // total de viajes del cliente ese día
   mixerLabel: string | null;
   flota: string | null; // nombre del plantel base del mixer
   flotaPropia: boolean; // true si el mixer es del mismo plantel del pedido
@@ -447,7 +456,14 @@ function DetalleViajes({ viajes }: { viajes: ViajeVista[] }) {
         <tbody>
           {viajes.map((v) => (
             <tr key={v.id} className="border-t border-border/60">
-              <td className="py-1 pr-3">#{v.id}</td>
+              <td className="py-1 pr-3">
+                <span className="font-mono">{v.codigoViaje}</span>
+                {v.numClienteDia != null && (
+                  <div className="text-muted">
+                    Viaje {v.numClienteDia} de {v.totalClienteDia}
+                  </div>
+                )}
+              </td>
               <td className="pr-3">{v.mixerLabel ?? "—"}</td>
               <td className="pr-3">{v.volumen} m³</td>
               <td className="pr-3">

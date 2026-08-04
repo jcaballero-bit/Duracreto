@@ -82,7 +82,9 @@ export function TablaDesempeno({
           {filas.length === 0 ? (
             <tr>
               <td colSpan={7} className="px-3 py-8 text-center text-muted">
-                No hay asesores registrados.
+                {zonaParam === "todas"
+                  ? "No hay asesores registrados."
+                  : `Ningún asesor con actividad en ${zonaParam} este mes.`}
               </td>
             </tr>
           ) : (

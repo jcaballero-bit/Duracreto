@@ -11,20 +11,41 @@ import { exigirAdmin } from "@/lib/auth/guard";
  * correo, lo enlaza (evita duplicados cuando el asesor ya estaba en el catálogo);
  * si no, crea uno nuevo con el nombre/correo del usuario.
  */
-async function vincularOCrearAsesor(userId: string, nombre: string, email: string) {
+async function vincularOCrearAsesor(
+  userId: string,
+  nombre: string,
+  email: string,
+  zona?: string | null,
+) {
+  // Zona del usuario → zona del asesor (se mantienen sincronizadas). "" = sin zona.
+  const z = zona && zona !== "" ? zona : null;
   const yaVinculado = await prisma.asesores.findFirst({ where: { usuario_auth_id: userId } });
-  if (yaVinculado) return;
+  if (yaVinculado) {
+    // Ya vinculado: si se indicó una zona, sincronizarla en el asesor.
+    if (z != null && yaVinculado.zona_asignada !== z) {
+      await prisma.asesores.update({ where: { id: yaVinculado.id }, data: { zona_asignada: z } });
+    }
+    return;
+  }
   if (email) {
     const porCorreo = await prisma.asesores.findFirst({
       where: { usuario_auth_id: null, correo: email },
     });
     if (porCorreo) {
-      await prisma.asesores.update({ where: { id: porCorreo.id }, data: { usuario_auth_id: userId } });
+      await prisma.asesores.update({
+        where: { id: porCorreo.id },
+        data: { usuario_auth_id: userId, ...(z != null ? { zona_asignada: z } : {}) },
+      });
       return;
     }
   }
   await prisma.asesores.create({
-    data: { nombre: nombre.trim() || email || "Asesor", correo: email || null, usuario_auth_id: userId },
+    data: {
+      nombre: nombre.trim() || email || "Asesor",
+      correo: email || null,
+      usuario_auth_id: userId,
+      zona_asignada: z,
+    },
   });
 }
 
@@ -48,10 +69,13 @@ export async function alternarRolAction(
     await prisma.userRole.delete({ where: { id: existe.id } });
   } else {
     await prisma.userRole.create({ data: { userId, rol } });
-    // Al ACTIVAR el rol Asesor, autocrear/vincular su registro en asesores.
+    // Al ACTIVAR el rol Asesor, autocrear/vincular su registro en asesores (con su zona).
     if (rol === "Asesor") {
-      const u = await prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } });
-      if (u) await vincularOCrearAsesor(userId, u.name ?? "", u.email ?? "");
+      const u = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, zona: true },
+      });
+      if (u) await vincularOCrearAsesor(userId, u.name ?? "", u.email ?? "", u.zona);
     }
   }
 
@@ -66,9 +90,12 @@ export async function fijarZonaAction(
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const guard = await exigirAdmin();
   if (!guard.ok) return guard;
-  await prisma.user.update({
-    where: { id: userId },
-    data: { zona: zona === "" ? null : zona },
+  const z = zona === "" ? null : zona;
+  await prisma.user.update({ where: { id: userId }, data: { zona: z } });
+  // Sincronizar la zona del asesor vinculado (si lo hay): Usuarios y roles → Asesores.
+  await prisma.asesores.updateMany({
+    where: { usuario_auth_id: userId },
+    data: { zona_asignada: z },
   });
   revalidatePath("/administracion");
   return { ok: true };
@@ -139,9 +166,10 @@ export async function crearUsuarioAction(
       roles: { create: roles.map((rol) => ({ rol })) },
     },
   });
-  // Si nace con rol Asesor, autocrear/vincular su registro en `asesores`.
+  // Si nace con rol Asesor, autocrear/vincular su registro en `asesores` con la
+  // zona seleccionada al crear el usuario.
   if (roles.includes("Asesor")) {
-    await vincularOCrearAsesor(u.id, nombre, email);
+    await vincularOCrearAsesor(u.id, nombre, email, zona);
   }
   revalidatePath("/administracion");
   return { ok: true };

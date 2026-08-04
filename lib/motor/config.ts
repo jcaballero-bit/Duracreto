@@ -46,6 +46,13 @@ export const MIN_SALIDA_TRAS_CARGA = 0;
  */
 export const HORA_APERTURA_POR_DEFECTO = 7;
 
+/**
+ * Umbral (minutos) para advertir al insertar un pedido en medio de una cola ya
+ * programada: si el recálculo retrasa la llegada esperada de algún cliente ya
+ * programado MÁS que esto, se pide confirmación antes de guardar. Configurable.
+ */
+export const UMBRAL_IMPACTO_INSERCION_MIN = 15;
+
 /** Estados que dejan a un mixer/bomba fuera del pool asignable. */
 export const ESTADO_DISPONIBLE = "Disponible";
 

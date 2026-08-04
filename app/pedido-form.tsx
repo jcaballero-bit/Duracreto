@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 import {
   crearPedidoAction,
   modificarPedidoAction,
@@ -9,11 +9,15 @@ import {
 } from "./actions";
 import { Badge, PrimaryButton } from "./components/ui";
 import { BotonesMapa } from "./components/maps-buttons";
-import { REVENIMIENTOS } from "@/lib/revenimiento";
+import { REVENIMIENTOS, TIPOS_SERVICIO, disenoAplicaTipoServicio } from "@/lib/revenimiento";
 
 interface Opcion {
   id: number;
   etiqueta: string;
+}
+/** Diseño de mezcla con su código, para filtrar por tipo de servicio. */
+export interface DisenoOpcion extends Opcion {
+  codigo: string;
 }
 /** Cliente con su asesor comercial dueño (para precargar el asesor del pedido),
  * su tiempo de transporte de referencia (para precargarlo en el pedido) y su
@@ -29,6 +33,7 @@ interface PlantelOpcion {
   id: number;
   nombre: string;
   zona: string;
+  hubId: number | null; // hub de zona (para ofrecer bombas en préstamo)
   plantas: Opcion[];
 }
 interface BombaOpcion {
@@ -47,6 +52,7 @@ export interface ValoresPedido {
   hora_local: string; // "YYYY-MM-DDTHH:mm" para el input datetime-local
   tipo_descarga: string;
   revenimiento: string | null;
+  tipo_servicio: string | null;
   sacos_hielo_por_m3: number;
   bomba_id: number | null;
   asesor_id: number | null;
@@ -92,7 +98,7 @@ export function PedidoForm({
   onExito,
 }: {
   clientes: ClienteOpcion[];
-  disenos: Opcion[];
+  disenos: DisenoOpcion[];
   planteles: PlantelOpcion[];
   bombas: BombaOpcion[];
   asesores: Opcion[];
@@ -114,6 +120,15 @@ export function PedidoForm({
   );
 
   const [estado, formAction, pendiente] = useActionState(accion, estadoInicial);
+
+  // Confirmación de impacto (punto 6): si insertar el pedido retrasa a un cliente
+  // ya programado, el servidor revierte y pide confirmación. Al aceptar, se reenvía
+  // el formulario con `confirmar_impacto=1` (input oculto activado por este estado).
+  const formRef = useRef<HTMLFormElement>(null);
+  const [forzarImpacto, setForzarImpacto] = useState(false);
+  useEffect(() => {
+    if (forzarImpacto) formRef.current?.requestSubmit();
+  }, [forzarImpacto]);
 
   // Cliente y asesor son controlados: al elegir cliente se PRECARGA su asesor
   // dueño, pero el usuario puede cambiarlo (no es de solo lectura).
@@ -176,11 +191,44 @@ export function PedidoForm({
   const [bloqueada, setBloqueada] = useState<boolean>(valores?.hora_bloqueada ?? false);
   const fechaBase = horaLocal.slice(0, 10);
 
-  // Bombas del plantel + compartidas (plantelId null).
-  const bombasDisponibles = useMemo(
-    () => bombas.filter((b) => b.plantelId === plantelId || b.plantelId === null),
-    [bombas, plantelId],
+  // Tipo de servicio (Normal / Servicio de Construcción): lo precarga la solicitud
+  // del asesor y FILTRA el catálogo de diseños de mezcla. Editable por el Programador.
+  const [tipoServicio, setTipoServicio] = useState<string>(
+    valores?.tipo_servicio ?? preset?.tipoServicioAsesor ?? "",
   );
+  const disenosFiltrados = useMemo(
+    () => disenos.filter((d) => disenoAplicaTipoServicio(d.codigo, tipoServicio)),
+    [disenos, tipoServicio],
+  );
+  // Diseño controlado: si el filtro por tipo de servicio deja fuera el actual, se
+  // reajusta al primero permitido (o 0 si no hay ninguno que cumpla el filtro).
+  const [disenoId, setDisenoId] = useState<number>(
+    valores?.diseno_id ?? preset?.diseno_id ?? disenos[0]?.id ?? 0,
+  );
+  useEffect(() => {
+    if (!disenosFiltrados.some((d) => d.id === disenoId)) {
+      setDisenoId(disenosFiltrados[0]?.id ?? 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tipoServicio]);
+
+  // Bombas ordenadas por prioridad de hub: propias del plantel (o compartidas)
+  // primero, luego las del HUB (préstamo), luego las de otro plantel (refuerzo
+  // excepcional). Se etiquetan para que el préstamo/refuerzo sea una elección
+  // consciente. Así un plantel dependiente sin bomba propia igual puede elegir una.
+  const hubIdSel = planteles.find((p) => p.id === plantelId)?.hubId ?? null;
+  const bombasDisponibles = useMemo(() => {
+    const clasif = (b: BombaOpcion) => {
+      if (b.plantelId === plantelId || b.plantelId === null) return { rank: 0, sufijo: "" };
+      if (hubIdSel != null && hubIdSel !== plantelId && b.plantelId === hubIdSel)
+        return { rank: 1, sufijo: " (préstamo del hub)" };
+      return { rank: 2, sufijo: " (refuerzo — otro plantel)" };
+    };
+    return bombas
+      .map((b) => ({ b, c: clasif(b) }))
+      .sort((x, y) => x.c.rank - y.c.rank || x.b.id - y.b.id)
+      .map(({ b, c }) => ({ ...b, etiqueta: b.etiqueta + c.sufijo }));
+  }, [bombas, plantelId, hubIdSel]);
 
   // Al cambiar de plantel, si la planta actual ya no pertenece, tomar la primera.
   useEffect(() => {
@@ -218,10 +266,11 @@ export function PedidoForm({
 
   return (
     <div className="space-y-4">
-      <form action={formAction} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <form ref={formRef} action={formAction} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {preset?.solicitud_id != null && (
           <input type="hidden" name="solicitud_id" value={preset.solicitud_id} />
         )}
+        {forzarImpacto && <input type="hidden" name="confirmar_impacto" value="1" />}
         <Campo label="Cliente">
           <select
             name="cliente_id"
@@ -296,19 +345,44 @@ export function PedidoForm({
           </div>
         )}
 
-        <Campo label="Diseño de mezcla">
+        <Campo label="Tipo de servicio">
           <select
-            name="diseno_id"
+            name="tipo_servicio"
             className={inputCls}
-            defaultValue={valores?.diseno_id ?? preset?.diseno_id}
-            required
+            value={tipoServicio}
+            onChange={(e) => setTipoServicio(e.target.value)}
           >
-            {disenos.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.etiqueta}
+            <option value="">Sin especificar (todos los diseños)</option>
+            {TIPOS_SERVICIO.map((t) => (
+              <option key={t} value={t}>
+                {t}
               </option>
             ))}
           </select>
+        </Campo>
+
+        <Campo label="Diseño de mezcla">
+          {disenosFiltrados.length === 0 ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
+              No hay diseños de mezcla para el tipo de servicio{" "}
+              <strong>{tipoServicio}</strong>. Cambia el tipo de servicio o crea el
+              diseño correspondiente en Administración › Diseños de mezcla.
+            </div>
+          ) : (
+            <select
+              name="diseno_id"
+              className={inputCls}
+              value={disenoId}
+              onChange={(e) => setDisenoId(Number(e.target.value))}
+              required
+            >
+              {disenosFiltrados.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.etiqueta}
+                </option>
+              ))}
+            </select>
+          )}
         </Campo>
 
         <Campo label="Revenimiento">
@@ -510,10 +584,30 @@ export function PedidoForm({
         </div>
       </form>
 
-      {estado.mensaje && !estado.ok && (
-        <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-          {estado.mensaje}
-        </p>
+      {estado.requiereConfirmacion ? (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
+          <p className="mb-2">⚠️ {estado.mensaje}</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setForzarImpacto(true)}
+              disabled={pendiente}
+              className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              Continuar de todos modos
+            </button>
+            <span className="self-center text-xs text-amber-700">
+              O ajusta la hora/planta y vuelve a intentar.
+            </span>
+          </div>
+        </div>
+      ) : (
+        estado.mensaje &&
+        !estado.ok && (
+          <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+            {estado.mensaje}
+          </p>
+        )
       )}
 
       {estado.ok && estado.resultado && <ResultadoPanel r={estado.resultado} />}

@@ -51,6 +51,27 @@ export default async function ProgramaSemanaPage({
   const roles = sesion?.user?.roles ?? [];
   const puedeEditarTodo = alcance.esAdmin || alcance.esProgramador;
   const puedeCrearCliente = alcance.esAdmin || alcance.esAsesor;
+  // GerenteComercial y JefePlanta: solo CONSULTA (sin editar celdas ni agregar
+  // clientes) — ven la carga proyectada en modo solo lectura.
+  const esSupervisor = alcance.esGerenteComercial || alcance.esJefePlanta;
+
+  // Restricción por zona (punto 5): un asesor CON zona asignada ve solo las filas de
+  // asesores de SU MISMA zona (las suyas siempre; las de otros de su zona en solo
+  // lectura). Sin zona (o Admin/Programador/Gerente) ve todas. Enforcement en el
+  // servidor: filtra la consulta, no solo la UI.
+  const esSoloAsesor = alcance.esAsesor && !alcance.esAdmin && !alcance.esProgramador;
+  let zonaAsesor: string | null = null;
+  if (esSoloAsesor) {
+    const yo = await prisma.asesores.findFirst({
+      where: { usuario_auth_id: userId },
+      select: { zona_asignada: true },
+    });
+    zonaAsesor = yo?.zona_asignada ?? null;
+  }
+  const whereZonaSolicitud =
+    esSoloAsesor && zonaAsesor
+      ? { cliente: { asesor: { zona_asignada: zonaAsesor } } }
+      : {};
 
   const sp = await searchParams;
   const hoy = new Date();
@@ -73,16 +94,22 @@ export default async function ProgramaSemanaPage({
   const next = new Date(lunes); next.setDate(next.getDate() + 7);
 
   const [solicitudes, planteles, candidatosRaw, asesores] = await Promise.all([
-    // Proyecciones de la semana (de TODOS los asesores: se leen para ver la carga).
+    // Proyecciones de la semana. Un asesor con zona ve solo las de su zona; el resto
+    // (Admin/Programador/Gerente, o asesor sin zona) ve todas para leer la carga.
     prisma.solicitudes_anticipadas.findMany({
-      where: { fecha_requerida: rango },
+      where: { fecha_requerida: rango, ...whereZonaSolicitud },
       include: {
         cliente: {
           include: { asesor: { select: { nombre: true, usuario_auth_id: true } } },
         },
       },
     }),
-    prisma.planteles.findMany({ orderBy: { nombre: "asc" } }),
+    // Un asesor CON zona solo ve/usa los planteles de SU zona (filtro y selector de
+    // planta de la celda); el resto ve todos.
+    prisma.planteles.findMany({
+      where: esSoloAsesor && zonaAsesor ? { zona: zonaAsesor } : {},
+      orderBy: { nombre: "asc" },
+    }),
     // Candidatos para "agregar a la semana": solo clientes ACTIVOS (el Asesor
     // solo los suyos). Los inactivos no se ofrecen para programar.
     prisma.clientes.findMany({
@@ -164,7 +191,8 @@ export default async function ProgramaSemanaPage({
           candidatos={candidatos}
           planteles={plantelesOpc}
           esAdmin={alcance.esAdmin}
-          resaltarEditables={!puedeEditarTodo}
+          resaltarEditables={alcance.esAsesor}
+          soloLectura={esSupervisor}
           puedeCrearCliente={puedeCrearCliente}
           asesores={asesores.map((a) => ({ value: String(a.id), label: a.nombre }))}
           prevIso={ymd(prev)}

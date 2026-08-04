@@ -23,7 +23,14 @@ export interface PedidoConfirm {
 
 const COLSPAN = 11;
 
-export function ListaConfirmaciones({ pedidos }: { pedidos: PedidoConfirm[] }) {
+export function ListaConfirmaciones({
+  pedidos,
+  soloLectura = false,
+}: {
+  pedidos: PedidoConfirm[];
+  // Modo consulta (Gerencia Comercial): muestra el estado, sin botón Confirmar.
+  soloLectura?: boolean;
+}) {
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
 
@@ -38,10 +45,14 @@ export function ListaConfirmaciones({ pedidos }: { pedidos: PedidoConfirm[] }) {
   if (pedidos.length === 0) {
     return (
       <p className="py-8 text-center text-sm text-muted">
-        No hay pedidos de tus clientes para confirmar en estas fechas.
+        {soloLectura
+          ? "No hay pedidos programados en estas fechas."
+          : "No hay pedidos de tus clientes para confirmar en estas fechas."}
       </p>
     );
   }
+
+  const colspan = soloLectura ? COLSPAN - 1 : COLSPAN;
 
   // Agrupar por plantel conservando el orden ya calculado en el servidor.
   const grupos: { plantel: string; filas: PedidoConfirm[] }[] = [];
@@ -66,7 +77,7 @@ export function ListaConfirmaciones({ pedidos }: { pedidos: PedidoConfirm[] }) {
             <th className="px-3 py-2">Transporte</th>
             <th className="px-3 py-2">Elemento</th>
             <th className="px-3 py-2">Confirmación</th>
-            <th className="px-3 py-2">Acción</th>
+            {!soloLectura && <th className="px-3 py-2">Acción</th>}
           </tr>
         </thead>
         <tbody>
@@ -74,7 +85,7 @@ export function ListaConfirmaciones({ pedidos }: { pedidos: PedidoConfirm[] }) {
             <Fragment key={g.plantel}>
               <tr className="bg-content/60">
                 <td
-                  colSpan={COLSPAN}
+                  colSpan={colspan}
                   className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink"
                 >
                   {g.plantel}
@@ -101,19 +112,21 @@ export function ListaConfirmaciones({ pedidos }: { pedidos: PedidoConfirm[] }) {
                       {p.confirmado ? "Confirmado" : "Pendiente"}
                     </Badge>
                   </td>
-                  <td className="px-3 py-2">
-                    {p.confirmado ? (
-                      <span className="text-xs text-muted">—</span>
-                    ) : (
-                      <button
-                        disabled={pendiente}
-                        onClick={() => confirmar(p.id)}
-                        className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
-                      >
-                        Confirmar
-                      </button>
-                    )}
-                  </td>
+                  {!soloLectura && (
+                    <td className="px-3 py-2">
+                      {p.confirmado ? (
+                        <span className="text-xs text-muted">—</span>
+                      ) : (
+                        <button
+                          disabled={pendiente}
+                          onClick={() => confirmar(p.id)}
+                          className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+                        >
+                          Confirmar
+                        </button>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </Fragment>

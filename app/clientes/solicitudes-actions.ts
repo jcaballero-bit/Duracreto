@@ -189,6 +189,34 @@ export async function guardarSolicitudAction(
   }
 }
 
+/**
+ * Elimina una proyección del Programa Semana. Solo se permite si está Pendiente o
+ * Descartada; una ya `Programado` generó un pedido real y NO se borra desde aquí
+ * (se conserva la trazabilidad). Asesor: solo las de sus clientes. Queda en bitácora.
+ */
+export async function eliminarSolicitudAction(id: number): Promise<Res> {
+  const ctx = await contexto();
+  if ("error" in ctx) return { ok: false, mensaje: ctx.error };
+  const solicitud = await prisma.solicitudes_anticipadas.findUnique({ where: { id } });
+  if (!solicitud) return { ok: false, mensaje: "Proyección no encontrada." };
+  const permiso = await puedeEscribirCliente(ctx, solicitud.cliente_id);
+  if (!permiso.ok) return permiso;
+  if (solicitud.estado === "Programado") {
+    return {
+      ok: false,
+      mensaje: "Ya fue programado — no se puede eliminar desde aquí.",
+    };
+  }
+  try {
+    await prisma.solicitudes_anticipadas.delete({ where: { id } });
+    await auditar(id, ctx.quien, "*", "Proyección eliminada (Programa Semana)");
+    revalidatePath("/clientes/semana");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, mensaje: e instanceof Error ? e.message : "Error inesperado." };
+  }
+}
+
 /** El Programador/Administrador descarta una proyección sin convertirla. */
 export async function descartarSolicitudAction(id: number): Promise<Res> {
   const ctx = await contexto();

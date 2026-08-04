@@ -112,6 +112,7 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         nombre: s(d.nombre),
         correo: sNull(d.correo),
         usuario_auth_id: sNull(d.usuario_auth_id),
+        zona_asignada: sNull(d.zona_asignada),
       };
     case "disenos":
       return {
@@ -166,6 +167,23 @@ function revalidarCatalogos() {
   revalidatePath("/flota");
 }
 
+/**
+ * Mantiene sincronizada la zona del asesor con la de su usuario vinculado:
+ * al editar la zona en Asesores, se refleja en Usuarios y roles (`User.zona`).
+ */
+async function sincronizarZonaUsuarioDesdeAsesor(asesorId: number) {
+  const a = await prisma.asesores.findUnique({
+    where: { id: asesorId },
+    select: { usuario_auth_id: true, zona_asignada: true },
+  });
+  if (a?.usuario_auth_id) {
+    await prisma.user.update({
+      where: { id: a.usuario_auth_id },
+      data: { zona: a.zona_asignada },
+    });
+  }
+}
+
 export async function crearRegistro(catalogo: Catalogo, datos: Datos): Promise<Res> {
   const guard = await autorizarCatalogo(catalogo);
   if (!guard.ok) return guard;
@@ -175,7 +193,10 @@ export async function crearRegistro(catalogo: Catalogo, datos: Datos): Promise<R
       data.codigo = await siguienteCodigoDiseno();
     }
     // @ts-expect-error delegado dinámico con data validada por whitelist
-    await modelo(catalogo).create({ data });
+    const creado = await modelo(catalogo).create({ data });
+    if (catalogo === "asesores") {
+      await sincronizarZonaUsuarioDesdeAsesor((creado as { id: number }).id);
+    }
     revalidarCatalogos();
     return { ok: true };
   } catch (e) {
@@ -194,6 +215,7 @@ export async function actualizarRegistro(
     const data = construir(catalogo, datos);
     // @ts-expect-error delegado dinámico
     await modelo(catalogo).update({ where: { id }, data });
+    if (catalogo === "asesores") await sincronizarZonaUsuarioDesdeAsesor(id);
     revalidarCatalogos();
     return { ok: true };
   } catch (e) {

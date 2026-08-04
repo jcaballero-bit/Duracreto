@@ -264,7 +264,12 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
     }
   }
 
-  const filas: DesempenoAsesor[] = asesores.map((as) => {
+  // Con una zona seleccionada, la tabla lista SOLO los asesores con actividad en
+  // esa zona (los pedidos ya vienen acotados por zona, así que `acc` solo contiene
+  // a los asesores que trabajaron ahí). Con "todas" se listan todos los asesores.
+  const asesoresVisibles = f.zona != null ? asesores.filter((as) => acc.has(as.id)) : asesores;
+
+  const filas: DesempenoAsesor[] = asesoresVisibles.map((as) => {
     const a = acc.get(as.id);
     const m = a?.mensual;
     const m3 = redondear(m?.m3 ?? 0);
@@ -300,9 +305,9 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
   // Totales/agregados (mensuales, para las tarjetas de arriba).
   const mensuales = [...acc.values()].map((a) => a.mensual);
   const m3VendidosTotal = redondear(filas.reduce((s, r) => s + r.m3Vendidos, 0));
-  const metaTotal = redondear(
-    [...metaPorAsesor.values()].reduce((s, v) => s + v, 0),
-  );
+  // Meta total = suma de las metas de los asesores MOSTRADOS (así, al filtrar por
+  // zona, la meta de la tarjeta coincide con la tabla; con "todas" son todas).
+  const metaTotal = redondear(filas.reduce((s, r) => s + (r.metaM3 ?? 0), 0));
   const proyectadoTotal = mensuales.reduce((s, a) => s + a.proyectado, 0);
   const realTotal = mensuales.reduce((s, a) => s + a.real, 0);
   const pedidosTotal = mensuales.reduce((s, a) => s + a.pedidos, 0);
