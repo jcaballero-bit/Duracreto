@@ -159,10 +159,12 @@ export default async function DespachoPage({
         where: {
           hora_solicitada: { gte: ini, lt: fin },
           estado_pedido: "Activo", // los cancelados salen del despacho activo
-          ...scopePedido,
-          ...(plantelFiltro !== "todos"
-            ? { plantel_id: Number(plantelFiltro) }
-            : {}),
+          // AND (no spread): el filtro de la URL NO puede sobrescribir el scope del
+          // rol (JefePlanta/Dosificador usan plantel_id, misma llave → colisión).
+          AND: [
+            scopePedido,
+            plantelFiltro !== "todos" ? { plantel_id: Number(plantelFiltro) } : {},
+          ],
         },
         include: {
           cliente: true,

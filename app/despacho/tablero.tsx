@@ -122,6 +122,11 @@ export function TableroDespacho({
   // [] = ninguno (solo lectura total); [lista] = solo esos (Laboratorista).
   estadosEditables?: string[] | null;
 }) {
+  // En solo lectura no hay reasignación de mixer ni cambio de motorista, así que no
+  // se necesitan (ni se envían al cliente) los catálogos de flota/operadores.
+  const mixersUsables = soloLectura ? [] : mixers;
+  const operadoresUsables = soloLectura ? [] : operadores;
+
   if (grupos.length === 0) {
     return (
       <p className="py-8 text-center text-sm text-muted">
@@ -143,8 +148,8 @@ export function TableroDespacho({
               <FilaViaje
                 key={v.id}
                 v={v}
-                mixers={mixers}
-                operadores={operadores}
+                mixers={mixersUsables}
+                operadores={operadoresUsables}
                 soloLectura={soloLectura}
                 estadosEditables={estadosEditables}
               />

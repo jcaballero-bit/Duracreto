@@ -10,18 +10,29 @@
 //   $env:ADMIN_EMAIL="tucorreo@duracreto.com"; $env:ADMIN_PASSWORD="TuClaveFuerte"; `
 //   npm run db:admin
 //
-// Si no defines ADMIN_EMAIL/ADMIN_PASSWORD, usa los valores por defecto de abajo
-// (cámbialos apenas entres, desde Administración › Usuarios).
+// SEGURIDAD: NO hay contraseña por defecto. Debes definir ADMIN_PASSWORD (>=8) en
+// el entorno; si no, el script se niega a correr. El admin creado nace con la marca
+// de "cambiar contraseña en el primer ingreso". Nunca se imprime la contraseña.
 // ─────────────────────────────────────────────────────────────────────────────
 import "dotenv/config"; // tsx no lee .env solo
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 
 const email = (process.env.ADMIN_EMAIL ?? "admin@duracreto.com").trim().toLowerCase();
-const password = process.env.ADMIN_PASSWORD ?? "Duracreto.2026";
+const password = process.env.ADMIN_PASSWORD ?? "";
 const nombre = process.env.ADMIN_NAME ?? "Administrador";
 
 async function main() {
+  // Sin contraseña explícita NO se crea nada (evita credenciales por defecto en
+  // producción, con el repositorio público).
+  if (password.length < 8) {
+    console.error(
+      "❌ Define ADMIN_PASSWORD (mínimo 8 caracteres) en el entorno antes de correr este script.\n" +
+        '   Ej.: $env:ADMIN_PASSWORD="ClaveFuerteUnica"; npm run db:admin',
+    );
+    process.exit(1);
+  }
+
   // Aviso: no sembrar contra la base LOCAL por error.
   const url = process.env.DATABASE_URL ?? "(default local :5433)";
   const host = url.includes("@") ? url.split("@")[1]?.split("/")[0] : url;
@@ -31,9 +42,9 @@ async function main() {
 
   const user = await prisma.user.upsert({
     where: { email },
-    update: { passwordHash, activo: true, name: nombre },
-    // El admin de arranque elige su propia contraseña → no se fuerza el cambio.
-    create: { name: nombre, email, passwordHash, activo: true, debe_cambiar_password: false },
+    // Al (re)crear se exige cambiar la contraseña en el primer ingreso.
+    update: { passwordHash, activo: true, name: nombre, debe_cambiar_password: true },
+    create: { name: nombre, email, passwordHash, activo: true, debe_cambiar_password: true },
   });
 
   // Asegurar el rol Administrador (idempotente: @@unique(userId, rol)).
@@ -46,8 +57,8 @@ async function main() {
 
   console.log("\n✅ Administrador listo. Inicia sesión con:");
   console.log(`   Correo:     ${email}`);
-  console.log(`   Contraseña: ${password}`);
-  console.log("\n⚠️  Cámbiala apenas entres (Administración › Usuarios).");
+  console.log("   Contraseña: (la que definiste en ADMIN_PASSWORD)");
+  console.log("\n⚠️  Se te pedirá cambiarla en el primer ingreso.");
 }
 
 main()

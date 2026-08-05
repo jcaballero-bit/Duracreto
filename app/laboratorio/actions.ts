@@ -66,6 +66,16 @@ export async function asignarPedidoAction(
     return { ok: true };
   }
 
+  // El usuario asignado debe existir, estar activo y tener el rol Laboratorista
+  // (no se puede registrar a cualquier User.id como laboratorista de un programa).
+  const labUser = await prisma.user.findUnique({
+    where: { id: laboratoristaId },
+    select: { activo: true, roles: { where: { rol: "Laboratorista" }, select: { id: true } } },
+  });
+  if (!labUser || !labUser.activo || labUser.roles.length === 0) {
+    return { ok: false, mensaje: "El usuario seleccionado no es un Laboratorista activo." };
+  }
+
   const pedido = await prisma.pedidos.findUnique({
     where: { id: pedidoId },
     select: {

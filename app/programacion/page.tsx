@@ -109,8 +109,12 @@ export default async function ProgramacionPage({
       where: {
         hora_solicitada: { gte: ini, lt: fin },
         estado_pedido: "Activo", // los cancelados salen del programa activo
-        ...filtroPedidoPorZona(alcance),
-        ...(plantelFiltro !== "todos" ? { plantel_id: Number(plantelFiltro) } : {}),
+        // AND (no spread): el filtro de la URL NO puede sobrescribir el scope por
+        // zona/plantel del rol (para JefePlanta/Dosificador ambos usan plantel_id).
+        AND: [
+          filtroPedidoPorZona(alcance),
+          plantelFiltro !== "todos" ? { plantel_id: Number(plantelFiltro) } : {},
+        ],
       },
       include: {
         cliente: true,
@@ -308,15 +312,49 @@ export default async function ProgramacionPage({
   const totalGeneral = pedidos.reduce((s, p) => s + p.volumen_total_m3, 0);
 
   // Proyecciones (Programa Semana) pendientes de este día → panel para convertir.
-  // Solo Admin/Programador operan aquí (la ruta ya está limitada a esos roles).
+  // Solo Admin/Programador/JefePlanta operan aquí (la ruta ya está limitada a esos
+  // roles). El Programador y el Jefe de Planta SOLO ven los clientes preprogramados
+  // de SU zona asignada; el Admin ve todos.
   const disenosSimple = disenos.map((d) => ({
     id: d.id,
     etiqueta_resistencia: d.etiqueta_resistencia,
     resistencia_psi: d.resistencia_psi,
   }));
+
+  // Zona(s) del usuario para acotar los pendientes: Programador por su User.zona,
+  // Jefe de Planta por la zona de su plantel asignado. Admin → sin límite.
+  let zonasPendientes: string[] | null = null; // null = sin filtro (Admin)
+  if (!alcance.esAdmin) {
+    const zs = new Set<string>();
+    if (alcance.zona) zs.add(alcance.zona);
+    if (alcance.plantelAsignadoId != null) {
+      const pl = await prisma.planteles.findUnique({
+        where: { id: alcance.plantelAsignadoId },
+        select: { zona: true },
+      });
+      if (pl) zs.add(pl.zona);
+    }
+    zonasPendientes = zs.size > 0 ? [...zs] : null;
+  }
+  // Una proyección es "de la zona" si la atiende una planta de esa zona O si el
+  // asesor dueño del cliente pertenece a esa zona (zona_asignada). Así se excluyen
+  // las de la otra zona sin ocultar las que aún no tienen planta asignada.
+  const filtroZonaPendientes = zonasPendientes
+    ? {
+        OR: [
+          { plantel: { zona: { in: zonasPendientes } } },
+          { cliente: { asesor: { zona_asignada: { in: zonasPendientes } } } },
+        ],
+      }
+    : {};
+
   const pendientesRaw = puedeEditar
     ? await prisma.solicitudes_anticipadas.findMany({
-        where: { estado: "Pendiente", fecha_requerida: { gte: ini, lt: fin } },
+        where: {
+          estado: "Pendiente",
+          fecha_requerida: { gte: ini, lt: fin },
+          ...filtroZonaPendientes,
+        },
         include: { cliente: true, asesor: { select: { nombre: true } } },
         orderBy: { id: "asc" },
       })

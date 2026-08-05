@@ -26,6 +26,7 @@ interface Contexto {
   esAdmin: boolean;
   esProgramador: boolean;
   esAsesor: boolean;
+  zona: string | null; // zona del usuario (Programador) para acotar sus escrituras
 }
 
 async function contexto(): Promise<Contexto | { error: string }> {
@@ -41,7 +42,34 @@ async function contexto(): Promise<Contexto | { error: string }> {
     esAdmin: alcance.esAdmin,
     esProgramador: alcance.esProgramador,
     esAsesor: alcance.esAsesor,
+    zona: alcance.zona,
   };
+}
+
+/**
+ * Para el PROGRAMADOR (acotado a su zona): ¿puede tocar una proyección cuya zona se
+ * infiere del asesor del cliente y/o del plantel de la celda? Regla: sí si el asesor
+ * o el plantel son de su zona; sí también si ambos son "desconocidos" (null) — no se
+ * puede probar que sea de otra zona; NO si apunta claramente a la otra zona. Admin y
+ * Programador sin zona: siempre sí.
+ */
+async function programadorEnZona(
+  ctx: Contexto,
+  asesorZona: string | null,
+  plantelId: number | null,
+): Promise<boolean> {
+  if (!ctx.esProgramador || ctx.esAdmin || !ctx.zona) return true;
+  if (asesorZona === ctx.zona) return true;
+  if (plantelId != null) {
+    const pl = await prisma.planteles.findUnique({
+      where: { id: plantelId },
+      select: { zona: true },
+    });
+    if (pl?.zona === ctx.zona) return true;
+    if (pl && pl.zona !== ctx.zona) return false; // planta claramente de otra zona
+  }
+  // Sin planta y sin zona de asesor → no se puede probar que sea ajena: permitir.
+  return asesorZona == null;
 }
 
 const num = (v: string) => {
@@ -57,16 +85,29 @@ const int = (v: string) => {
 const txt = (v: string) => ((v ?? "").trim() === "" ? null : v.trim());
 
 /**
- * ¿El usuario puede ESCRIBIR sobre las proyecciones de este cliente?
- * Admin/Programador: cualquiera. Asesor: solo los suyos (server-side, no UI).
+ * ¿El usuario puede ESCRIBIR sobre las proyecciones de este cliente? (server-side)
+ *  · Admin: cualquiera.
+ *  · Programador: solo los de SU zona (por la zona del asesor del cliente y/o la
+ *    planta de la celda). `plantelId` = planta de la celda al crear/editar (opcional).
+ *  · Asesor: solo los suyos.
  */
-async function puedeEscribirCliente(ctx: Contexto, clienteId: number) {
+async function puedeEscribirCliente(
+  ctx: Contexto,
+  clienteId: number,
+  plantelId: number | null = null,
+) {
   const cliente = await prisma.clientes.findUnique({
     where: { id: clienteId },
-    include: { asesor: { select: { usuario_auth_id: true } } },
+    include: { asesor: { select: { usuario_auth_id: true, zona_asignada: true } } },
   });
   if (!cliente) return { ok: false as const, mensaje: "Cliente no encontrado." };
-  if (ctx.esAdmin || ctx.esProgramador) return { ok: true as const, cliente };
+  if (ctx.esAdmin) return { ok: true as const, cliente };
+  if (ctx.esProgramador) {
+    const ok = await programadorEnZona(ctx, cliente.asesor?.zona_asignada ?? null, plantelId);
+    return ok
+      ? { ok: true as const, cliente }
+      : { ok: false as const, mensaje: "Ese cliente/planta es de otra zona." };
+  }
   if (cliente.asesor?.usuario_auth_id === ctx.userId) return { ok: true as const, cliente };
   return { ok: false as const, mensaje: "Solo puedes proyectar tus propios clientes." };
 }
@@ -110,7 +151,7 @@ export async function guardarSolicitudAction(
 ): Promise<Res> {
   const ctx = await contexto();
   if ("error" in ctx) return { ok: false, mensaje: ctx.error };
-  const permiso = await puedeEscribirCliente(ctx, clienteId);
+  const permiso = await puedeEscribirCliente(ctx, clienteId, int(datos.plantel_id));
   if (!permiso.ok) return permiso;
   const fecha = fechaLocal(fechaISO);
   if (!fecha) return { ok: false, mensaje: "Fecha inválida." };
@@ -199,7 +240,7 @@ export async function eliminarSolicitudAction(id: number): Promise<Res> {
   if ("error" in ctx) return { ok: false, mensaje: ctx.error };
   const solicitud = await prisma.solicitudes_anticipadas.findUnique({ where: { id } });
   if (!solicitud) return { ok: false, mensaje: "Proyección no encontrada." };
-  const permiso = await puedeEscribirCliente(ctx, solicitud.cliente_id);
+  const permiso = await puedeEscribirCliente(ctx, solicitud.cliente_id, solicitud.plantel_id);
   if (!permiso.ok) return permiso;
   if (solicitud.estado === "Programado") {
     return {
@@ -217,13 +258,18 @@ export async function eliminarSolicitudAction(id: number): Promise<Res> {
   }
 }
 
-/** El Programador/Administrador descarta una proyección sin convertirla. */
+/** El Programador/Administrador descarta una proyección sin convertirla. El
+ *  Programador solo puede descartar las de SU zona. */
 export async function descartarSolicitudAction(id: number): Promise<Res> {
   const ctx = await contexto();
   if ("error" in ctx) return { ok: false, mensaje: ctx.error };
   if (!ctx.esAdmin && !ctx.esProgramador) {
     return { ok: false, mensaje: "Solo Programador/Administrador puede descartar." };
   }
+  const solicitud = await prisma.solicitudes_anticipadas.findUnique({ where: { id } });
+  if (!solicitud) return { ok: false, mensaje: "Proyección no encontrada." };
+  const permiso = await puedeEscribirCliente(ctx, solicitud.cliente_id, solicitud.plantel_id);
+  if (!permiso.ok) return permiso;
   try {
     await prisma.solicitudes_anticipadas.update({
       where: { id },

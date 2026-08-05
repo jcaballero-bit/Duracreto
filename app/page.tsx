@@ -3,14 +3,19 @@ import { CalendarClock, Container, Layers, Truck } from "lucide-react";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { alcanceActual, requerirPasswordAlDia } from "@/lib/auth/guard";
+import { filtroPedidoPorZona, type Alcance } from "@/lib/auth/acceso";
 import { Card } from "./components/ui";
 import { Saludo } from "./saludo";
 
 export const dynamic = "force-dynamic";
 
-async function resumen(incluirFlota: boolean) {
+async function resumen(incluirFlota: boolean, alcance: Alcance | null) {
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
+
+  // El volumen del próximo día se acota a la zona/plantel del usuario (un
+  // Programador/Despachador/JefePlanta no ve el volumen de la otra zona).
+  const scope = alcance ? filtroPedidoPorZona(alcance) : {};
 
   // La disponibilidad de flota NO se consulta cuando no debe mostrarse (Asesor):
   // no se le envían al cliente datos de flota, no solo se ocultan con CSS.
@@ -19,7 +24,7 @@ async function resumen(incluirFlota: boolean) {
     incluirFlota ? prisma.mixers.count({ where: { estado: "Disponible" } }) : Promise.resolve(null),
     incluirFlota ? prisma.mixers.count() : Promise.resolve(null),
     prisma.pedidos.findMany({
-      where: { hora_solicitada: { gte: hoy } },
+      where: { hora_solicitada: { gte: hoy }, estado_pedido: "Activo", ...scope },
       orderBy: { hora_solicitada: "asc" },
       select: { hora_solicitada: true, volumen_total_m3: true },
     }),
@@ -60,7 +65,7 @@ export default async function Panel() {
       alcance.esJefeLaboratorio);
   const ocultarFlota = !!alcance && alcance.esAsesor && !puedeVerFlota;
 
-  const r = await resumen(!ocultarFlota);
+  const r = await resumen(!ocultarFlota, alcance);
   const sesion = await auth();
   // Primer nombre del usuario logueado (el saludo cambia según quién ve la página).
   const nombre = (sesion?.user?.name ?? "").trim().split(/\s+/)[0] || "usuario";

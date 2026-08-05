@@ -68,26 +68,25 @@ El build: instala deps → `prisma generate` (postinstall) → `prisma migrate d
 
 ## Paso 6 — Crear el usuario administrador (una sola vez)
 
-Las tablas quedan vacías tras las migraciones. Necesitas al menos un admin para
-entrar. Dos opciones:
+Las tablas quedan vacías tras las migraciones. Necesitas un admin para entrar. Usa
+el script `db:admin`, que **exige** una contraseña fuerte por variable de entorno y
+crea el usuario con la marca de "cambiar contraseña al primer ingreso":
 
-- **Sembrar datos de demostración** (incluye 7 planteles, flota y usuarios de
-  ejemplo). Desde tu máquina, apuntando a la BD de producción:
-  ```bash
-  # PowerShell
-  $env:DATABASE_URL="postgresql://...tu cadena...?sslmode=require"; npm run db:seed
-  ```
-  ```bash
-  # bash
-  DATABASE_URL="postgresql://...?sslmode=require" npm run db:seed
-  ```
-- O crear solo el admin a mano con `npx prisma studio` (apuntando a esa BD) e
-  insertar un `User` con `passwordHash` bcrypt.
+```bash
+# PowerShell — apuntando a la BD de PRODUCCION
+$env:DATABASE_URL="postgresql://...tu cadena...?sslmode=require"
+$env:ADMIN_EMAIL="tucorreo@duracreto.com"
+$env:ADMIN_PASSWORD="UnaClaveFuerteUnica"   # >= 8 caracteres, no la reutilices
+npm run db:admin
+```
 
-> ⚠️ **SEGURIDAD:** el seed crea usuarios con contraseñas públicas de ejemplo
-> (`admin123`, etc.). Si siembras en producción, **cambia esas contraseñas de
-> inmediato** desde Administración › Usuarios, o crea tus propios usuarios y borra
-> los de ejemplo. No dejes las credenciales por defecto en un sistema en vivo.
+Entra con ese correo y la contraseña que definiste; el sistema te pedirá cambiarla.
+Después crea el resto de usuarios desde **Administración › Usuarios**.
+
+> ⛔ **NUNCA** corras `npm run db:seed` contra producción: además de crear usuarios
+> de demostración con contraseñas públicas (`admin123`, etc.), **BORRA todos los
+> datos** (`limpiarBD`) antes de sembrar. `db:seed` es solo para desarrollo local.
+> El repositorio es público, así que jamás dejes credenciales por defecto en vivo.
 
 ## Listo
 

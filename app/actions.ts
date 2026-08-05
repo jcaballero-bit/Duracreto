@@ -121,6 +121,49 @@ async function autorizarPorViaje(viajeId: number): Promise<Permiso> {
   return autorizarFecha(viaje.pedido.hora_solicitada);
 }
 
+/** Roles que pueden CREAR/MODIFICAR/CANCELAR/ELIMINAR/REORDENAR pedidos y confirmar
+ *  refuerzos. Solo Admin, Programador, Despachador, Jefe de Planta y Dosificador.
+ *  Excluye explícitamente Laboratorista, Asesor, GerenteComercial y JefeLaboratorio:
+ *  esos roles NO operan pedidos (solo consultan o avanzan estados de SUS viajes). Sin
+ *  este gate, un Laboratorista pasaba zona+fecha y podía crear/cancelar/eliminar
+ *  cualquier pedido del día en ambas zonas. */
+async function autorizarOperacionPedido(): Promise<Permiso> {
+  const a = await alcanceActual();
+  if (!a) return { ok: false, mensaje: "Sesión no válida." };
+  if (a.esAdmin || a.esProgramador || a.esDespachador || a.esJefePlanta || a.esDosificador) {
+    return { ok: true };
+  }
+  return { ok: false, mensaje: "Tu rol no permite crear ni modificar pedidos." };
+}
+
+/** El mixer que se reasigna debe pertenecer a la ZONA del operador (se permiten
+ *  préstamos intra-zona / hub, pero NO tomar flota de la OTRA zona — las dos
+ *  restricciones de flota son independientes por zona). Admin: cualquiera. */
+async function autorizarMixerDeZona(mixerId: number): Promise<Permiso> {
+  const a = await alcanceActual();
+  if (!a) return { ok: false, mensaje: "Sesión no válida." };
+  if (a.esAdmin) return { ok: true };
+  const mixer = await prisma.mixers.findUnique({
+    where: { id: mixerId },
+    select: { plantel_base: { select: { zona: true } } },
+  });
+  if (!mixer?.plantel_base) return { ok: false, mensaje: "Mixer sin plantel base válido." };
+  // Zona(s) del operador: Programador/Despachador por User.zona; JefePlanta/
+  // Dosificador por la zona de su plantel asignado.
+  const zonas = new Set<string>();
+  if (a.zona) zonas.add(a.zona);
+  if (a.plantelAsignadoId != null) {
+    const mio = await prisma.planteles.findUnique({
+      where: { id: a.plantelAsignadoId },
+      select: { zona: true },
+    });
+    if (mio) zonas.add(mio.zona);
+  }
+  // Sin zona resoluble → no bloquear (fallback); si hay zona, debe coincidir.
+  if (zonas.size === 0 || zonas.has(mixer.plantel_base.zona)) return { ok: true };
+  return { ok: false, mensaje: "Ese mixer es de otra zona; no puedes asignarlo." };
+}
+
 /** Solo estos roles editan CAMPOS del viaje (volumen/mixer/motorista/hora real).
  *  Laboratorista, Asesor y JefeLaboratorio NO. */
 async function autorizarEdicionCampos(): Promise<Permiso> {
@@ -280,6 +323,8 @@ export async function crearPedidoAction(
   try {
     const { entrada, error } = construirEntrada(formData, "interfaz-prueba");
     if (error) return { ok: false, mensaje: error };
+    const op = await autorizarOperacionPedido();
+    if (!op.ok) return { ok: false, mensaje: op.mensaje };
     const permiso = await autorizarNuevoPedido(
       entrada!.plantel_id,
       entrada!.hora_solicitada,
@@ -361,6 +406,8 @@ export async function modificarPedidoAction(
   try {
     const { entrada, error } = construirEntrada(formData, "edicion");
     if (error) return { ok: false, mensaje: error };
+    const op = await autorizarOperacionPedido();
+    if (!op.ok) return { ok: false, mensaje: op.mensaje };
     // Permiso sobre el pedido original y sobre el destino (zona) + fecha.
     const permisoOrigen = await autorizarPorPedido(pedidoId);
     if (!permisoOrigen.ok) return { ok: false, mensaje: permisoOrigen.mensaje };
@@ -391,6 +438,8 @@ export async function reordenarPedidoAction(
   pedidoId: number,
   nuevoOrden: number,
 ): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido();
+  if (!op.ok) return op;
   const permiso = await autorizarPorPedido(pedidoId);
   if (!permiso.ok) return permiso;
   if (!Number.isFinite(nuevoOrden) || nuevoOrden < 1) {
@@ -439,6 +488,9 @@ export async function reasignarMixerAction(
   if (!permiso.ok) return permiso;
   const ed = await autorizarEdicionCampos();
   if (!ed.ok) return ed;
+  // El mixer destino debe ser de la zona del operador (no tomar flota de otra zona).
+  const zonaMixer = await autorizarMixerDeZona(nuevoMixerId);
+  if (!zonaMixer.ok) return zonaMixer;
   const res = await reasignarMixer(viajeId, nuevoMixerId);
   if (!res.ok) return { ok: false, mensaje: res.motivo };
 
@@ -524,6 +576,8 @@ export async function confirmarRefuerzoAction(
   pedidoId: number,
   mixerId: number,
 ): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido();
+  if (!op.ok) return op;
   const permiso = await autorizarPorPedido(pedidoId);
   if (!permiso.ok) return permiso;
   const res = await confirmarRefuerzo(pedidoId, mixerId);
@@ -632,6 +686,8 @@ export async function cancelarPedidoAction(
   detalle?: string,
 ): Promise<{ ok: boolean; mensaje?: string }> {
   try {
+    const op = await autorizarOperacionPedido();
+    if (!op.ok) return op;
     const permiso = await autorizarPorPedido(pedidoId);
     if (!permiso.ok) return permiso;
 
@@ -748,6 +804,8 @@ export async function eliminarPedidoAction(
   pedidoId: number,
 ): Promise<{ ok: boolean; mensaje?: string }> {
   try {
+    const op = await autorizarOperacionPedido();
+    if (!op.ok) return op;
     const permiso = await autorizarPorPedido(pedidoId);
     if (!permiso.ok) return permiso;
     await cancelarPedido(pedidoId);

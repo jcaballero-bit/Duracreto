@@ -215,15 +215,41 @@ function extraerDeTexto(texto: string | null | undefined) {
   }
 }
 
+/** Anti-SSRF: solo se hace fetch a hosts de Google/Maps. Impide que un redirect (o
+ *  un enlace manipulado) lleve al servidor a pedir un host interno/arbitrario. */
+function hostPermitidoMaps(u: string): boolean {
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    return (
+      h === "goo.gl" ||
+      h === "maps.app.goo.gl" ||
+      h === "google.com" ||
+      h.endsWith(".google.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Lee el cuerpo con un tope de tamaño (evita respuestas gigantes = mini-DoS). */
+async function textoAcotado(res: Response, maxBytes = 2_000_000): Promise<string> {
+  const len = Number(res.headers.get("content-length") ?? "0");
+  if (len && len > maxBytes) return "";
+  const t = await res.text();
+  return t.length > maxBytes ? t.slice(0, maxBytes) : t;
+}
+
 /**
  * Resuelve un enlace CORTO (maps.app.goo.gl / goo.gl/maps) a coordenadas. Sigue
- * las redirecciones y prueba en cada URL; si la respuesta final NO redirige (llega
- * una página HTML), extrae las coordenadas del CUERPO (Google las embebe como
- * `!3d!4d`). Devuelve null si nada funciona.
+ * las redirecciones (solo dentro de hosts de Google, anti-SSRF) y prueba en cada
+ * URL; si la respuesta final NO redirige (llega una página HTML), extrae las
+ * coordenadas del CUERPO. Devuelve null si nada funciona.
  */
 async function resolverEnlaceCorto(url: string, maxSaltos = 6) {
+  if (!hostPermitidoMaps(url)) return null;
   let actual = url;
   for (let i = 0; i < maxSaltos; i++) {
+    if (!hostPermitidoMaps(actual)) return null; // no seguir fuera de Google
     let res: Response;
     try {
       res = await fetch(actual, {
@@ -246,8 +272,7 @@ async function resolverEnlaceCorto(url: string, maxSaltos = 6) {
     const enUrl = extraerDeTexto(res.url) ?? extraerDeTexto(actual);
     if (enUrl) return enUrl;
     try {
-      const html = await res.text();
-      const enHtml = extraerCoordsDeUrl(html);
+      const enHtml = extraerCoordsDeUrl(await textoAcotado(res));
       if (enHtml) return enHtml;
     } catch {
       /* ignorar: caemos al fallback de abajo */
@@ -255,7 +280,8 @@ async function resolverEnlaceCorto(url: string, maxSaltos = 6) {
     break;
   }
 
-  // Fallback: seguir todas las redirecciones automáticamente y leer el cuerpo.
+  // Fallback: seguir redirecciones automáticamente (el host inicial ya está en la
+  // allowlist; Google no redirige a hosts internos) y leer el cuerpo acotado.
   try {
     const res = await fetch(url, {
       redirect: "follow",
@@ -264,8 +290,7 @@ async function resolverEnlaceCorto(url: string, maxSaltos = 6) {
     });
     const enUrl = extraerDeTexto(res.url);
     if (enUrl) return enUrl;
-    const html = await res.text();
-    return extraerCoordsDeUrl(html);
+    return extraerCoordsDeUrl(await textoAcotado(res));
   } catch {
     return null;
   }

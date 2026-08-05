@@ -74,6 +74,23 @@ async function crearUsuario(
 }
 
 async function main() {
+  // SEGURIDAD: este seed BORRA todo antes de sembrar. Solo debe correr contra la BD
+  // LOCAL de desarrollo. Si DATABASE_URL apunta a un host remoto (p. ej. Neon en
+  // producción), se aborta — para no perder datos reales. Override consciente:
+  // ALLOW_REMOTE_SEED=1 (no lo uses en producción).
+  const dbUrl = process.env.DATABASE_URL ?? "";
+  const esLocal =
+    dbUrl === "" ||
+    /@(localhost|127\.0\.0\.1)[:/]/.test(dbUrl) ||
+    dbUrl.includes(":5433");
+  if (!esLocal && process.env.ALLOW_REMOTE_SEED !== "1") {
+    console.error(
+      "❌ db:seed BORRA todos los datos y solo debe correr en LOCAL. DATABASE_URL apunta\n" +
+        "   a un host remoto. Abortado. (Para crear un admin en producción usa: npm run db:admin.)",
+    );
+    process.exit(1);
+  }
+
   await iniciarPg(); // Postgres embebido arriba (idempotente)
 
   // Limpiar en orden de dependencias (viajes → pedidos → resto).

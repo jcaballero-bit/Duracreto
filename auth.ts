@@ -26,6 +26,11 @@ const REVAL_INTERVALO_MS = 30_000;
 const googleHabilitado =
   !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET;
 
+// Hash bcrypt "señuelo" (cost 10) usado cuando el correo no existe / está inactivo,
+// para que el login tarde igual y no se pueda enumerar cuentas por tiempo. Se calcula
+// una sola vez al cargar el módulo.
+const HASH_SENUELO = bcrypt.hashSync("cuenta-inexistente-no-usar", 10);
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   adapter: PrismaAdapter(prisma),
@@ -42,10 +47,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!email || !password) return null;
 
         const usuario = await prisma.user.findUnique({ where: { email } });
-        if (!usuario || !usuario.activo || !usuario.passwordHash) return null;
-
-        const ok = await bcrypt.compare(password, usuario.passwordHash);
-        if (!ok) return null;
+        // Para NO filtrar por tiempo qué correos existen/están activos, siempre se
+        // corre un bcrypt.compare (contra un hash señuelo si el usuario no aplica) y
+        // luego se decide. Así el login tarda igual exista o no la cuenta.
+        const hash = usuario?.passwordHash ?? HASH_SENUELO;
+        const ok = await bcrypt.compare(password, hash);
+        if (!usuario || !usuario.activo || !usuario.passwordHash || !ok) return null;
 
         return { id: usuario.id, name: usuario.name, email: usuario.email };
       },
