@@ -220,7 +220,35 @@ async function candidatosDePlanta(
  * - Un viaje ajustado_manualmente conserva su mixer (p. ej. refuerzo).
  * - Devuelve los ids de los viajes cuyos horarios cambiaron (para bitácora/UI).
  */
+/**
+ * Recalcula la cascada de horarios de TODAS las plantas del PLANTEL al que pertenece
+ * `plantaId`. Un plantel puede tener 2 plantas (Santa Marta, Tegucigalpa) y los
+ * viajes de un pedido pueden repartirse entre ellas; cada planta se agenda por
+ * separado (bahía independiente), agrupando los viajes por SU `planta_id`. Devuelve
+ * los ids de los viajes que cambiaron.
+ */
 export async function recalcularCascadaPlanta(
+  plantaId: number,
+  dia: Date,
+): Promise<number[]> {
+  const planta = await prisma.plantas.findUniqueOrThrow({
+    where: { id: plantaId },
+    select: { plantel_id: true },
+  });
+  const plantas = await prisma.plantas.findMany({
+    where: { plantel_id: planta.plantel_id },
+    select: { id: true },
+  });
+  const cambios: number[] = [];
+  for (const p of plantas) {
+    cambios.push(...(await cascadaDeUnaPlanta(p.id, dia)));
+  }
+  return cambios;
+}
+
+/** Cascada de UNA planta (bahía única): agenda los viajes cuyo `planta_id` es esta
+ *  planta, en orden de atención. La usa `recalcularCascadaPlanta` para cada planta. */
+async function cascadaDeUnaPlanta(
   plantaId: number,
   dia: Date,
 ): Promise<number[]> {
@@ -252,8 +280,10 @@ export async function recalcularCascadaPlanta(
       estado: { not: "Cancelado" },
       // Los placeholders "Sin cubrir" no ocupan tiempo de planta.
       motivo_asignacion: { not: "Sin cubrir" },
+      // Viajes dosificados en ESTA planta (por viaje, no por pedido: un pedido puede
+      // repartir sus viajes entre las 2 plantas del plantel).
+      planta_id: plantaId,
       pedido: {
-        planta_id: plantaId,
         hora_solicitada: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
       },
     },
@@ -283,7 +313,9 @@ export async function recalcularCascadaPlanta(
         mixer_id: { in: candidatosIds },
         estado: { not: "Cancelado" },
         hora_inicio_carga: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
-        pedido: { planta_id: { not: plantaId } },
+        // Viajes del mixer en OTRAS plantas ese día (incluye la planta hermana del
+        // plantel): el mixer no está libre hasta regresar de ellos.
+        planta_id: { not: plantaId },
       },
       select: { mixer_id: true, hora_regreso_planta: true, hora_fin_carga: true },
     });
@@ -843,6 +875,62 @@ export async function modificarPedido(
  * viaje por cada carga y deja que el agendador (recalcularCascadaPlanta) asigne
  * los mixers concretos con reutilización por horario y reparto de desgaste.
  */
+/**
+ * Reparte `cantidad` viajes nuevos entre las plantas del plantel, eligiendo cada vez
+ * la de hueco libre más temprano (aprox. por el fin de carga comprometido ese día);
+ * desempata a favor de la planta preferida del pedido. En planteles de 1 planta,
+ * todos van a esa planta (comportamiento idéntico al anterior). Devuelve un planta_id
+ * por viaje, en orden.
+ */
+async function repartirPlantas(
+  plantelId: number,
+  plantaPreferida: number,
+  cantidad: number,
+  dia: Date,
+): Promise<number[]> {
+  const plantas = await prisma.plantas.findMany({
+    where: { plantel_id: plantelId },
+    select: { id: true, capacidad_m3h: true, tiempo_alistamiento_min: true },
+    orderBy: { id: "asc" },
+  });
+  if (plantas.length <= 1) {
+    return Array(cantidad).fill(plantas[0]?.id ?? plantaPreferida);
+  }
+  // "Libre en" por planta = fin de carga comprometido más tardío ese día (ms).
+  const libreEn = new Map<number, number>(plantas.map((p) => [p.id, 0]));
+  const comprometidos = await prisma.viajes.groupBy({
+    by: ["planta_id"],
+    where: {
+      estado: { not: "Cancelado" },
+      planta_id: { in: plantas.map((p) => p.id) },
+      hora_inicio_carga: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
+    },
+    _max: { hora_fin_carga: true },
+  });
+  for (const g of comprometidos) {
+    if (g.planta_id != null && g._max.hora_fin_carga) {
+      libreEn.set(g.planta_id, g._max.hora_fin_carga.getTime());
+    }
+  }
+  // Tiempo de carga estimado por planta (para avanzar el reloj entre viajes).
+  const cargaMs = new Map<number, number>(
+    plantas.map((p) => [p.id, (p.tiempo_alistamiento_min + (9 / p.capacidad_m3h) * 60) * 60000]),
+  );
+  const resultado: number[] = [];
+  for (let i = 0; i < cantidad; i++) {
+    const elegida = plantas
+      .map((p) => ({ id: p.id, fin: libreEn.get(p.id) ?? 0 }))
+      .sort(
+        (a, b) =>
+          a.fin - b.fin ||
+          (a.id === plantaPreferida ? -1 : b.id === plantaPreferida ? 1 : a.id - b.id),
+      )[0];
+    resultado.push(elegida.id);
+    libreEn.set(elegida.id, (libreEn.get(elegida.id) ?? 0) + (cargaMs.get(elegida.id) ?? 1_800_000));
+  }
+  return resultado;
+}
+
 async function asignarViajesDePedido(
   pedidoId: number,
   entrada: EntradaPedido,
@@ -862,12 +950,23 @@ async function asignarViajesDePedido(
 
   const plan = planificarCombinacion(entrada.volumen_total_m3, capacidades);
 
+  // Reparto de PLANTA por viaje (hueco más temprano; preferida = la del pedido). En
+  // planteles de 1 planta todos van a esa; en los de 2 se distribuyen entre ambas.
+  const plantasViaje = await repartirPlantas(
+    entrada.plantel_id,
+    entrada.planta_id,
+    plan.viajes.length,
+    entrada.hora_solicitada,
+  );
+
   // Un viaje por cada carga del plan. El mixer lo asigna la cascada (mixer null).
+  let idxPlanta = 0;
   for (const vp of plan.viajes) {
     await prisma.viajes.create({
       data: {
         pedido_id: pedidoId,
         mixer_id: null,
+        planta_id: plantasViaje[idxPlanta++] ?? entrada.planta_id,
         capacidad_asignada_m3: vp.capacidad,
         volumen_asignado_m3: vp.volumen,
         hora_solicitada: entrada.hora_solicitada,
@@ -887,6 +986,7 @@ async function asignarViajesDePedido(
       data: {
         pedido_id: pedidoId,
         mixer_id: null,
+        planta_id: entrada.planta_id,
         capacidad_asignada_m3: 0,
         volumen_asignado_m3: plan.volumenSinCubrir,
         hora_solicitada: entrada.hora_solicitada,
@@ -1273,6 +1373,7 @@ export async function reasignarMixer(
           data: {
             pedido_id: viaje.pedido_id,
             mixer_id: null,
+            planta_id: viaje.planta_id, // misma planta que el viaje reasignado
             capacidad_asignada_m3: vp.capacidad,
             volumen_asignado_m3: vp.volumen,
             hora_solicitada: viaje.pedido.hora_solicitada,
@@ -1287,6 +1388,7 @@ export async function reasignarMixer(
           data: {
             pedido_id: viaje.pedido_id,
             mixer_id: null,
+            planta_id: viaje.planta_id,
             capacidad_asignada_m3: 0,
             volumen_asignado_m3: round(plan.volumenSinCubrir),
             hora_solicitada: viaje.pedido.hora_solicitada,
@@ -1328,6 +1430,66 @@ export async function reasignarMixer(
     viajesAfectados,
     viajesAgregados,
     volumenSinCubrir,
+  };
+}
+
+// ── Cambio de planta de un viaje (Despacho en vivo) ──────────────────────────
+
+export interface ResultadoCambioPlanta {
+  ok: boolean;
+  mensaje?: string;
+  alertasMargen: AlertaMargen[];
+  plantaAnterior?: string; // nombres para la bitácora
+  plantaNueva?: string;
+}
+
+/**
+ * Cambia la PLANTA dosificadora de UN viaje (útil cuando una planta se satura o
+ * falla y el Despachador mueve viajes pendientes a la otra planta del plantel, sin
+ * cancelar/recrear). La planta destino debe ser del MISMO plantel del pedido. Marca
+ * el viaje en la nueva planta y recalcula la cascada del plantel (ambas plantas) —
+ * la cola de la planta destino reacomoda el horario del viaje. No se puede mover un
+ * viaje ya iniciado (carga real) ni completado.
+ */
+export async function cambiarPlantaViaje(
+  viajeId: number,
+  nuevaPlantaId: number,
+): Promise<ResultadoCambioPlanta> {
+  const viaje = await prisma.viajes.findUniqueOrThrow({
+    where: { id: viajeId },
+    include: {
+      planta: { select: { nombre: true } },
+      pedido: { select: { plantel_id: true, hora_solicitada: true } },
+    },
+  });
+  if (viaje.estado === ESTADO_VIAJE_COMPLETADO) {
+    return { ok: false, mensaje: "No se puede cambiar la planta de un viaje ya completado.", alertasMargen: [] };
+  }
+  if (viaje.ts_inicio_carga_real != null) {
+    return { ok: false, mensaje: "El viaje ya inició su carga; no se puede mover de planta.", alertasMargen: [] };
+  }
+  const destino = await prisma.plantas.findUnique({
+    where: { id: nuevaPlantaId },
+    select: { plantel_id: true, nombre: true },
+  });
+  if (!destino) return { ok: false, mensaje: "Planta no encontrada.", alertasMargen: [] };
+  if (destino.plantel_id !== viaje.pedido.plantel_id) {
+    return { ok: false, mensaje: "Esa planta no pertenece al plantel del pedido.", alertasMargen: [] };
+  }
+  if (viaje.planta_id === nuevaPlantaId) {
+    return { ok: true, alertasMargen: [], plantaAnterior: viaje.planta?.nombre, plantaNueva: destino.nombre };
+  }
+
+  await prisma.viajes.update({ where: { id: viajeId }, data: { planta_id: nuevaPlantaId } });
+  // Recalcula el plantel completo (planta origen que libera el hueco + destino que
+  // acomoda el viaje en su cola, respetando su capacidad m3/h).
+  await recalcularCascadaPlanta(nuevaPlantaId, viaje.pedido.hora_solicitada);
+
+  return {
+    ok: true,
+    alertasMargen: await detectarAlertasMargen(viaje.pedido.hora_solicitada),
+    plantaAnterior: viaje.planta?.nombre ?? "—",
+    plantaNueva: destino.nombre,
   };
 }
 
@@ -1563,6 +1725,7 @@ export async function confirmarRefuerzo(
     data: {
       pedido_id: pedidoId,
       mixer_id: mixerId,
+      planta_id: pedido.planta_id, // refuerzo entra por la planta del pedido
       capacidad_asignada_m3: mixer.capacidad_m3,
       volumen_asignado_m3: cubierto,
       hora_solicitada: pedido.hora_solicitada,

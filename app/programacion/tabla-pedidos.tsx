@@ -47,6 +47,7 @@ export interface ViajeVista {
   codigoViaje: string; // identificador del sistema, ej. "V-000045"
   numClienteDia: number | null; // número de viaje del cliente ese día (1..N); null si no aplica
   totalClienteDia: number; // total de viajes del cliente ese día
+  plantaNombre: string; // planta dosificadora del viaje (STALO/SANY/…)
   mixerLabel: string | null;
   flota: string | null; // nombre del plantel base del mixer
   flotaPropia: boolean; // true si el mixer es del mismo plantel del pedido
@@ -443,6 +444,7 @@ function DetalleViajes({ viajes }: { viajes: ViajeVista[] }) {
         <thead>
           <tr className="text-left text-muted">
             <th className="py-1 pr-3">Viaje</th>
+            <th className="pr-3">Planta</th>
             <th className="pr-3">Mixer</th>
             <th className="pr-3">Vol.</th>
             <th className="pr-3">Flota</th>
@@ -464,6 +466,7 @@ function DetalleViajes({ viajes }: { viajes: ViajeVista[] }) {
                   </div>
                 )}
               </td>
+              <td className="pr-3">{v.plantaNombre}</td>
               <td className="pr-3">{v.mixerLabel ?? "—"}</td>
               <td className="pr-3">{v.volumen} m³</td>
               <td className="pr-3">

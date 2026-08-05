@@ -97,6 +97,8 @@ model plantas {
 
   plantel planteles @relation(fields: [plantel_id], references: [id])
   pedidos pedidos[]
+  viajes  viajes[] // viajes dosificados en esta planta (un pedido puede repartirse)
+  dosificadores User[] @relation("PlantaAsignadaUsuario") // Dosificadores de esta planta
 
   @@index([plantel_id])
 }
@@ -455,12 +457,20 @@ model viajes {
   fecha_hora_confirmacion DateTime?
   usuario_confirmo        String?
 
+  // Planta dosificadora de ESTE viaje. En planteles con 2 plantas (Santa Marta,
+  // Tegucigalpa) un mismo pedido puede repartir sus viajes entre ambas. El motor la
+  // asigna al crear (planta con el hueco libre más temprano) y el Despachador puede
+  // cambiarla en vivo. Backfill = pedido.planta_id.
+  planta_id Int?
+  planta    plantas? @relation(fields: [planta_id], references: [id])
+
   pedido pedidos @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
   mixer  mixers? @relation(fields: [mixer_id], references: [id])
 
   @@index([pedido_id])
   @@index([mixer_id])
   @@index([estado])
+  @@index([planta_id])
 }
 
 // ── Autenticación y roles (Fase 3) ───────────────────────────────────────────
@@ -479,6 +489,10 @@ model User {
   // Plantel específico asignado (aplica a JefePlanta/Dosificador: ven/operan solo
   // ese plantel — alcance más fino que por zona). Null para los demás roles.
   plantel_asignado_id Int?
+  // Planta específica del Dosificador (más fino que el plantel): en un plantel de 2
+  // plantas cada planta necesita SU propio usuario Dosificador; solo ve/opera los
+  // viajes de esa planta. Null para los demás roles.
+  planta_asignada_id Int?
   // Si true, el usuario DEBE cambiar su contraseña antes de operar (primer ingreso).
   // Los usuarios nuevos creados por el Admin nacen en true; se apaga al cambiarla.
   debe_cambiar_password Boolean @default(true)
@@ -489,6 +503,7 @@ model User {
   roles    UserRole[]
   asesor   asesores? // 1:1 si este usuario es un asesor comercial
   plantel_asignado planteles? @relation("PlantelAsignadoUsuario", fields: [plantel_asignado_id], references: [id])
+  planta_asignada  plantas?   @relation("PlantaAsignadaUsuario", fields: [planta_asignada_id], references: [id])
   asignaciones_lab asignaciones_laboratorista[] // proyectos asignados si es Laboratorista
 }
 

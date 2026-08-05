@@ -39,6 +39,7 @@ export async function alcanceActual(): Promise<Alcance | null> {
     sesion.user.roles ?? [],
     sesion.user.zona ?? null,
     sesion.user.plantelAsignadoId ?? null,
+    sesion.user.plantaAsignadaId ?? null,
   );
 }
 
@@ -64,5 +65,10 @@ export async function requerirAcceso(ruta: string): Promise<Alcance> {
   if (sesion.user.debeCambiarPassword) redirect("/configuracion");
   const roles = sesion.user.roles ?? [];
   if (!puedeAccederRuta(roles, ruta)) redirect("/?denegado=1");
-  return calcularAlcance(roles, sesion.user.zona ?? null, sesion.user.plantelAsignadoId ?? null);
+  return calcularAlcance(
+    roles,
+    sesion.user.zona ?? null,
+    sesion.user.plantelAsignadoId ?? null,
+    sesion.user.plantaAsignadaId ?? null,
+  );
 }

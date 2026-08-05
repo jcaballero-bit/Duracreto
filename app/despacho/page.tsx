@@ -109,8 +109,16 @@ export default async function DespachoPage({
   let soloLectura = false; // campos (volumen/mixer/motorista/hora) de solo lectura
   let estadosEditables: string[] | null = null; // null = todos los botones; [] = ninguno
   let puedeCrear = false;
+  // Dosificador acotado a SU planta (más fino que el plantel): solo ve/opera los
+  // viajes de esa planta. Cada planta de un plantel de 2 necesita su propio usuario.
+  const plantaDosificador =
+    alcance.esDosificador && !alcance.esAdmin ? alcance.plantaAsignadaId : null;
   if (rolPlenoDespacho) {
     scopePedido = alcance.esAdmin ? {} : filtroPedidoPorZona(alcance); // zona o plantel
+    // Con planta asignada, solo pedidos que tengan al menos un viaje en SU planta.
+    if (plantaDosificador != null) {
+      scopePedido = { ...scopePedido, viajes: { some: { planta_id: plantaDosificador } } };
+    }
     puedeCrear = true;
   } else if (alcance.esLaboratorista) {
     // Solo los programas (pedidos) que le asignaron; el día ya lo acota la consulta.
@@ -172,7 +180,11 @@ export default async function DespachoPage({
           diseno: true,
           bomba: { select: { identificador: true } },
           viajes: {
-            where: { mixer_id: { not: null } },
+            where: {
+              mixer_id: { not: null },
+              // El Dosificador solo ve los viajes de SU planta.
+              ...(plantaDosificador != null ? { planta_id: plantaDosificador } : {}),
+            },
             include: {
               mixer: {
                 select: {
@@ -184,6 +196,7 @@ export default async function DespachoPage({
                 },
               },
               operador: { select: { id: true, nombre: true } },
+              planta: { select: { id: true, nombre: true } },
             },
           },
         },
@@ -207,6 +220,16 @@ export default async function DespachoPage({
     id: o.id,
     nombre: o.nombre,
   }));
+
+  // Plantas por plantel (opciones del selector de planta por viaje). Solo tiene
+  // sentido editar donde el plantel tenga 2+ plantas (Santa Marta, Tegucigalpa).
+  const plantasPorPlantel = new Map<number, { id: number; nombre: string }[]>(
+    planteles.map((pl) => [pl.id, pl.plantas.map((x) => ({ id: x.id, nombre: x.nombre }))]),
+  );
+  // Solo Despachador/Admin/Jefe de Planta cambian la planta de un viaje (el
+  // Dosificador está acotado a su planta y no reparte).
+  const puedeCambiarPlanta =
+    !soloLectura && (alcance.esAdmin || alcance.esDespachador || alcance.esJefePlanta);
 
   // Número de viaje por CLIENTE y DÍA (dinámico, NO se guarda): reinicia en 1 cada
   // día por cliente, ordenado por hora de carga (real si existe, si no la
@@ -280,6 +303,9 @@ export default async function DespachoPage({
         mixerBadge,
         operadorId: v.operador?.id ?? null,
         operadorNombre: v.operador?.nombre ?? null,
+        plantaId: v.planta_id,
+        plantaNombre: v.planta?.nombre ?? "—",
+        plantasOpciones: plantasPorPlantel.get(p.plantel_id) ?? [],
         estado: v.estado,
         // Programado (línea base, Hito 2) vs real (ts_*_real) por hito.
         hitos: [
@@ -435,6 +461,7 @@ export default async function DespachoPage({
           operadores={operadores}
           soloLectura={soloLectura}
           estadosEditables={estadosEditables}
+          puedeCambiarPlanta={puedeCambiarPlanta}
         />
       </Card>
 

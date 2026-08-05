@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import {
   avanzarEstadoViaje,
+  cambiarPlantaViaje,
   cancelarPedido,
   confirmarRefuerzo,
   corregirHoraReal,
@@ -1189,5 +1190,60 @@ describe("Hito 6 — mantenimiento excluye unidades del motor", () => {
     const res = await reasignarMixer(viaje.id, enMant.id);
     expect(res.ok).toBe(false);
     expect(res.motivo?.toLowerCase()).toContain("mantenimiento");
+  });
+});
+
+describe("planta por viaje (planteles de 2 plantas)", () => {
+  it("reparte los viajes de un pedido entre las 2 plantas del plantel", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Doble", zona: "Norte", esHub: true });
+    await prisma.plantas.create({ data: { plantel_id: plantelId, nombre: "SANY", capacidad_m3h: 45 } });
+    await crearMixers(plantelId, [[9, 4]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 36, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      select: { planta_id: true },
+    });
+    expect(viajes.length).toBe(4);
+    // Debe haber usado AMBAS plantas (reparto por hueco más temprano).
+    expect(new Set(viajes.map((v) => v.planta_id)).size).toBe(2);
+  });
+
+  it("cambiarPlantaViaje mueve un viaje a la otra planta y lo reprograma", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Doble2", zona: "Norte", esHub: true });
+    const planta2 = await prisma.plantas.create({ data: { plantel_id: plantelId, nombre: "SANY2", capacidad_m3h: 45 } });
+    await crearMixers(plantelId, [[9, 2]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 9, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    const viaje = await prisma.viajes.findFirstOrThrow({ where: { pedido_id: r.pedidoId, mixer_id: { not: null } } });
+    const destino = viaje.planta_id === plantaId ? planta2.id : plantaId;
+    const res = await cambiarPlantaViaje(viaje.id, destino);
+    expect(res.ok).toBe(true);
+    const v2 = await prisma.viajes.findUniqueOrThrow({ where: { id: viaje.id } });
+    expect(v2.planta_id).toBe(destino);
+    expect(v2.hora_inicio_carga).not.toBeNull(); // reprogramado en la nueva planta
+  });
+
+  it("cambiarPlantaViaje rechaza una planta de OTRO plantel", async () => {
+    const a = await crearPlantel({ nombre: "PlA", zona: "Norte", esHub: true });
+    await crearMixers(a.plantelId, [[9, 1]]);
+    const b = await crearPlantel({ nombre: "PlB", zona: "Norte", hubId: a.plantelId });
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 8, hora_solicitada: DIA,
+      plantel_id: a.plantelId, planta_id: a.plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    const viaje = await prisma.viajes.findFirstOrThrow({ where: { pedido_id: r.pedidoId } });
+    const res = await cambiarPlantaViaje(viaje.id, b.plantaId);
+    expect(res.ok).toBe(false);
   });
 });

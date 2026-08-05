@@ -6,6 +6,7 @@ import { Ban, Check, ChevronRight, Lock, Pencil, RefreshCw } from "lucide-react"
 import {
   avanzarEstadoAction,
   cambiarOperadorAction,
+  cambiarPlantaViajeAction,
   corregirHoraRealAction,
   editarVolumenAction,
   reasignarMixerAction,
@@ -53,6 +54,9 @@ export interface ViajeDespacho {
   mixerBadge: MixerBadge;
   operadorId: number | null;
   operadorNombre: string | null;
+  plantaId: number | null; // planta dosificadora del viaje
+  plantaNombre: string; // nombre de la planta (STALO/SANY/…)
+  plantasOpciones: { id: number; nombre: string }[]; // plantas del plantel (para mover)
   estado: string;
   hitos: HitoVista[];
   ubicacion: UbicacionCliente;
@@ -112,6 +116,7 @@ export function TableroDespacho({
   operadores,
   soloLectura = false,
   estadosEditables = null,
+  puedeCambiarPlanta = false,
 }: {
   grupos: GrupoDespacho[];
   mixers: MixerOpcion[];
@@ -121,6 +126,9 @@ export function TableroDespacho({
   // estadosEditables: qué botones de estado se pueden tocar. null = todos;
   // [] = ninguno (solo lectura total); [lista] = solo esos (Laboratorista).
   estadosEditables?: string[] | null;
+  // ¿Puede el usuario mover el viaje a otra planta del plantel? (Despachador/Admin/
+  // Jefe de Planta; no el Dosificador). Solo aplica en planteles de 2+ plantas.
+  puedeCambiarPlanta?: boolean;
 }) {
   // En solo lectura no hay reasignación de mixer ni cambio de motorista, así que no
   // se necesitan (ni se envían al cliente) los catálogos de flota/operadores.
@@ -152,6 +160,7 @@ export function TableroDespacho({
                 operadores={operadoresUsables}
                 soloLectura={soloLectura}
                 estadosEditables={estadosEditables}
+                puedeCambiarPlanta={puedeCambiarPlanta}
               />
             ))}
           </div>
@@ -187,12 +196,14 @@ function FilaViaje({
   operadores,
   soloLectura,
   estadosEditables,
+  puedeCambiarPlanta,
 }: {
   v: ViajeDespacho;
   mixers: MixerOpcion[];
   operadores: OperadorOpcion[];
   soloLectura: boolean;
   estadosEditables: string[] | null;
+  puedeCambiarPlanta: boolean;
 }) {
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
@@ -304,6 +315,16 @@ function FilaViaje({
             operadorNombre={v.operadorNombre}
             operadores={operadores}
             soloLectura={soloLectura}
+          />
+        </Campo>
+
+        <Campo label="Planta">
+          <CampoPlanta
+            viajeId={v.id}
+            plantaId={v.plantaId}
+            plantaNombre={v.plantaNombre}
+            opciones={v.plantasOpciones}
+            editable={puedeCambiarPlanta}
           />
         </Campo>
       </div>
@@ -579,6 +600,72 @@ function CampoOperador({
         className="text-muted hover:text-accent"
       >
         <Pencil size={12} />
+      </button>
+    </div>
+  );
+}
+
+// ── Campo Planta (dosificadora del viaje, editable en planteles de 2 plantas) ──
+function CampoPlanta({
+  viajeId,
+  plantaId,
+  plantaNombre,
+  opciones,
+  editable,
+}: {
+  viajeId: number;
+  plantaId: number | null;
+  plantaNombre: string;
+  opciones: { id: number; nombre: string }[];
+  editable: boolean;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [pendiente, startTransition] = useTransition();
+
+  const cambiar = (nuevo: number) => {
+    if (nuevo === plantaId) return setEditando(false);
+    startTransition(async () => {
+      const res = await cambiarPlantaViajeAction(viajeId, nuevo);
+      if (res.ok) {
+        setEditando(false);
+        router.refresh();
+      } else alert(res.mensaje ?? "No se pudo cambiar la planta.");
+    });
+  };
+
+  // Solo editable donde el plantel tiene 2+ plantas y el rol lo permite.
+  const puedeEditar = editable && opciones.length > 1;
+  if (!puedeEditar) {
+    return <span className="whitespace-nowrap text-sm text-ink">{plantaNombre}</span>;
+  }
+  if (editando) {
+    return (
+      <select
+        autoFocus
+        defaultValue={plantaId ?? ""}
+        onChange={(e) => cambiar(Number(e.target.value))}
+        onBlur={() => setEditando(false)}
+        disabled={pendiente}
+        className="rounded border border-border bg-surface px-1 py-0.5 text-sm outline-none focus:border-accent"
+      >
+        {opciones.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.nombre}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <span className="whitespace-nowrap text-sm font-semibold text-ink">{plantaNombre}</span>
+      <button
+        onClick={() => setEditando(true)}
+        title="Cambiar planta dosificadora"
+        className="text-muted hover:text-accent"
+      >
+        <RefreshCw size={12} />
       </button>
     </div>
   );

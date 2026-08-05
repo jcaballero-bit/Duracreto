@@ -116,6 +116,32 @@ export async function fijarPlantelAsignadoAction(
   return { ok: true };
 }
 
+/** Fija (o limpia) la PLANTA asignada de un Dosificador. Al fijar una planta, se
+ *  ajusta también su plantel_asignado a la del plantel de esa planta (coherencia). */
+export async function fijarPlantaAsignadaAction(
+  userId: string,
+  plantaId: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const guard = await exigirAdmin();
+  if (!guard.ok) return guard;
+  if (plantaId === "") {
+    await prisma.user.update({ where: { id: userId }, data: { planta_asignada_id: null } });
+    revalidatePath("/administracion");
+    return { ok: true };
+  }
+  const planta = await prisma.plantas.findUnique({
+    where: { id: Number(plantaId) },
+    select: { plantel_id: true },
+  });
+  if (!planta) return { ok: false, mensaje: "Planta no encontrada." };
+  await prisma.user.update({
+    where: { id: userId },
+    data: { planta_asignada_id: Number(plantaId), plantel_asignado_id: planta.plantel_id },
+  });
+  revalidatePath("/administracion");
+  return { ok: true };
+}
+
 /** Activa/desactiva el acceso de un usuario (sin borrarlo). */
 export async function alternarActivoAction(
   userId: string,

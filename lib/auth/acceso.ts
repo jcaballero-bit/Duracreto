@@ -29,6 +29,7 @@ export interface Alcance {
   roles: string[];
   zona: string | null;
   plantelAsignadoId: number | null;
+  plantaAsignadaId: number | null; // planta específica del Dosificador
   esAdmin: boolean;
   esProgramador: boolean;
   esDespachador: boolean;
@@ -46,6 +47,7 @@ export function calcularAlcance(
   roles: string[],
   zona: string | null,
   plantelAsignadoId: number | null = null,
+  plantaAsignadaId: number | null = null,
 ): Alcance {
   const esAdmin = roles.includes("Administrador");
   const esProgramador = roles.includes("Programador");
@@ -67,6 +69,7 @@ export function calcularAlcance(
     roles,
     zona,
     plantelAsignadoId,
+    plantaAsignadaId,
     esAdmin,
     esProgramador,
     esDespachador,

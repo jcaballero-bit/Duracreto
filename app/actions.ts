@@ -10,6 +10,7 @@ import { UMBRAL_IMPACTO_INSERCION_MIN } from "@/lib/motor/config";
 import {
   avanzarEstadoViaje,
   cambiarOperadorViaje,
+  cambiarPlantaViaje,
   cancelarPedido,
   cancelarPedidoConMotivo,
   confirmarRefuerzo,
@@ -518,6 +519,48 @@ export async function reasignarMixerAction(
 
   revalidarPantallas();
   return { ok: true, mensaje: res.aviso };
+}
+
+/**
+ * Server action: cambia la PLANTA dosificadora de un viaje (Despacho en vivo). Lo
+ * usa el Despachador (o Admin/Jefe de Planta) cuando una planta se satura/falla y
+ * hay que mover viajes pendientes a la otra planta del plantel. El Dosificador NO
+ * (está acotado a su planta). Revalida (planta del mismo plantel), recalcula la
+ * cascada del plantel y registra en bitácora.
+ */
+export async function cambiarPlantaViajeAction(
+  viajeId: number,
+  plantaId: number,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  try {
+    const permiso = await autorizarPorViaje(viajeId);
+    if (!permiso.ok) return permiso;
+    const a = await alcanceActual();
+    if (!a || !(a.esAdmin || a.esDespachador || a.esJefePlanta)) {
+      return { ok: false, mensaje: "Tu rol no permite cambiar la planta del viaje." };
+    }
+    const res = await cambiarPlantaViaje(viajeId, plantaId);
+    if (!res.ok) return { ok: false, mensaje: res.mensaje };
+
+    const sesion = await auth();
+    const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "viajes",
+        registro_id: viajeId,
+        usuario: quien,
+        campo_modificado: "planta_id",
+        valor_anterior: res.plantaAnterior ?? null,
+        valor_nuevo: res.plantaNueva ?? String(plantaId),
+        motivo: "Cambio de planta dosificadora (despacho)",
+      },
+    });
+
+    revalidarPantallas();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, mensaje: e instanceof Error ? e.message : "No se pudo cambiar la planta." };
+  }
 }
 
 /**

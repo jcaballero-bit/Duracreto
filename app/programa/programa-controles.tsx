@@ -35,6 +35,9 @@ export function ProgramaControles({
             value={fecha}
             onChange={(e) => navegar(e.target.value, zona)}
             className={inputCls}
+            // required: el campo siempre tiene fecha (default = hoy). Además evita
+            // que el navegador muestre el botón "Limpiar" en el calendario nativo.
+            required
           />
         </label>
         <label className="flex flex-col gap-1 text-sm">

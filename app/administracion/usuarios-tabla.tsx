@@ -10,6 +10,7 @@ import {
   alternarRolAction,
   crearUsuarioAction,
   eliminarUsuarioAction,
+  fijarPlantaAsignadaAction,
   fijarPlantelAsignadoAction,
   fijarZonaAction,
   forzarCambioPasswordAction,
@@ -21,6 +22,7 @@ export interface UsuarioAdmin {
   correo: string;
   zona: string | null;
   plantelAsignadoId: number | null;
+  plantaAsignadaId: number | null;
   roles: string[];
   activo: boolean;
 }
@@ -28,13 +30,19 @@ export interface PlantelOpc {
   id: number;
   nombre: string;
 }
+export interface OpcSelect {
+  value: string;
+  label: string;
+}
 
 export function UsuariosTabla({
   usuarios,
   planteles,
+  plantas,
 }: {
   usuarios: UsuarioAdmin[];
   planteles: PlantelOpc[];
+  plantas: OpcSelect[];
 }) {
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
@@ -80,7 +88,8 @@ export function UsuariosTabla({
               <th className="px-3 py-2">Nombre</th>
               <th className="px-3 py-2">Correo</th>
               <th className="px-3 py-2">Zona</th>
-              <th className="px-3 py-2">Plantel (Jefe/Dosif.)</th>
+              <th className="px-3 py-2">Plantel (Jefe)</th>
+              <th className="px-3 py-2">Planta (Dosif.)</th>
               <th className="px-3 py-2">Roles</th>
               <th className="px-3 py-2">Activo</th>
               <th className="px-3 py-2">Acciones</th>
@@ -117,6 +126,22 @@ export function UsuariosTabla({
                     {planteles.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.nombre}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td className="px-3 py-2">
+                  <select
+                    value={u.plantaAsignadaId != null ? String(u.plantaAsignadaId) : ""}
+                    disabled={pendiente}
+                    onChange={(e) => accion(() => fijarPlantaAsignadaAction(u.id, e.target.value))}
+                    className="rounded-md border border-border bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent"
+                    title="Planta específica del Dosificador (sincroniza su plantel)"
+                  >
+                    <option value="">—</option>
+                    {plantas.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        {p.label}
                       </option>
                     ))}
                   </select>

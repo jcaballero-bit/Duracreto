@@ -34,12 +34,15 @@ export default async function AdministracionPage({
   const tab = (await searchParams).tab ?? "planteles";
 
   // Listas de opciones (tablas pequeñas).
-  const [planteles, asesores, usuarios] = await Promise.all([
+  const [planteles, plantas, asesores, usuarios] = await Promise.all([
     prisma.planteles.findMany({ orderBy: { nombre: "asc" } }),
+    prisma.plantas.findMany({ orderBy: { nombre: "asc" }, include: { plantel: { select: { nombre: true } } } }),
     prisma.asesores.findMany({ orderBy: { nombre: "asc" } }),
     prisma.user.findMany({ orderBy: { creado_en: "asc" }, include: { roles: true } }),
   ]);
   const opcPlanteles = opc(planteles.map((p) => ({ value: String(p.id), label: `${p.nombre} (${p.zona})` })));
+  // Solo tiene sentido asignar planta específica en planteles con 2+ plantas.
+  const opcPlantas = opc(plantas.map((p) => ({ value: String(p.id), label: `${p.plantel.nombre} · ${p.nombre}` })));
   const opcUsuarios = opc(usuarios.map((u) => ({ value: u.id, label: `${u.name ?? "?"} (${u.email ?? ""})` })));
 
   const contenido = await renderTab(tab, {
@@ -47,6 +50,7 @@ export default async function AdministracionPage({
     asesores,
     usuarios,
     opcPlanteles,
+    opcPlantas,
     opcUsuarios,
   });
 
@@ -92,10 +96,12 @@ interface Ctx {
     email: string | null;
     zona: string | null;
     plantel_asignado_id: number | null;
+    planta_asignada_id: number | null;
     activo: boolean;
     roles: { rol: string }[];
   }[];
   opcPlanteles: { value: string; label: string }[];
+  opcPlantas: { value: string; label: string }[];
   opcUsuarios: { value: string; label: string }[];
 }
 
@@ -302,6 +308,7 @@ async function renderTab(tab: string, ctx: Ctx) {
         correo: u.email ?? "—",
         zona: u.zona,
         plantelAsignadoId: u.plantel_asignado_id,
+        plantaAsignadaId: u.planta_asignada_id,
         roles: u.roles.map((r) => r.rol),
         activo: u.activo,
       }));
@@ -309,12 +316,14 @@ async function renderTab(tab: string, ctx: Ctx) {
         <>
           <p className="mb-3 text-sm text-muted">
             Los usuarios pueden crearse aquí o al iniciar sesión. La zona aplica a
-            Programador/Despachador/Laboratorista; el plantel asignado a Jefe de
-            Planta/Dosificador; un usuario puede tener varios roles.
+            Programador/Despachador/Laboratorista; el plantel a Jefe de Planta; el
+            Dosificador se asigna a una PLANTA específica (en planteles de 2 plantas,
+            cada planta necesita su propio usuario Dosificador). Varios roles posibles.
           </p>
           <UsuariosTabla
             usuarios={filas}
             planteles={ctx.planteles.map((p) => ({ id: p.id, nombre: p.nombre }))}
+            plantas={ctx.opcPlantas}
           />
         </>
       );

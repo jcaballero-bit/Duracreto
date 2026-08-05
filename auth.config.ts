@@ -28,6 +28,8 @@ export default {
           (token.debeCambiar as boolean | undefined) ?? false;
         session.user.plantelAsignadoId =
           (token.plantelAsignado as number | null | undefined) ?? null;
+        session.user.plantaAsignadaId =
+          (token.plantaAsignada as number | null | undefined) ?? null;
         if (token.nombre) session.user.name = token.nombre as string;
       }
       return session;
