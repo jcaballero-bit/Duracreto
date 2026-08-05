@@ -243,15 +243,18 @@ export default async function DespachoPage({
     alcance.esDosificador;
 
   // Número de viaje por CLIENTE y DÍA (dinámico, NO se guarda): reinicia en 1 cada
-  // día por cliente, ordenado por hora de carga (real si existe, si no la
-  // programada). Independiente del id del sistema; se recalcula si se reordena o se
-  // agregan/quitan viajes. Se calcula sobre TODOS los pedidos del cliente ese día
-  // (aunque sean de distintos planteles/pedidos).
+  // día por cliente. Se ordena por la hora PROGRAMADA de carga (la misma clave que
+  // el orden fijo de las tarjetas, `ordenCargaMs`), NUNCA por la hora real: si se
+  // usara la real, al marcar "En carga" el viaje tomaría la hora de AHORA y saltaría
+  // de número (p. ej. de "Viaje 1" a "Viaje 10"), corriéndose la numeración. Con la
+  // hora programada el número es estable y coincide con el orden en pantalla. Se
+  // calcula sobre TODOS los pedidos del cliente ese día (aunque sean de distintos
+  // planteles/pedidos).
   const porClienteDia = new Map<number, { viajeId: number; ordenMs: number }[]>();
   for (const p of pedidos) {
     for (const v of p.viajes) {
       if (!v.mixer) continue;
-      const ordenMs = (v.ts_inicio_carga_real ?? v.hora_inicio_carga ?? p.hora_solicitada).getTime();
+      const ordenMs = (v.hora_inicio_carga ?? p.hora_solicitada).getTime();
       const arr = porClienteDia.get(p.cliente_id) ?? [];
       arr.push({ viajeId: v.id, ordenMs });
       porClienteDia.set(p.cliente_id, arr);

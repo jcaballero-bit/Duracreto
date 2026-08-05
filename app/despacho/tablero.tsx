@@ -239,7 +239,9 @@ function FilaViaje({
         </span>
         <div className="flex items-center gap-2">
           <Badge tono={tonoEstado(v.estado)}>{v.estado}</Badge>
-          {puedeAgregar && (
+          {/* Solo en el ÚLTIMO viaje del cliente ese día (evita repetir el botón en
+              cada tarjeta): la adición se agrega al final de la secuencia del cliente. */}
+          {puedeAgregar && v.numClienteDia === v.totalClienteDia && (
             <button
               onClick={() => setAgregando(true)}
               title="Agregar volumen adicional a este cliente (mismas características)"
