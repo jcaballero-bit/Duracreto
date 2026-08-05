@@ -264,6 +264,7 @@ function construirEntrada(
       sacos_hielo_por_m3: hielo,
       asesor_id: Number(formData.get("asesor_id")) || null,
       hora_bloqueada: !!formData.get("hora_bloqueada"),
+      usar_ambas_plantas: !!formData.get("usar_ambas_plantas"),
       frecuencia_entre_camiones_min:
         Number(formData.get("frecuencia_entre_camiones_min")) || null,
       tiempo_transporte_min:

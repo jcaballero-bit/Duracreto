@@ -57,6 +57,7 @@ export interface ValoresPedido {
   bomba_id: number | null;
   asesor_id: number | null;
   hora_bloqueada: boolean;
+  usar_ambas_plantas: boolean;
   frecuencia_entre_camiones_min: number | null;
   tiempo_transporte_min: number | null;
   elemento: string | null;
@@ -189,6 +190,8 @@ export function PedidoForm({
   );
   // Hora de llegada FIJA (excepción): no autocompletar ni reprogramar.
   const [bloqueada, setBloqueada] = useState<boolean>(valores?.hora_bloqueada ?? false);
+  // Cargar en ambas plantas simultáneamente (solo aplica a planteles de 2 plantas).
+  const [usarAmbas, setUsarAmbas] = useState<boolean>(valores?.usar_ambas_plantas ?? false);
   const fechaBase = horaLocal.slice(0, 10);
 
   // Tipo de servicio (Normal / Servicio de Construcción): lo precarga la solicitud
@@ -235,6 +238,8 @@ export function PedidoForm({
     if (!plantasDelPlantel.some((pl) => pl.id === plantaId)) {
       setPlantaId(plantasDelPlantel[0]?.id ?? 0);
     }
+    // "Ambas plantas" solo tiene sentido con 2+ plantas; en 1 planta se apaga.
+    if (plantasDelPlantel.length < 2 && usarAmbas) setUsarAmbas(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plantelId]);
 
@@ -416,7 +421,7 @@ export function PedidoForm({
           </select>
         </Campo>
 
-        <Campo label="Planta">
+        <Campo label={usarAmbas ? "Planta (principal)" : "Planta"}>
           <select
             name="planta_id"
             className={inputCls}
@@ -430,6 +435,24 @@ export function PedidoForm({
               </option>
             ))}
           </select>
+          {/* Solo en planteles de 2 plantas: elegir carga en una o en ambas. */}
+          {plantasDelPlantel.length >= 2 && (
+            <label className="mt-1 flex items-start gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                name="usar_ambas_plantas"
+                value="1"
+                checked={usarAmbas}
+                onChange={(e) => setUsarAmbas(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 accent-accent"
+              />
+              <span>
+                Cargar en <strong>ambas plantas</strong> simultáneamente (reparte los
+                viajes entre las 2 para acelerar la entrega). Sin marcar, todo carga
+                en la planta elegida.
+              </span>
+            </label>
+          )}
         </Campo>
 
         <Campo label="Volumen total (m³)">

@@ -1194,9 +1194,29 @@ describe("Hito 6 — mantenimiento excluye unidades del motor", () => {
 });
 
 describe("planta por viaje (planteles de 2 plantas)", () => {
-  it("reparte los viajes de un pedido entre las 2 plantas del plantel", async () => {
+  it("con usar_ambas_plantas reparte los viajes entre las 2 plantas del plantel", async () => {
     const { plantelId, plantaId } = await crearPlantel({ nombre: "Doble", zona: "Norte", esHub: true });
     await prisma.plantas.create({ data: { plantel_id: plantelId, nombre: "SANY", capacidad_m3h: 45 } });
+    await crearMixers(plantelId, [[9, 4]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 36, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+      usar_ambas_plantas: true,
+    });
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      select: { planta_id: true },
+    });
+    expect(viajes.length).toBe(4);
+    // Debe haber usado AMBAS plantas (reparto por hueco más temprano).
+    expect(new Set(viajes.map((v) => v.planta_id)).size).toBe(2);
+  });
+
+  it("por defecto (sin usar_ambas_plantas) TODO carga en la planta elegida", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Doble3", zona: "Norte", esHub: true });
+    await prisma.plantas.create({ data: { plantel_id: plantelId, nombre: "SANY3", capacidad_m3h: 45 } });
     await crearMixers(plantelId, [[9, 4]]);
     const clienteId = await crearCliente(true);
     const disenoId = await crearDiseno();
@@ -1209,8 +1229,8 @@ describe("planta por viaje (planteles de 2 plantas)", () => {
       select: { planta_id: true },
     });
     expect(viajes.length).toBe(4);
-    // Debe haber usado AMBAS plantas (reparto por hueco más temprano).
-    expect(new Set(viajes.map((v) => v.planta_id)).size).toBe(2);
+    // Sin el flag, todos los viajes quedan en la planta seleccionada.
+    expect(viajes.every((v) => v.planta_id === plantaId)).toBe(true);
   });
 
   it("cambiarPlantaViaje mueve un viaje a la otra planta y lo reprograma", async () => {

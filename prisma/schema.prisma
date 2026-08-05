@@ -323,6 +323,11 @@ model pedidos {
   // llegada exacta (piso duro) y NO reprograma este pedido junto al resto
   // (para casos ocasionales: p. ej. un cliente que pide suministro por la tarde).
   hora_bloqueada    Boolean @default(false)
+  // Reparto de carga entre plantas: en un plantel con 2 plantas dosificadoras,
+  // true = los viajes del pedido se reparten entre AMBAS plantas (carga
+  // simultánea, doble throughput); false = todos cargan en la planta elegida
+  // (`planta_id`). En planteles de 1 planta no aplica (siempre esa planta).
+  usar_ambas_plantas Boolean @default(false)
   // Minutos mínimos entre la llegada de un camión y el siguiente (restricción de
   // acceso/espacio del sitio). El motor lo usa para escalonar los viajes del
   // pedido; null = sin restricción especial.

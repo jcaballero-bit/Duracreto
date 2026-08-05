@@ -297,6 +297,7 @@ export default async function ProgramacionPage({
         bomba_id: p.bomba_id,
         asesor_id: p.asesor_id,
         hora_bloqueada: p.hora_bloqueada,
+        usar_ambas_plantas: p.usar_ambas_plantas,
         frecuencia_entre_camiones_min: p.frecuencia_entre_camiones_min,
         tiempo_transporte_min: p.tiempo_transporte_min,
         elemento: p.elemento,

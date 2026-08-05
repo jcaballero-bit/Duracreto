@@ -52,6 +52,7 @@ export interface EntradaPedido {
   sacos_hielo_por_m3?: number; // 0 = sin control; 1-10
   asesor_id?: number | null; // asesor que gestiona el pedido (precargado del cliente)
   hora_bloqueada?: boolean; // true = hora de llegada fija (no reprogramar)
+  usar_ambas_plantas?: boolean; // true = repartir viajes entre las 2 plantas del plantel
   frecuencia_entre_camiones_min?: number | null; // min entre llegadas de camión
   tiempo_transporte_min?: number | null; // override de transporte (ida); null = usa el del cliente
   elemento?: string | null;
@@ -805,6 +806,7 @@ export async function programarPedido(
       asesor_id: entrada.asesor_id ?? null,
       orden_dia: ordenDia,
       hora_bloqueada: entrada.hora_bloqueada ?? false,
+      usar_ambas_plantas: entrada.usar_ambas_plantas ?? false,
       frecuencia_entre_camiones_min: entrada.frecuencia_entre_camiones_min ?? null,
       tiempo_transporte_min: entrada.tiempo_transporte_min ?? null,
       elemento: entrada.elemento ?? null,
@@ -851,6 +853,7 @@ export async function modificarPedido(
       sacos_hielo_por_m3: entrada.sacos_hielo_por_m3 ?? 0,
       asesor_id: entrada.asesor_id ?? null,
       hora_bloqueada: entrada.hora_bloqueada ?? false,
+      usar_ambas_plantas: entrada.usar_ambas_plantas ?? false,
       frecuencia_entre_camiones_min: entrada.frecuencia_entre_camiones_min ?? null,
       tiempo_transporte_min: entrada.tiempo_transporte_min ?? null,
       elemento: entrada.elemento ?? null,
@@ -878,16 +881,22 @@ export async function modificarPedido(
 /**
  * Reparte `cantidad` viajes nuevos entre las plantas del plantel, eligiendo cada vez
  * la de hueco libre más temprano (aprox. por el fin de carga comprometido ese día);
- * desempata a favor de la planta preferida del pedido. En planteles de 1 planta,
- * todos van a esa planta (comportamiento idéntico al anterior). Devuelve un planta_id
- * por viaje, en orden.
+ * desempata a favor de la planta preferida del pedido. Solo reparte cuando el pedido
+ * pidió `usarAmbas` (carga simultánea en las 2 plantas). Si no, o si el plantel tiene
+ * una sola planta, TODOS los viajes van a `plantaPreferida` (la planta elegida en el
+ * pedido). Devuelve un planta_id por viaje, en orden.
  */
 async function repartirPlantas(
   plantelId: number,
   plantaPreferida: number,
   cantidad: number,
   dia: Date,
+  usarAmbas: boolean,
 ): Promise<number[]> {
+  // Decisión del usuario: una sola planta salvo que se marque "ambas plantas".
+  if (!usarAmbas) {
+    return Array(cantidad).fill(plantaPreferida);
+  }
   const plantas = await prisma.plantas.findMany({
     where: { plantel_id: plantelId },
     select: { id: true, capacidad_m3h: true, tiempo_alistamiento_min: true },
@@ -950,13 +959,15 @@ async function asignarViajesDePedido(
 
   const plan = planificarCombinacion(entrada.volumen_total_m3, capacidades);
 
-  // Reparto de PLANTA por viaje (hueco más temprano; preferida = la del pedido). En
-  // planteles de 1 planta todos van a esa; en los de 2 se distribuyen entre ambas.
+  // Reparto de PLANTA por viaje. Si el pedido pidió "ambas plantas", se distribuyen
+  // entre las 2 (hueco más temprano; preferida = la del pedido) para carga simultánea;
+  // si no, todos van a la planta elegida.
   const plantasViaje = await repartirPlantas(
     entrada.plantel_id,
     entrada.planta_id,
     plan.viajes.length,
     entrada.hora_solicitada,
+    entrada.usar_ambas_plantas ?? false,
   );
 
   // Un viaje por cada carga del plan. El mixer lo asigna la cascada (mixer null).
