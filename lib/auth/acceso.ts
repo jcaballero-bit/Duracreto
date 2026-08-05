@@ -91,7 +91,7 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   ],
   "/programacion": ["Administrador", "Programador", "JefePlanta", "JefeLaboratorio", "GerenteComercial"],
   "/despacho": [
-    "Administrador", "Despachador", "Asesor",
+    "Administrador", "Despachador", "Asesor", "Programador",
     "JefePlanta", "Dosificador", "Laboratorista", "JefeLaboratorio", "GerenteComercial",
   ],
   // GerenteComercial: CONSULTA (solo lectura) de toda la sección Ventas.

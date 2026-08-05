@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { prisma } from "@/lib/prisma";
 import {
+  cierreProgramaDe,
   DEFAULT_TIEMPO_REGRESO_MIN,
   DEFAULT_TIEMPO_VIAJE_MIN,
   ESTADO_DISPONIBLE,
@@ -873,6 +874,120 @@ export async function modificarPedido(
 }
 
 /**
+ * Agrega volumen ADICIONAL a un pedido existente creando viajes nuevos con las
+ * MISMAS características (cliente, diseño, revenimiento, tipo de descarga, etc. —
+ * todo vive en el pedido, no en el viaje). El volumen se suma a `volumen_total_m3`
+ * pero NO a `volumen_programado`: así el exceso sobre la línea base se contabiliza
+ * como ADICIÓN del día en las métricas comerciales, cargado al asesor dueño del
+ * cliente. Reagenda la cascada de la planta ese día. Se usa desde Despacho en vivo.
+ */
+export async function agregarVolumenAlPedido(
+  pedidoId: number,
+  volumenAdicional: number,
+): Promise<ResultadoProgramacion> {
+  if (!(volumenAdicional > 0)) {
+    throw new Error("El volumen adicional debe ser mayor que 0.");
+  }
+  const pedido = await prisma.pedidos.findUniqueOrThrow({
+    where: { id: pedidoId },
+    select: {
+      plantel_id: true,
+      planta_id: true,
+      hora_solicitada: true,
+      volumen_total_m3: true,
+      usar_ambas_plantas: true,
+      estado_pedido: true,
+    },
+  });
+  if (pedido.estado_pedido === "Cancelado") {
+    throw new Error("No se puede agregar volumen a un pedido cancelado.");
+  }
+  const plantel = await prisma.planteles.findUniqueOrThrow({
+    where: { id: pedido.plantel_id },
+  });
+
+  // Capacidades disponibles (flota propia + hub, sin mantenimiento la fecha).
+  const candidatos = await candidatosDePlanta(
+    pedido.plantel_id,
+    plantel.hub_id,
+    pedido.hora_solicitada,
+  );
+  const capacidades = [...new Set(candidatos.map((m) => m.capacidad_m3))];
+  const plan = planificarCombinacion(volumenAdicional, capacidades);
+
+  // Planta de los viajes nuevos: respeta el modo "ambas plantas" del pedido.
+  const plantasViaje = await repartirPlantas(
+    pedido.plantel_id,
+    pedido.planta_id,
+    plan.viajes.length,
+    pedido.hora_solicitada,
+    pedido.usar_ambas_plantas,
+  );
+
+  let idxPlanta = 0;
+  for (const vp of plan.viajes) {
+    await prisma.viajes.create({
+      data: {
+        pedido_id: pedidoId,
+        mixer_id: null,
+        planta_id: plantasViaje[idxPlanta++] ?? pedido.planta_id,
+        capacidad_asignada_m3: vp.capacidad,
+        volumen_asignado_m3: vp.volumen,
+        hora_solicitada: pedido.hora_solicitada,
+        motivo_asignacion: "Flota propia",
+        estado_confirmacion: "Pendiente",
+      },
+    });
+  }
+  if (plan.volumenSinCubrir > 0) {
+    await prisma.viajes.create({
+      data: {
+        pedido_id: pedidoId,
+        mixer_id: null,
+        planta_id: pedido.planta_id,
+        capacidad_asignada_m3: 0,
+        volumen_asignado_m3: plan.volumenSinCubrir,
+        hora_solicitada: pedido.hora_solicitada,
+        motivo_asignacion: "Sin cubrir",
+        estado_confirmacion: "Pendiente",
+      },
+    });
+  }
+
+  // Sube el total del pedido SIN tocar `volumen_programado` (línea base): el
+  // exceso queda como adición del día atribuida al asesor del cliente.
+  await prisma.pedidos.update({
+    where: { id: pedidoId },
+    data: { volumen_total_m3: pedido.volumen_total_m3 + volumenAdicional },
+  });
+
+  const viajesRecalculados = await recalcularCascadaPlanta(
+    pedido.planta_id,
+    pedido.hora_solicitada,
+  );
+  const volumenSinCubrir = await volumenSinCubrirDePedido(pedidoId);
+  const sugerenciasRefuerzo =
+    volumenSinCubrir > 0
+      ? await sugerirRefuerzo(
+          volumenSinCubrir,
+          pedido.plantel_id,
+          plantel.hub_id ?? pedido.plantel_id,
+          pedido.hora_solicitada,
+        )
+      : [];
+  const alertasMargen = await detectarAlertasMargen(pedido.hora_solicitada);
+  const viajes = await resumenViajes(pedidoId);
+  return {
+    pedidoId,
+    viajes,
+    volumenSinCubrir,
+    sugerenciasRefuerzo,
+    alertasMargen,
+    viajesRecalculados,
+  };
+}
+
+/**
  * Núcleo reutilizable (crear/modificar): dado un pedido YA persistido y sin
  * viajes, elige la mejor combinación de capacidades (planificador puro), crea un
  * viaje por cada carga y deja que el agendador (recalcularCascadaPlanta) asigne
@@ -1673,6 +1788,39 @@ export async function cancelarPedidoConMotivo(
     where: { id: pedidoId },
     select: { planta_id: true, hora_solicitada: true, estado_pedido: true },
   });
+
+  // ¿El Programa DPCR-08 de este día YA está publicado (congelado)? Se publica a
+  // las 16:00 del día anterior. Si la cancelación ocurre DESPUÉS de ese cierre, el
+  // documento no se reescribe: el cliente PERMANECE en el programa con su mixer y
+  // horarios tal como se publicaron, y NO se recalcula la cascada (no se corren los
+  // demás clientes). Si ocurre ANTES del cierre, se libera y se reoptimiza como
+  // siempre (el cliente desaparece del programa). En ambos casos el pedido queda
+  // Cancelado para métricas comerciales (cancelación cargada al asesor) y sale del
+  // Despacho activo.
+  const congelado = new Date() >= cierreProgramaDe(pedido.hora_solicitada);
+
+  if (congelado) {
+    // Post-cierre: marca Cancelado SIN tocar la programación. Se conservan
+    // mixer/operador/horarios de los viajes (la cascada ya ignora los Cancelados,
+    // así que la flota queda libre para reutilizarse sin borrar el registro).
+    await prisma.$transaction([
+      prisma.viajes.updateMany({
+        where: { pedido_id: pedidoId, estado: { not: "Completado" } },
+        data: { estado: "Cancelado" },
+      }),
+      prisma.pedidos.update({
+        where: { id: pedidoId },
+        data: {
+          estado_pedido: "Cancelado",
+          motivo_cancelacion: motivo,
+          detalle_cancelacion: detalle,
+          cancelado_por: usuario,
+          fecha_cancelacion: new Date(),
+        },
+      }),
+    ]);
+    return { viajesRecalculados: [] };
+  }
 
   await prisma.$transaction([
     prisma.viajes.updateMany({

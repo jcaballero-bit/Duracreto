@@ -231,6 +231,17 @@ export default async function DespachoPage({
   const puedeCambiarPlanta =
     !soloLectura && (alcance.esAdmin || alcance.esDespachador || alcance.esJefePlanta);
 
+  // ¿Puede AGREGAR viajes adicionales a un pedido? Mismos roles que operan pedidos
+  // (Admin/Programador/Despachador/JefePlanta/Dosificador). El Programador ve el
+  // despacho en solo lectura pero SÍ puede agregar adiciones. Coincide con el gate
+  // server-side `autorizarOperacionPedido`.
+  const puedeAgregar =
+    alcance.esAdmin ||
+    alcance.esProgramador ||
+    alcance.esDespachador ||
+    alcance.esJefePlanta ||
+    alcance.esDosificador;
+
   // Número de viaje por CLIENTE y DÍA (dinámico, NO se guarda): reinicia en 1 cada
   // día por cliente, ordenado por hora de carga (real si existe, si no la
   // programada). Independiente del id del sistema; se recalcula si se reordena o se
@@ -462,6 +473,7 @@ export default async function DespachoPage({
           soloLectura={soloLectura}
           estadosEditables={estadosEditables}
           puedeCambiarPlanta={puedeCambiarPlanta}
+          puedeAgregar={puedeAgregar}
         />
       </Card>
 

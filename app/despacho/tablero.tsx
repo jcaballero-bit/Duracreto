@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { Fragment, useState, useTransition } from "react";
-import { Ban, Check, ChevronRight, Lock, Pencil, RefreshCw } from "lucide-react";
+import { Ban, Check, ChevronRight, Lock, Pencil, Plus, RefreshCw } from "lucide-react";
 import {
   avanzarEstadoAction,
   cambiarOperadorAction,
@@ -14,6 +14,7 @@ import {
 import { Badge } from "../components/ui";
 import { BotonesMapa, type UbicacionCliente } from "../components/maps-buttons";
 import { CancelarViajeModal } from "../components/cancelar-viaje-modal";
+import { AgregarViajeModal } from "../components/agregar-viaje-modal";
 import type { CampoTsReal } from "@/lib/motor/asignacion";
 
 export interface HitoVista {
@@ -117,6 +118,7 @@ export function TableroDespacho({
   soloLectura = false,
   estadosEditables = null,
   puedeCambiarPlanta = false,
+  puedeAgregar = false,
 }: {
   grupos: GrupoDespacho[];
   mixers: MixerOpcion[];
@@ -129,6 +131,10 @@ export function TableroDespacho({
   // ¿Puede el usuario mover el viaje a otra planta del plantel? (Despachador/Admin/
   // Jefe de Planta; no el Dosificador). Solo aplica en planteles de 2+ plantas.
   puedeCambiarPlanta?: boolean;
+  // ¿Puede AGREGAR viajes adicionales al pedido? (Admin/Programador/Despachador/
+  // JefePlanta/Dosificador). Independiente de soloLectura (el Programador ve el
+  // despacho en solo lectura pero sí puede agregar adiciones).
+  puedeAgregar?: boolean;
 }) {
   // En solo lectura no hay reasignación de mixer ni cambio de motorista, así que no
   // se necesitan (ni se envían al cliente) los catálogos de flota/operadores.
@@ -161,6 +167,7 @@ export function TableroDespacho({
                 soloLectura={soloLectura}
                 estadosEditables={estadosEditables}
                 puedeCambiarPlanta={puedeCambiarPlanta}
+                puedeAgregar={puedeAgregar}
               />
             ))}
           </div>
@@ -197,6 +204,7 @@ function FilaViaje({
   soloLectura,
   estadosEditables,
   puedeCambiarPlanta,
+  puedeAgregar,
 }: {
   v: ViajeDespacho;
   mixers: MixerOpcion[];
@@ -204,10 +212,12 @@ function FilaViaje({
   soloLectura: boolean;
   estadosEditables: string[] | null;
   puedeCambiarPlanta: boolean;
+  puedeAgregar: boolean;
 }) {
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
   const [cancelando, setCancelando] = useState(false);
+  const [agregando, setAgregando] = useState(false);
   const siguiente = SIGUIENTE[v.estado];
 
   const avanzar = (estado: string) =>
@@ -229,6 +239,15 @@ function FilaViaje({
         </span>
         <div className="flex items-center gap-2">
           <Badge tono={tonoEstado(v.estado)}>{v.estado}</Badge>
+          {puedeAgregar && (
+            <button
+              onClick={() => setAgregando(true)}
+              title="Agregar volumen adicional a este cliente (mismas características)"
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10"
+            >
+              <Plus size={13} /> Agregar viaje
+            </button>
+          )}
           {!soloLectura && v.estado !== "Completado" && (
             <button
               onClick={() => setCancelando(true)}
@@ -248,6 +267,19 @@ function FilaViaje({
           onClose={() => setCancelando(false)}
           onCancelado={() => {
             setCancelando(false);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {agregando && (
+        <AgregarViajeModal
+          pedidoId={v.pedidoId}
+          cliente={v.cliente}
+          onClose={() => setAgregando(false)}
+          onAgregado={(msg) => {
+            setAgregando(false);
+            if (msg) alert(msg);
             router.refresh();
           }}
         />

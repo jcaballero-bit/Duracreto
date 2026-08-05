@@ -2,9 +2,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import {
+  agregarVolumenAlPedido,
   avanzarEstadoViaje,
   cambiarPlantaViaje,
   cancelarPedido,
+  cancelarPedidoConMotivo,
   confirmarRefuerzo,
   corregirHoraReal,
   detectarAlertasMargen,
@@ -1265,5 +1267,73 @@ describe("planta por viaje (planteles de 2 plantas)", () => {
     const viaje = await prisma.viajes.findFirstOrThrow({ where: { pedido_id: r.pedidoId } });
     const res = await cambiarPlantaViaje(viaje.id, b.plantaId);
     expect(res.ok).toBe(false);
+  });
+});
+
+describe("adiciones y congelamiento del Programa DPCR-08", () => {
+  it("agregarVolumenAlPedido suma viajes SIN tocar volumen_programado (adición)", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Adi", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[9, 4]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 9, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    const antes = await prisma.pedidos.findUniqueOrThrow({ where: { id: r.pedidoId } });
+    const viajesAntes = await prisma.viajes.count({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+    });
+
+    await agregarVolumenAlPedido(r.pedidoId, 18);
+
+    const despues = await prisma.pedidos.findUniqueOrThrow({ where: { id: r.pedidoId } });
+    const viajesDespues = await prisma.viajes.count({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+    });
+    expect(despues.volumen_total_m3).toBeCloseTo(antes.volumen_total_m3 + 18);
+    // La línea base NO cambia: el exceso queda como adición en métricas comerciales.
+    expect(despues.volumen_programado).toBe(antes.volumen_programado);
+    expect(viajesDespues).toBeGreaterThan(viajesAntes);
+  });
+
+  it("cancelar DESPUÉS del cierre conserva mixer/horarios (documento congelado)", async () => {
+    // DIA (2026-08-01) ya pasó el cierre (16:00 del día anterior) respecto a hoy.
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Cong", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[9, 2]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 9, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    const res = await cancelarPedidoConMotivo(r.pedidoId, "Clima o Lluvia", null, "test");
+    expect(res.viajesRecalculados).toEqual([]); // no se recalcula (no corre a los demás)
+    const ped = await prisma.pedidos.findUniqueOrThrow({ where: { id: r.pedidoId } });
+    expect(ped.estado_pedido).toBe("Cancelado");
+    const viajes = await prisma.viajes.findMany({ where: { pedido_id: r.pedidoId } });
+    expect(viajes.every((v) => v.estado === "Cancelado")).toBe(true);
+    // Congelado: conserva el mixer publicado (no se libera del registro).
+    expect(viajes.some((v) => v.mixer_id != null)).toBe(true);
+  });
+
+  it("cancelar ANTES del cierre libera el mixer (programa aún no publicado)", async () => {
+    // Fecha 10 días adelante: el cierre (16:00 del día anterior) todavía no llega.
+    const FUTURO = new Date();
+    FUTURO.setDate(FUTURO.getDate() + 10);
+    FUTURO.setHours(8, 0, 0, 0);
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "PreC", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[9, 2]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 9, hora_solicitada: FUTURO,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    await cancelarPedidoConMotivo(r.pedidoId, "Clima o Lluvia", null, "test");
+    const viajes = await prisma.viajes.findMany({ where: { pedido_id: r.pedidoId } });
+    expect(viajes.every((v) => v.estado === "Cancelado")).toBe(true);
+    // Antes del cierre: se libera la flota (mixer null).
+    expect(viajes.every((v) => v.mixer_id == null)).toBe(true);
   });
 });

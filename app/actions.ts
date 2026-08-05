@@ -8,6 +8,7 @@ import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
 import { UMBRAL_IMPACTO_INSERCION_MIN } from "@/lib/motor/config";
 import {
+  agregarVolumenAlPedido,
   avanzarEstadoViaje,
   cambiarOperadorViaje,
   cambiarPlantaViaje,
@@ -836,6 +837,67 @@ export async function cancelarViajeAction(
     return {
       ok: false,
       mensaje: e instanceof Error ? e.message : "No se pudo cancelar el viaje.",
+    };
+  }
+}
+
+/**
+ * Server action: agrega VIAJES ADICIONALES a un pedido existente (Despacho en vivo)
+ * con las mismas características (diseño, revenimiento, descarga, etc.). El volumen
+ * extra se contabiliza como ADICIÓN del día cargada al asesor dueño del cliente
+ * (no toca `volumen_programado`). Roles: Admin/Programador/Despachador/JefePlanta/
+ * Dosificador (con su zona + regla de fecha del rol). Escribe bitácora.
+ */
+export async function agregarViajePedidoAction(
+  pedidoId: number,
+  volumenAdicional: number,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  try {
+    const op = await autorizarOperacionPedido();
+    if (!op.ok) return op;
+    const permiso = await autorizarPorPedido(pedidoId);
+    if (!permiso.ok) return permiso;
+    if (!(volumenAdicional > 0)) {
+      return { ok: false, mensaje: "El volumen adicional debe ser mayor que 0." };
+    }
+
+    const antes = await prisma.pedidos.findUnique({
+      where: { id: pedidoId },
+      select: { volumen_total_m3: true, cliente: { select: { empresa: true } } },
+    });
+    if (!antes) return { ok: false, mensaje: "Pedido no encontrado." };
+
+    const r = await agregarVolumenAlPedido(pedidoId, volumenAdicional);
+
+    const sesion = await auth();
+    const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "pedidos",
+        registro_id: pedidoId,
+        usuario: quien,
+        campo_modificado: "volumen_total_m3",
+        valor_anterior: String(antes.volumen_total_m3),
+        valor_nuevo: String(antes.volumen_total_m3 + volumenAdicional),
+        // ASCII-only (BD local WIN1252): sin "m3" con superindice ni flechas.
+        motivo: `Adicion de ${volumenAdicional} m3 en despacho (${antes.cliente.empresa})`,
+      },
+    });
+
+    revalidarPantallas();
+    revalidatePath("/comercial");
+    const sinCubrir =
+      r.volumenSinCubrir > 0
+        ? ` Quedan ${r.volumenSinCubrir} m³ sin cubrir con flota disponible.`
+        : "";
+    return {
+      ok: true,
+      mensaje: `Se agregaron ${volumenAdicional} m³ como adición al pedido.${sinCubrir}`,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      mensaje: e instanceof Error ? e.message : "No se pudo agregar el volumen.",
     };
   }
 }

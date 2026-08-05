@@ -53,6 +53,31 @@ export const HORA_APERTURA_POR_DEFECTO = 7;
  */
 export const UMBRAL_IMPACTO_INSERCION_MIN = 15;
 
+/**
+ * Hora (0-23) del DÍA ANTERIOR en que se "publica" (congela) el Programa DPCR-08
+ * de un día. A partir de este instante el documento queda fijo: una cancelación
+ * posterior YA NO saca al cliente del programa impreso (permanece como se publicó);
+ * una cancelación ANTES de esta hora sí lo elimina del programa. Configurable.
+ */
+export const HORA_CIERRE_PROGRAMA = 16; // 4:00 PM del día anterior
+
+/**
+ * Instante de cierre/publicación del Programa DPCR-08 del día `fecha`: las
+ * `HORA_CIERRE_PROGRAMA` horas del día ANTERIOR. Regla pura (sin BD) para decidir
+ * si una cancelación debe o no retirar al cliente del documento congelado.
+ */
+export function cierreProgramaDe(fecha: Date): Date {
+  return new Date(
+    fecha.getFullYear(),
+    fecha.getMonth(),
+    fecha.getDate() - 1,
+    HORA_CIERRE_PROGRAMA,
+    0,
+    0,
+    0,
+  );
+}
+
 /** Estados que dejan a un mixer/bomba fuera del pool asignable. */
 export const ESTADO_DISPONIBLE = "Disponible";
 

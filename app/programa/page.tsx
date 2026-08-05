@@ -5,6 +5,7 @@ import { requerirAcceso } from "@/lib/auth/guard";
 import { ZONAS } from "@/lib/auth/roles";
 import { textoResistencia } from "@/lib/formato";
 import { compararPlanteles } from "@/lib/planteles-orden";
+import { cierreProgramaDe } from "@/lib/motor/config";
 import { ProgramaControles } from "./programa-controles";
 
 export const dynamic = "force-dynamic";
@@ -133,6 +134,10 @@ export default async function ProgramaPage({
   const [y, m, d] = fecha.split("-").map(Number);
   const ini = new Date(y, m - 1, d, 0, 0, 0, 0);
   const fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+  // Cierre/publicación del programa de este día: 4:00 PM del día anterior. Una
+  // cancelación ANTES de ese instante saca al cliente del documento; una posterior
+  // (esa tarde, el día mismo o después) lo CONSERVA (documento ya congelado).
+  const cierrePrograma = cierreProgramaDe(ini);
 
   const [planteles, pedidos] = await Promise.all([
     prisma.planteles.findMany({
@@ -142,8 +147,13 @@ export default async function ProgramaPage({
     prisma.pedidos.findMany({
       where: {
         hora_solicitada: { gte: ini, lt: fin },
-        estado_pedido: "Activo", // el programa no incluye pedidos cancelados
         plantel: { zona },
+        // Congelamiento del Programa DPCR-08 (documento controlado): se incluye si
+        // sigue Activo, o si se canceló DESPUÉS del cierre (permanece publicado).
+        OR: [
+          { estado_pedido: "Activo" },
+          { estado_pedido: "Cancelado", fecha_cancelacion: { gte: cierrePrograma } },
+        ],
       },
       include: {
         cliente: { include: { asesor: { select: { nombre: true } } } },

@@ -38,9 +38,12 @@ describe("acceso a rutas por rol", () => {
     expect(puedeAccederRuta(["Despachador"], "/administracion")).toBe(false);
   });
 
-  it("Programador entra a /programacion pero no a /despacho", () => {
+  it("Programador entra a /programacion y a /despacho (solo lectura + agregar)", () => {
     expect(puedeAccederRuta(["Programador"], "/programacion")).toBe(true);
-    expect(puedeAccederRuta(["Programador"], "/despacho")).toBe(false);
+    // El Programador ve el despacho en solo lectura y puede agregar adiciones.
+    expect(puedeAccederRuta(["Programador"], "/despacho")).toBe(true);
+    // Pero sigue sin acceso a Administración.
+    expect(puedeAccederRuta(["Programador"], "/administracion")).toBe(false);
   });
 
   it("Despachador entra a /despacho pero no a /programacion", () => {
