@@ -178,23 +178,48 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
   const registroAdiciones: EventoAdicion[] = [];
   const cancelacionesPorMotivo: Record<string, number> = {};
 
-  // ¿`a` y `b` caen el mismo día calendario? (para "adición 100%" = creado el día).
-  const mismoDia = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
-
   for (const p of pedidos) {
     const asesorId = p.cliente.asesor_id;
     if (asesorId == null) continue; // pedido sin asesor: no se atribuye
     const a = get(asesorId);
 
-    // Pedido CANCELADO: cuenta solo como cancelación (no en ventas/precisión).
-    if (p.estado_pedido === "Cancelado") {
-      const m3Cancelado = p.volumen_programado ?? p.volumen_total_m3;
+    // ── Adiciones / Cancelaciones = DIFERENCIA entre lo SUMINISTRADO y lo PROGRAMADO ──
+    // Programado = línea base CONGELADA (el programa a las 4pm del día anterior; 0 si
+    // el pedido no estaba en el programa). Suministrado = m³ realmente entregados
+    // (viajes Completado). Si se suministró MÁS → adición; si MENOS → cancelación
+    // (faltante). El faltante solo se cuenta cuando el pedido ya CERRÓ (cancelado o
+    // sin viajes pendientes), para no marcar faltante mientras el día sigue en curso.
+    const suministrado = volumenDespachado(p.viajes);
+    const programado = p.volumen_programado ?? p.volumen_total_m3;
+    const viajesReales = p.viajes.filter(
+      (v) => v.mixer_id != null && v.estado !== "Cancelado",
+    );
+    const hayPendientes = viajesReales.some((v) => v.estado !== "Completado");
+    const cerrado =
+      p.estado_pedido === "Cancelado" || (viajesReales.length > 0 && !hayPendientes);
+    const diff = redondear(suministrado - programado);
+
+    if (diff > 0.01) {
+      // Se suministró por encima de lo programado → adición.
+      a.mensual.adicionesM3 += diff;
+      a.mensual.adicionesCount += 1;
+      registroAdiciones.push({
+        fechaMs: p.hora_solicitada.getTime(),
+        cliente: p.cliente.empresa,
+        asesorNombre: nombreAsesor.get(asesorId) ?? "—",
+        // Sin base programada (pedido no programado) → "Nuevo (100%)"; con base → "Volumen".
+        tipo: programado <= 0.01 ? "Nuevo (100%)" : "Volumen",
+        m3: redondear(diff),
+      });
+    } else if (diff < -0.01 && cerrado) {
+      // Se programó más de lo que el cliente suministró → cancelación (faltante).
+      const faltante = -diff;
+      const motivo =
+        p.estado_pedido === "Cancelado"
+          ? (p.motivo_cancelacion ?? "Sin motivo")
+          : "Suministró menos de lo programado";
       a.mensual.cancelacionesCount += 1;
-      a.mensual.cancelacionesM3 += m3Cancelado;
-      const motivo = p.motivo_cancelacion ?? "Sin motivo";
+      a.mensual.cancelacionesM3 += faltante;
       cancelacionesPorMotivo[motivo] = (cancelacionesPorMotivo[motivo] ?? 0) + 1;
       registroCancelaciones.push({
         fechaMs: (p.fecha_cancelacion ?? p.hora_solicitada).getTime(),
@@ -202,38 +227,12 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
         asesorNombre: nombreAsesor.get(asesorId) ?? "—",
         motivo,
         detalle: p.detalle_cancelacion,
-        m3: redondear(m3Cancelado),
+        m3: redondear(faltante),
       });
-      continue;
     }
 
-    // Adiciones del día (pedidos activos): nuevo suministro del día (100%) o
-    // volumen despachado/asignado por encima de lo programado.
-    const volActual = p.viajes
-      .filter((v) => v.estado !== "Cancelado" && v.motivo_asignacion !== "Sin cubrir")
-      .reduce((s, v) => s + v.volumen_asignado_m3, 0);
-    const programado = p.volumen_programado ?? p.volumen_total_m3;
-    const esNuevoDelDia = mismoDia(p.creado_en, p.hora_solicitada);
-    let adicion = 0;
-    let tipoAdicion: EventoAdicion["tipo"] | null = null;
-    if (esNuevoDelDia) {
-      adicion = volActual || p.volumen_total_m3;
-      tipoAdicion = "Nuevo (100%)";
-    } else if (volActual - programado > 0.01) {
-      adicion = volActual - programado;
-      tipoAdicion = "Volumen";
-    }
-    if (adicion > 0 && tipoAdicion) {
-      a.mensual.adicionesM3 += adicion;
-      a.mensual.adicionesCount += 1;
-      registroAdiciones.push({
-        fechaMs: p.hora_solicitada.getTime(),
-        cliente: p.cliente.empresa,
-        asesorNombre: nombreAsesor.get(asesorId) ?? "—",
-        tipo: tipoAdicion,
-        m3: redondear(adicion),
-      });
-    }
+    // Los pedidos CANCELADOS no cuentan en ventas/precisión/confirmación.
+    if (p.estado_pedido === "Cancelado") continue;
 
     const semanaMs = lunesMs(p.hora_solicitada.getTime());
     if (!a.semanas.has(semanaMs)) a.semanas.set(semanaMs, nuevoAcc());
@@ -470,11 +469,6 @@ export interface RegistroAsesor {
   totalCanceladoM3: number;
 }
 
-const mismoDiaCal = (a: Date, b: Date) =>
-  a.getFullYear() === b.getFullYear() &&
-  a.getMonth() === b.getMonth() &&
-  a.getDate() === b.getDate();
-
 /**
  * Historial (todas las fechas) de adiciones y cancelaciones de UN asesor,
  * tabulado por mes con subtotales y totales generales. Se usa en el detalle del
@@ -497,7 +491,12 @@ export async function registroAdicionesCancelaciones(
       fecha_cancelacion: true,
       cliente: { select: { empresa: true } },
       viajes: {
-        select: { estado: true, volumen_asignado_m3: true, motivo_asignacion: true },
+        select: {
+          estado: true,
+          volumen_asignado_m3: true,
+          motivo_asignacion: true,
+          mixer_id: true,
+        },
       },
     },
   });
@@ -524,44 +523,43 @@ export async function registroAdicionesCancelaciones(
   };
 
   for (const p of pedidos) {
-    if (p.estado_pedido === "Cancelado") {
-      const m3 = p.volumen_programado ?? p.volumen_total_m3;
+    // Mismo modelo que el dashboard: DIFERENCIA entre suministrado (Completado) y
+    // el programado congelado. Más → adición; menos (y ya cerrado) → cancelación.
+    const suministrado = volumenDespachado(p.viajes);
+    const programado = p.volumen_programado ?? p.volumen_total_m3;
+    const viajesReales = p.viajes.filter(
+      (v) => v.mixer_id != null && v.estado !== "Cancelado",
+    );
+    const hayPendientes = viajesReales.some((v) => v.estado !== "Completado");
+    const cerrado =
+      p.estado_pedido === "Cancelado" || (viajesReales.length > 0 && !hayPendientes);
+    const diff = redondear(suministrado - programado);
+
+    if (diff > 0.01) {
+      const b = bucketDe(p.hora_solicitada);
+      b.adiciones.push({
+        fechaMs: p.hora_solicitada.getTime(),
+        cliente: p.cliente.empresa,
+        m3: redondear(diff),
+        tipo: programado <= 0.01 ? "Nuevo (100%)" : "Volumen",
+      });
+      b.totalAdicionadoM3 += diff;
+    } else if (diff < -0.01 && cerrado) {
+      const faltante = -diff;
       const fecha = p.fecha_cancelacion ?? p.hora_solicitada;
       const b = bucketDe(fecha);
       b.cancelaciones.push({
         fechaMs: fecha.getTime(),
         cliente: p.cliente.empresa,
-        m3: redondear(m3),
-        motivo: p.motivo_cancelacion ?? "Sin motivo",
+        m3: redondear(faltante),
+        motivo:
+          p.estado_pedido === "Cancelado"
+            ? (p.motivo_cancelacion ?? "Sin motivo")
+            : "Suministró menos de lo programado",
         detalle: p.detalle_cancelacion,
         pedidoId: p.id,
       });
-      b.totalCanceladoM3 += m3;
-      continue;
-    }
-
-    const volActual = p.viajes
-      .filter((v) => v.estado !== "Cancelado" && v.motivo_asignacion !== "Sin cubrir")
-      .reduce((s, v) => s + v.volumen_asignado_m3, 0);
-    const programado = p.volumen_programado ?? p.volumen_total_m3;
-    let adicion = 0;
-    let tipo: EventoRegistro["tipo"] | undefined;
-    if (mismoDiaCal(p.creado_en, p.hora_solicitada)) {
-      adicion = volActual || p.volumen_total_m3;
-      tipo = "Nuevo (100%)";
-    } else if (volActual - programado > 0.01) {
-      adicion = volActual - programado;
-      tipo = "Volumen";
-    }
-    if (adicion > 0 && tipo) {
-      const b = bucketDe(p.hora_solicitada);
-      b.adiciones.push({
-        fechaMs: p.hora_solicitada.getTime(),
-        cliente: p.cliente.empresa,
-        m3: redondear(adicion),
-        tipo,
-      });
-      b.totalAdicionadoM3 += adicion;
+      b.totalCanceladoM3 += faltante;
     }
   }
 

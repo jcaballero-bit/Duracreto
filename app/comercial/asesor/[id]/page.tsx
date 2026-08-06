@@ -350,7 +350,7 @@ function RegistroMensual({
                 {/* Adiciones del mes */}
                 <div>
                   <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
-                    Adiciones del día
+                    Adiciones
                   </div>
                   {m.adiciones.length === 0 ? (
                     <p className="py-2 text-xs text-muted">Sin adiciones.</p>

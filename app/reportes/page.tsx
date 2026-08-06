@@ -154,7 +154,11 @@ function Tarjetas({ resumen: r }: { resumen: ResumenReportes }) {
       <Kpi
         titulo="Llegadas a tiempo"
         valor={pct(r.llegadasATiempoPct)}
-        sub={r.llegadasTotal > 0 ? `${r.llegadasTotal} llegadas registradas` : "Sin llegadas registradas"}
+        sub={
+          r.llegadasTotal > 0
+            ? `Primer viaje de ${r.llegadasTotal} cliente(s)`
+            : "Sin llegadas registradas"
+        }
         tono={tonoPct(r.llegadasATiempoPct, 90, 75)}
       />
       <Kpi

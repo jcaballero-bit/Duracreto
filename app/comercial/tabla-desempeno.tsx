@@ -74,7 +74,7 @@ export function TablaDesempeno({
             <th className="px-3 py-2 text-right">Meta / cumplimiento</th>
             <th className="px-3 py-2 text-right">Precisión proyección</th>
             <th className="px-3 py-2 text-right">Confirmación a tiempo</th>
-            <th className="px-3 py-2 text-right">Adiciones (día)</th>
+            <th className="px-3 py-2 text-right">Adiciones</th>
             <th className="px-3 py-2 text-right">Cancelaciones</th>
           </tr>
         </thead>

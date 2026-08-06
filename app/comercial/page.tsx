@@ -166,12 +166,12 @@ export default async function ComercialPage({
       {/* ── Adiciones y cancelaciones del día/mes ───────────────────────── */}
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Card className="p-4">
-          <div className="text-sm text-muted">Adiciones del día (mes)</div>
+          <div className="text-sm text-muted">Adiciones (mes)</div>
           <div className="mt-1 text-3xl font-bold text-amber-600">
             +{resumen.adicionesM3Total.toFixed(1)} m³
           </div>
           <div className="mt-1 text-xs text-muted">
-            Suministros nuevos del día + volumen por encima de lo programado (impacta el resto del programa).
+            m³ suministrados POR ENCIMA de lo programado (programa congelado a las 4pm del día anterior).
           </div>
         </Card>
 
@@ -193,6 +193,9 @@ export default async function ComercialPage({
                 </span>
               ))
             )}
+          </div>
+          <div className="mt-1 text-xs text-muted">
+            m³ programados que el cliente NO suministró (faltante vs. el programa congelado).
           </div>
         </Card>
       </div>

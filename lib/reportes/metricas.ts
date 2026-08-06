@@ -52,6 +52,7 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
     select: {
       hora_solicitada: true,
       estado_pedido: true,
+      cliente_id: true,
       plantel: { select: { nombre: true } },
       planta: { select: { capacidad_m3h: true, tiempo_alistamiento_min: true } },
       viajes: {
@@ -74,6 +75,13 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
   const porDia = new Map<number, number>();
   let llegAT = 0;
   let llegTot = 0;
+  // "Llegadas a tiempo" se mide SOLO con el PRIMER viaje de cada cliente por día
+  // (la llegada del camión líder). Se rastrea el viaje de carga más temprana por
+  // cliente+día y luego se compara su llegada real vs programada.
+  const primerViajeCliente = new Map<
+    string,
+    { cargaMs: number; progLlegadaMs: number | null; realLlegadaMs: number | null }
+  >();
   let cargaOK = 0;
   let cargaTot = 0;
   const ciclo = new Map<string, { realSum: number; realN: number; refSum: number; refN: number; viajes: number }>();
@@ -109,13 +117,19 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
         porDia.set(k, (porDia.get(k) ?? 0) + v.volumen_asignado_m3);
         c.viajes += 1;
       }
-      // Llegadas a tiempo (real vs programado de llegada).
-      if (v.ts_llegada_real && v.hora_llegada_proyecto) {
-        llegTot += 1;
-        const desvio = Math.abs(
-          (v.ts_llegada_real.getTime() - v.hora_llegada_proyecto.getTime()) / 60000,
-        );
-        if (desvio <= DESVIO_AMARILLO_MAX_MIN) llegAT += 1;
+      // Primer viaje del cliente ese día (carga más temprana): candidato para la
+      // métrica de "Llegadas a tiempo" (se evalúa después del bucle).
+      if (v.estado !== "Cancelado" && v.hora_inicio_carga) {
+        const key = `${p.cliente_id}|${diaMs(p.hora_solicitada)}`;
+        const cargaMs = v.hora_inicio_carga.getTime();
+        const prev = primerViajeCliente.get(key);
+        if (!prev || cargaMs < prev.cargaMs) {
+          primerViajeCliente.set(key, {
+            cargaMs,
+            progLlegadaMs: v.hora_llegada_proyecto?.getTime() ?? null,
+            realLlegadaMs: v.ts_llegada_real?.getTime() ?? null,
+          });
+        }
       }
       // Cargas en tiempo y forma (duración real vs esperada de la planta).
       if (v.ts_inicio_carga_real && v.ts_fin_carga_real) {
@@ -139,6 +153,16 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
         c.refSum += (v.hora_regreso_planta.getTime() - v.hora_inicio_carga.getTime()) / 60000;
         c.refN += 1;
       }
+    }
+  }
+
+  // Llegadas a tiempo: SOLO el primer viaje de cada cliente (por día), si llegó a la
+  // hora programada (dentro del margen). Los viajes siguientes no penalizan.
+  for (const primero of primerViajeCliente.values()) {
+    if (primero.realLlegadaMs != null && primero.progLlegadaMs != null) {
+      llegTot += 1;
+      const desvio = Math.abs((primero.realLlegadaMs - primero.progLlegadaMs) / 60000);
+      if (desvio <= DESVIO_AMARILLO_MAX_MIN) llegAT += 1;
     }
   }
 

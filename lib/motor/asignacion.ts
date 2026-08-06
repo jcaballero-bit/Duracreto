@@ -867,13 +867,17 @@ export async function programarPedido(
   );
   // Bomba: elección manual o auto-asignación por hub (propia -> hub).
   const bombaId = await resolverBombaPedido(entrada);
+  // Línea base para medir adiciones/cancelaciones = el PROGRAMA CONGELADO (4pm del
+  // día anterior). Si el pedido se crea ANTES del cierre, entra al programa con su
+  // volumen; si se crea DESPUÉS (p. ej. un pedido de último momento), NO estaba en
+  // el programa, así que su base es 0 y todo lo que suministre cuenta como adición.
+  const enPrograma = new Date() < cierreProgramaDe(entrada.hora_solicitada);
   const pedido = await prisma.pedidos.create({
     data: {
       cliente_id: entrada.cliente_id,
       diseno_id: entrada.diseno_id,
       volumen_total_m3: entrada.volumen_total_m3,
-      // Snapshot del volumen programado (línea base para medir adiciones del día).
-      volumen_programado: entrada.volumen_total_m3,
+      volumen_programado: enPrograma ? entrada.volumen_total_m3 : 0,
       hora_solicitada: entrada.hora_solicitada,
       plantel_id: entrada.plantel_id,
       planta_id: entrada.planta_id,
@@ -908,7 +912,7 @@ export async function modificarPedido(
 ): Promise<ResultadoProgramacion> {
   const anterior = await prisma.pedidos.findUniqueOrThrow({
     where: { id: pedidoId },
-    select: { planta_id: true, hora_solicitada: true },
+    select: { planta_id: true, hora_solicitada: true, volumen_programado: true },
   });
 
   await prisma.viajes.deleteMany({ where: { pedido_id: pedidoId } });
@@ -920,8 +924,13 @@ export async function modificarPedido(
       cliente_id: entrada.cliente_id,
       diseno_id: entrada.diseno_id,
       volumen_total_m3: entrada.volumen_total_m3,
-      // Reprogramar redefine la línea base de volumen (no cuenta como adición).
-      volumen_programado: entrada.volumen_total_m3,
+      // Reprogramar redefine la línea base SOLO si aún no cerró el programa (4pm del
+      // día anterior). Después del cierre el programa NO se mueve: la base queda
+      // congelada y las mediciones (adiciones/cancelaciones) se hacen contra ella.
+      volumen_programado:
+        new Date() < cierreProgramaDe(entrada.hora_solicitada)
+          ? entrada.volumen_total_m3
+          : anterior.volumen_programado,
       hora_solicitada: entrada.hora_solicitada,
       plantel_id: entrada.plantel_id,
       planta_id: entrada.planta_id,

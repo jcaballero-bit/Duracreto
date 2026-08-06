@@ -20,6 +20,7 @@ import {
 } from "@/lib/motor/asignacion";
 import { calcularAlcance, filtroPedidoPorZona } from "@/lib/auth/acceso";
 import { PERMITIR_HORA_CARGA_MANUAL } from "@/lib/motor/config";
+import { calcularDesempeno } from "@/lib/comercial/metricas";
 import {
   crearCliente,
   crearDiseno,
@@ -1414,5 +1415,42 @@ describe("carga segura de planeacion vs capacidad fisica del mixer", () => {
     expect((await editarVolumenViaje(trip.id, 10, "test")).ok).toBe(true);
     const v = await prisma.viajes.findUniqueOrThrow({ where: { id: trip.id } });
     expect(v.volumen_asignado_m3).toBe(10);
+  });
+});
+
+describe("adiciones/cancelaciones comerciales = diferencia suministrado vs programado", () => {
+  // Prepara un asesor con un cliente y un pedido; marca todos sus viajes Completado
+  // (suministrado) y fija el volumen programado (linea base congelada). Devuelve los
+  // totales comerciales del mes de DIA.
+  async function escenario(volumenPedido: number, programado: number) {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: `C${volumenPedido}`, zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[11, 6]]); // fisico 12, carga segura 11
+    const asesor = await prisma.asesores.create({ data: { nombre: `Ase ${volumenPedido}` } });
+    const clienteId = await crearCliente(true);
+    await prisma.clientes.update({ where: { id: clienteId }, data: { asesor_id: asesor.id } });
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: volumenPedido, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    // Suministrado = todos los viajes Completado; programado = linea base congelada.
+    await prisma.viajes.updateMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      data: { estado: "Completado" },
+    });
+    await prisma.pedidos.update({ where: { id: r.pedidoId }, data: { volumen_programado: programado } });
+    return calcularDesempeno({ anio: DIA.getFullYear(), mes: DIA.getMonth() + 1, zona: null });
+  }
+
+  it("programado 50, suministrado 40 -> cancelacion 10 m3", async () => {
+    const res = await escenario(40, 50);
+    expect(res.cancelacionesM3Total).toBeCloseTo(10, 5);
+    expect(res.adicionesM3Total).toBeCloseTo(0, 5);
+  });
+
+  it("programado 50, suministrado 55 -> adicion 5 m3", async () => {
+    const res = await escenario(55, 50);
+    expect(res.adicionesM3Total).toBeCloseTo(5, 5);
+    expect(res.cancelacionesM3Total).toBeCloseTo(0, 5);
   });
 });
