@@ -136,7 +136,9 @@ export function puedeAccederRuta(roles: string[], path: string): boolean {
 export function filtroPlantelPorZona(
   alcance: Alcance,
 ): { zona?: { in: string[] }; id?: number } {
-  if (alcance.esJefePlanta || alcance.esDosificador)
+  // Dosificador: acotado a SU plantel específico. (El Jefe de Planta NO: ve toda
+  // su zona para poder programar/hacer adiciones en cualquiera de sus planteles.)
+  if (alcance.esDosificador && !alcance.esJefePlanta)
     return { id: alcance.plantelAsignadoId ?? -1 };
   if (
     alcance.esAdmin ||
@@ -146,6 +148,7 @@ export function filtroPlantelPorZona(
     alcance.esGerenteComercial // consulta comercial: ve todas las zonas
   )
     return {};
+  // Programador, Despachador y Jefe de Planta: por zona.
   return { zona: { in: alcance.zonasPermitidas } };
 }
 
@@ -154,7 +157,9 @@ export function filtroPlantelPorZona(
 export function filtroPedidoPorZona(
   alcance: Alcance,
 ): { plantel?: { zona: { in: string[] } }; plantel_id?: number } {
-  if (alcance.esJefePlanta || alcance.esDosificador)
+  // Dosificador: acotado a SU plantel específico. (El Jefe de Planta NO: ve toda
+  // su zona.)
+  if (alcance.esDosificador && !alcance.esJefePlanta)
     return { plantel_id: alcance.plantelAsignadoId ?? -1 };
   if (
     alcance.esAdmin ||
@@ -164,6 +169,7 @@ export function filtroPedidoPorZona(
     alcance.esGerenteComercial // consulta comercial: ve todas las zonas
   )
     return {};
+  // Programador, Despachador y Jefe de Planta: por zona.
   return { plantel: { zona: { in: alcance.zonasPermitidas } } };
 }
 

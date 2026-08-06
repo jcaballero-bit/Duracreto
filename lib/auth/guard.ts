@@ -2,7 +2,28 @@
 // Úsalo en Server Components (páginas) y para derivar el alcance en actions.
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
 import { calcularAlcance, puedeAccederRuta, type Alcance } from "./acceso";
+
+/**
+ * Zona EFECTIVA del usuario. Para los roles asignados a un plantel (Jefe de Planta,
+ * Dosificador) la fuente de verdad es la zona de ESE plantel (así el Jefe de Planta
+ * ve toda su zona sin depender de que User.zona esté seteado). Para el resto, la
+ * zona directa del usuario (User.zona).
+ */
+async function zonaEfectiva(
+  zonaUsuario: string | null,
+  plantelAsignadoId: number | null,
+): Promise<string | null> {
+  if (plantelAsignadoId != null) {
+    const pl = await prisma.planteles.findUnique({
+      where: { id: plantelAsignadoId },
+      select: { zona: true },
+    });
+    if (pl) return pl.zona;
+  }
+  return zonaUsuario;
+}
 
 /** Para server actions de Administración: exige Administrador sin redirigir. */
 export async function exigirAdmin(): Promise<
@@ -35,9 +56,13 @@ export async function exigirGestionFlota(): Promise<
 export async function alcanceActual(): Promise<Alcance | null> {
   const sesion = await auth();
   if (!sesion?.user) return null;
+  const zona = await zonaEfectiva(
+    sesion.user.zona ?? null,
+    sesion.user.plantelAsignadoId ?? null,
+  );
   return calcularAlcance(
     sesion.user.roles ?? [],
-    sesion.user.zona ?? null,
+    zona,
     sesion.user.plantelAsignadoId ?? null,
     sesion.user.plantaAsignadaId ?? null,
   );
@@ -65,9 +90,13 @@ export async function requerirAcceso(ruta: string): Promise<Alcance> {
   if (sesion.user.debeCambiarPassword) redirect("/configuracion");
   const roles = sesion.user.roles ?? [];
   if (!puedeAccederRuta(roles, ruta)) redirect("/?denegado=1");
+  const zona = await zonaEfectiva(
+    sesion.user.zona ?? null,
+    sesion.user.plantelAsignadoId ?? null,
+  );
   return calcularAlcance(
     roles,
-    sesion.user.zona ?? null,
+    zona,
     sesion.user.plantelAsignadoId ?? null,
     sesion.user.plantaAsignadaId ?? null,
   );

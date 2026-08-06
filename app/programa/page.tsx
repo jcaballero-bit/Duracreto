@@ -148,6 +148,10 @@ export default async function ProgramaPage({
       where: {
         hora_solicitada: { gte: ini, lt: fin },
         plantel: { zona },
+        // Solo lo que estaba en el PROGRAMA al momento del cierre (4pm del día
+        // anterior): un pedido creado DESPUÉS (p. ej. una adición desde Despacho en
+        // vivo) NO entra al documento — es una adición, no parte del programa.
+        creado_en: { lt: cierrePrograma },
         // Congelamiento del Programa DPCR-08 (documento controlado): se incluye si
         // sigue Activo, o si se canceló DESPUÉS del cierre (permanece publicado).
         OR: [

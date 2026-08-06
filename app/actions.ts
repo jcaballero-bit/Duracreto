@@ -39,8 +39,9 @@ async function autorizarZonaPlantel(plantelId: number): Promise<Permiso> {
   const alcance = await alcanceActual();
   if (!alcance) return { ok: false, mensaje: "Sesión no válida." };
   if (alcance.esAdmin || alcance.esAsesor || alcance.esLaboratorista) return { ok: true };
-  // JefePlanta / Dosificador: SOLO su plantel asignado (alcance por plantel).
-  if (alcance.esJefePlanta || alcance.esDosificador) {
+  // Dosificador: SOLO su plantel asignado (alcance fino por plantel). El Jefe de
+  // Planta NO: opera cualquier plantel de SU ZONA (para programar/hacer adiciones).
+  if (alcance.esDosificador && !alcance.esJefePlanta) {
     return alcance.plantelAsignadoId === plantelId
       ? { ok: true }
       : { ok: false, mensaje: "Solo puedes operar tu plantel asignado." };
