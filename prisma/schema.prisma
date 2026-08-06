@@ -121,7 +121,7 @@ model mixers {
   identificador   String? @unique // número de unidad que captura el usuario (opcional)
   placa           String? // placa de la unidad (opcional)
   marca           String
-  capacidad_m3    Int // 7 | 9 | 11
+  capacidad_m3    Int // 8 | 10 | 12
   plantel_base_id Int
   estado          String  @default("Disponible") // "Disponible" | "En mantenimiento" | "Fuera de servicio"
 
@@ -421,7 +421,7 @@ model viajes {
   id                    Int   @id @default(autoincrement())
   pedido_id             Int
   mixer_id              Int? // nullable: un viaje sugerido de refuerzo aún sin asignar
-  capacidad_asignada_m3 Int // capacidad del mixer asignado (7/9/11)
+  capacidad_asignada_m3 Int // capacidad del mixer asignado (8/10/12)
   volumen_asignado_m3   Float // volumen real cargado en este viaje (puede ser parcial)
 
   // Motorista del viaje. Se preselecciona con el operador del mixer y es

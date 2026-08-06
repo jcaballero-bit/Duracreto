@@ -202,23 +202,23 @@ async function main() {
   });
 
   // ── FLOTA DE MIXERS (33 en total: 19 + 9 + 5) ──────────────────────────────
-  // Santa Marta (19): mezcla de 11/9/7 m³.
+  // Santa Marta (19): mezcla de 12/10/8 m³.
   const nSM = await crearMixers(santaMarta.id, [
-    [11, 6],
-    [9, 8],
-    [7, 5],
+    [12, 6],
+    [10, 8],
+    [8, 5],
   ]);
   // Tegucigalpa (9).
   const nTGU = await crearMixers(tegucigalpa.id, [
-    [11, 3],
-    [9, 4],
-    [7, 2],
+    [12, 3],
+    [10, 4],
+    [8, 2],
   ]);
   // Puerto Cortés (5).
   const nPC = await crearMixers(puertoCortes.id, [
-    [11, 1],
-    [9, 2],
-    [7, 2],
+    [12, 1],
+    [10, 2],
+    [8, 2],
   ]);
   // Choloma, Villanueva, La Ceiba, Hazama: 0 mixers propios (dependen del hub).
 

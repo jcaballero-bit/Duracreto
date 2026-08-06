@@ -35,7 +35,7 @@ Todo permiso se valida en el servidor, nunca solo en la interfaz.
 
 - planteles (id, nombre, zona, capacidad_dosificacion_m3h)
 - plantas (id, plantel_id, nombre, capacidad_m3h)
-- mixers (id, marca, capacidad_m3 [7/9/11], plantel_base_id, estado, operador_asignado_id)
+- mixers (id, marca, capacidad_m3 [8/10/12], plantel_base_id, estado, operador_asignado_id)
 - bombas (id, identificador, estado, plantel_base_id)
 - operadores (id, nombre, estado)
 - asesores (id, nombre, correo, usuario_auth_id)

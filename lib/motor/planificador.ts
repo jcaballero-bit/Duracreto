@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Planificador de capacidad (PURO, sin BD).
 //
-// Dado un volumen y las CAPACIDADES de mixer disponibles (p. ej. {11, 9, 7}),
+// Dado un volumen y las CAPACIDADES de mixer disponibles (p. ej. {12, 10, 8}),
 // elige la MEJOR combinación de viajes evaluando TODAS las combinaciones
 // factibles de (n11, n9, n7). No es un greedy: un greedy simple falla en casos
 // como 14 m³ con 9 y 7 (daría "9 + parcial de 5"; lo óptimo es "7 + 7": mismos
@@ -65,7 +65,7 @@ export function planificarCombinacion(
 
   const sizes = [...new Set(capacidadesDisponibles)]
     .filter((s) => s > 0)
-    .sort((a, b) => b - a); // descendente: [11, 9, 7]
+    .sort((a, b) => b - a); // descendente: [12, 10, 8]
   if (sizes.length === 0) return { viajes: [], volumenSinCubrir: V };
 
   const maxS = sizes[0];
