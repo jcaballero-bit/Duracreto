@@ -1,5 +1,6 @@
 // Utilidades para construir escenarios de prueba y limpiar la BD entre casos.
 import { prisma } from "@/lib/prisma";
+import { MARGEN_CARGA_SEGURA_M3 } from "@/lib/motor/config";
 
 /** Borra todas las tablas en orden de dependencias. */
 export async function limpiarBD() {
@@ -52,7 +53,17 @@ export async function crearPlantel(o: OpcionesPlantel) {
   return { plantelId: p.id, plantaId: p.plantas[0].id };
 }
 
-/** Crea mixers en un plantel según una distribución [capacidad, cantidad][]. */
+/**
+ * Crea mixers en un plantel según una distribución [capacidad, cantidad][].
+ *
+ * IMPORTANTE: el `cap` que se pasa aquí es la CARGA USABLE (segura de planeación)
+ * que el escenario quiere probar. El motor planifica con la carga segura =
+ * capacidad_fisica − MARGEN_CARGA_SEGURA_M3, así que este helper provisiona la
+ * unidad con la capacidad FISICA = `cap + margen`. De ese modo el motor vuelve a
+ * obtener `cap` como carga segura y las expectativas de las pruebas (escritas en
+ * términos de carga usable) siguen siendo válidas. (En producción el usuario
+ * ingresa directamente la capacidad física; aquí el helper la deriva del margen.)
+ */
 export async function crearMixers(
   plantelId: number,
   distribucion: Array<[number, number]>,
@@ -67,7 +78,7 @@ export async function crearMixers(
     for (let i = 0; i < cant; i++) {
       data.push({
         marca: "Test",
-        capacidad_m3: cap,
+        capacidad_m3: cap + MARGEN_CARGA_SEGURA_M3, // fisica = usable + margen
         plantel_base_id: plantelId,
         estado: "Disponible",
       });

@@ -114,7 +114,7 @@ async function construir(
       catalogo: "mixers",
       singular: "mixer",
       subtitulo:
-        "Flota de mixers. El identificador y la placa son opcionales; la capacidad (7/9/11) y el plantel base alimentan el motor.",
+        "Flota de mixers. El identificador y la placa son opcionales; la capacidad (máxima de la unidad, p. ej. 8/10/12 m³) y el plantel base alimentan el motor. La programación automática carga 1 m³ menos por seguridad; en despacho se puede cargar hasta el máximo en emergencia.",
       columnas: [
         { key: "id", label: "ID" },
         { key: "identificador", label: "Identificador" },
@@ -129,7 +129,7 @@ async function construir(
         { name: "identificador", label: "Identificador (opcional)", tipo: "text", placeholder: "Ej. M-01" },
         { name: "placa", label: "Placa (opcional)", tipo: "text", placeholder: "Ej. HAB-1234" },
         { name: "marca", label: "Marca", tipo: "text", requerido: true },
-        { name: "capacidad_m3", label: "Capacidad m³ (7/9/11)", tipo: "number", requerido: true },
+        { name: "capacidad_m3", label: "Capacidad máxima m³ (p. ej. 8/10/12)", tipo: "number", requerido: true },
         { name: "plantel_base_id", label: "Plantel base", tipo: "select", opciones: ctx.opcPlanteles, requerido: true },
         { name: "estado", label: "Estado", tipo: "select", opciones: ESTADO_UNIDAD, requerido: true },
         { name: "operador_asignado_id", label: "Motorista", tipo: "select", opciones: ctx.opcOperadores },

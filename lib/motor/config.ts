@@ -93,6 +93,24 @@ export function cierreProgramaDe(fecha: Date): Date {
  */
 export const PERMITIR_HORA_CARGA_MANUAL = true;
 
+/**
+ * Margen de seguridad de carga (m³). La programacion AUTOMATICA no carga un mixer
+ * hasta su capacidad fisica (`mixers.capacidad_m3`, la que ingresa el usuario), sino
+ * hasta `capacidad_fisica - este margen`, para no sobrecargar la unidad. Ejemplo:
+ * mixers de 8/10/12 m³ -> cargas seguras de planeacion de 7/9/11 m³. En DESPACHO
+ * (emergencia) el despachador SI puede cargar hasta la capacidad fisica. Configurable.
+ */
+export const MARGEN_CARGA_SEGURA_M3 = 1;
+
+/**
+ * Carga maxima que la PROGRAMACION AUTOMATICA pone en un mixer de esta capacidad
+ * fisica (el valor de `mixers.capacidad_m3`). Nunca baja de 1 m³. El tope FISICO
+ * (emergencia, despacho) sigue siendo la capacidad fisica sin restar el margen.
+ */
+export function cargaSeguraMixer(capacidadFisica: number): number {
+  return Math.max(1, capacidadFisica - MARGEN_CARGA_SEGURA_M3);
+}
+
 /** Estados que dejan a un mixer/bomba fuera del pool asignable. */
 export const ESTADO_DISPONIBLE = "Disponible";
 

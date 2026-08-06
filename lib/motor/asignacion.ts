@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { prisma } from "@/lib/prisma";
 import {
+  cargaSeguraMixer,
   cierreProgramaDe,
   DEFAULT_TIEMPO_REGRESO_MIN,
   DEFAULT_TIEMPO_VIAJE_MIN,
@@ -492,8 +493,10 @@ async function cascadaDeUnaPlanta(
       const meta = metaTodos.get(v.mixer_id);
       elegibles = meta ? [meta] : [];
     } else {
+      // Empareja por CARGA SEGURA (capacidad fisica - margen): el viaje se planifico
+      // con la carga segura, y el mixer que lo sirve es el de esa carga segura.
       elegibles = candidatos.filter(
-        (m) => m.capacidad_m3 === v.capacidad_asignada_m3,
+        (m) => cargaSeguraMixer(m.capacidad_m3) === v.capacidad_asignada_m3,
       );
     }
 
@@ -571,7 +574,9 @@ async function cascadaDeUnaPlanta(
       where: { id: v.id },
       data: {
         mixer_id: mixer.id,
-        capacidad_asignada_m3: mixer.capacidad_m3,
+        // Carga segura de planeacion (no la fisica): asi la programacion no
+        // sobrecarga la unidad. El despacho puede subir el volumen hasta la fisica.
+        capacidad_asignada_m3: cargaSeguraMixer(mixer.capacidad_m3),
         motivo_asignacion: motivo,
         // El motorista sigue al mixer solo en asignaciones automáticas (una
         // reasignación/refuerzo manual ya fijó su propio operador).
@@ -985,7 +990,8 @@ export async function agregarVolumenAlPedido(
     plantel.hub_id,
     pedido.hora_solicitada,
   );
-  const capacidades = [...new Set(candidatos.map((m) => m.capacidad_m3))];
+  // Cargas SEGURAS (capacidad fisica - margen): la planeacion no sobrecarga.
+  const capacidades = [...new Set(candidatos.map((m) => cargaSeguraMixer(m.capacidad_m3)))];
   const plan = planificarCombinacion(volumenAdicional, capacidades);
 
   // Planta de los viajes nuevos: respeta el modo "ambas plantas" del pedido.
@@ -1143,7 +1149,8 @@ async function asignarViajesDePedido(
     plantel.hub_id,
     entrada.hora_solicitada,
   );
-  const capacidades = [...new Set(candidatos.map((m) => m.capacidad_m3))];
+  // Cargas SEGURAS (capacidad fisica - margen): la planeacion no sobrecarga.
+  const capacidades = [...new Set(candidatos.map((m) => cargaSeguraMixer(m.capacidad_m3)))];
 
   const plan = planificarCombinacion(entrada.volumen_total_m3, capacidades);
 
@@ -1318,7 +1325,7 @@ export async function sugerirRefuerzo(
       return {
         mixerId: m.id,
         identificador: m.identificador,
-        capacidad: m.capacidad_m3,
+        capacidad: cargaSeguraMixer(m.capacidad_m3), // carga segura de planeacion
         plantelId: m.plantel_base_id,
         plantelNombre: m.plantel_base.nombre,
         holguraPlantel: holguraPorPlantel.get(m.plantel_base_id) ?? 0,
@@ -1483,7 +1490,9 @@ export async function reasignarMixer(
 
   // Cambio de capacidad: si el nuevo mixer es MÁS PEQUEÑO que el volumen que
   // llevaba el viaje, se recorta a la capacidad y el remanente se redistribuye.
-  const nuevaCap = mixer.capacidad_m3;
+  // Carga segura del nuevo mixer (planeacion): el remanente se redistribuye. Si el
+  // despachador necesita cargar por encima (emergencia), lo hace con el campo Volumen.
+  const nuevaCap = cargaSeguraMixer(mixer.capacidad_m3);
   const volCapado = Math.min(viaje.volumen_asignado_m3, nuevaCap);
   let remanente = round(viaje.volumen_asignado_m3 - volCapado);
 
@@ -1565,7 +1574,7 @@ export async function reasignarMixer(
         plantelPedido.hub_id,
         dia,
       );
-      const caps = [...new Set(candidatos.map((m) => m.capacidad_m3))];
+      const caps = [...new Set(candidatos.map((m) => cargaSeguraMixer(m.capacidad_m3)))];
       const plan = planificarCombinacion(remanente, caps);
       for (const vp of plan.viajes) {
         const nuevo = await prisma.viajes.create({
@@ -1951,14 +1960,15 @@ export async function confirmarRefuerzo(
     return { ok: false, mensaje: "El mixer de refuerzo no está disponible." };
   }
 
-  const cubierto = Math.min(mixer.capacidad_m3, faltante);
+  const cargaSegura = cargaSeguraMixer(mixer.capacidad_m3);
+  const cubierto = Math.min(cargaSegura, faltante);
 
   const nuevo = await prisma.viajes.create({
     data: {
       pedido_id: pedidoId,
       mixer_id: mixerId,
       planta_id: pedido.planta_id, // refuerzo entra por la planta del pedido
-      capacidad_asignada_m3: mixer.capacidad_m3,
+      capacidad_asignada_m3: cargaSegura,
       volumen_asignado_m3: cubierto,
       hora_solicitada: pedido.hora_solicitada,
       motivo_asignacion: "Refuerzo excepcional",
@@ -2223,7 +2233,10 @@ export async function editarVolumenViaje(
   nuevoVolumen: number,
   usuario: string,
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const viaje = await prisma.viajes.findUniqueOrThrow({ where: { id: viajeId } });
+  const viaje = await prisma.viajes.findUniqueOrThrow({
+    where: { id: viajeId },
+    include: { mixer: { select: { capacidad_m3: true } } },
+  });
 
   const editable =
     (viaje.estado === "Programado" || viaje.estado === "En carga") &&
@@ -2234,10 +2247,14 @@ export async function editarVolumenViaje(
   if (!(nuevoVolumen > 0)) {
     return { ok: false, mensaje: "El volumen debe ser mayor que 0." };
   }
-  if (viaje.capacidad_asignada_m3 > 0 && nuevoVolumen > viaje.capacidad_asignada_m3) {
+  // EMERGENCIA: el tope es la capacidad FISICA de la unidad (lo que el usuario
+  // registro al agregar el mixer), no la carga segura de planeacion. Asi el
+  // despachador puede cargar hasta el maximo real del mixer cuando lo necesita.
+  const topeFisico = viaje.mixer?.capacidad_m3 ?? viaje.capacidad_asignada_m3;
+  if (topeFisico > 0 && nuevoVolumen > topeFisico) {
     return {
       ok: false,
-      mensaje: `El volumen no puede exceder la capacidad del mixer (${viaje.capacidad_asignada_m3} m³).`,
+      mensaje: `El volumen no puede exceder la capacidad del mixer (${topeFisico} m³).`,
     };
   }
 

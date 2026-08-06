@@ -407,8 +407,10 @@ describe("traslape de mixer — nunca doble reserva", () => {
     const r = await programarPedido(base);
     expect(r.volumenSinCubrir).toBe(0);
     const trip = r.viajes.find((v) => v.mixerId != null)!;
+    // El de menor capacidad fisica (carga usable 7) del plantel.
     const mixer7 = await prisma.mixers.findFirstOrThrow({
-      where: { plantel_base_id: plantelId, capacidad_m3: 7 },
+      where: { plantel_base_id: plantelId },
+      orderBy: { capacidad_m3: "asc" },
     });
 
     // Reasignar a un mixer de 7: el volumen se recorta a 7 y los 2 m³ restantes se
@@ -1369,5 +1371,48 @@ describe("adiciones y congelamiento del Programa DPCR-08", () => {
       orderBy: { hora_inicio_carga: "asc" },
     });
     expect(auto?.hora_inicio_carga?.getTime()).not.toBe(manual.getTime());
+  });
+});
+
+describe("carga segura de planeacion vs capacidad fisica del mixer", () => {
+  it("la programacion automatica usa la carga segura (fisica - margen), no sobrecarga", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Seg", zona: "Norte", esHub: true });
+    // Carga usable 9 -> el helper crea un mixer FISICO de 10.
+    await crearMixers(plantelId, [[9, 1]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 10, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      orderBy: { volumen_asignado_m3: "desc" },
+    });
+    // 10 m3 en un mixer fisico de 10 pero con carga segura 9 -> 2 viajes (9 + 1),
+    // NO un solo viaje de 10 (eso seria sobrecargar la unidad).
+    expect(viajes.length).toBe(2);
+    expect(viajes[0].volumen_asignado_m3).toBe(9);
+    expect(viajes[0].capacidad_asignada_m3).toBe(9); // carga segura, no la fisica (10)
+  });
+
+  it("en emergencia el despacho permite cargar hasta la capacidad fisica", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Emer", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[9, 1]]); // fisico 10
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 9, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    const trip = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+    });
+    // Por encima de la capacidad fisica (10) -> rechazado.
+    expect((await editarVolumenViaje(trip.id, 10.5, "test")).ok).toBe(false);
+    // Hasta la fisica (10), aunque supere la carga segura (9) -> permitido (emergencia).
+    expect((await editarVolumenViaje(trip.id, 10, "test")).ok).toBe(true);
+    const v = await prisma.viajes.findUniqueOrThrow({ where: { id: trip.id } });
+    expect(v.volumen_asignado_m3).toBe(10);
   });
 });
