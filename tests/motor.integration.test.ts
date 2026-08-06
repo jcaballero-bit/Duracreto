@@ -14,10 +14,12 @@ import {
   modificarPedido,
   programarPedido,
   reasignarMixer,
+  recalcularCascadaPlanta,
   reordenarPedidoDia,
   sugerirHoraDisponible,
 } from "@/lib/motor/asignacion";
 import { calcularAlcance, filtroPedidoPorZona } from "@/lib/auth/acceso";
+import { PERMITIR_HORA_CARGA_MANUAL } from "@/lib/motor/config";
 import {
   crearCliente,
   crearDiseno,
@@ -1335,5 +1337,37 @@ describe("adiciones y congelamiento del Programa DPCR-08", () => {
     expect(viajes.every((v) => v.estado === "Cancelado")).toBe(true);
     // Antes del cierre: se libera la flota (mixer null).
     expect(viajes.every((v) => v.mixer_id == null)).toBe(true);
+  });
+
+  it("hora de carga manual (Admin) reubica la carga del pedido a la hora fijada", async () => {
+    // Guardado por el flag: si el override está deshabilitado (revertido), no aplica.
+    if (!PERMITIR_HORA_CARGA_MANUAL) return;
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Man", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[9, 2]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 9, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    // Fijar la carga a las 05:00 (bien distinta de la calculada por la cascada).
+    const manual = new Date("2026-08-01T05:00:00");
+    await prisma.pedidos.update({ where: { id: r.pedidoId }, data: { hora_carga_manual: manual } });
+    await recalcularCascadaPlanta(plantaId, DIA);
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      orderBy: { hora_inicio_carga: "asc" },
+    });
+    expect(viajes.length).toBeGreaterThan(0);
+    expect(viajes[0].hora_inicio_carga?.getTime()).toBe(manual.getTime());
+
+    // Volver a automático: la cascada recalcula y la carga deja de ser la manual.
+    await prisma.pedidos.update({ where: { id: r.pedidoId }, data: { hora_carga_manual: null } });
+    await recalcularCascadaPlanta(plantaId, DIA);
+    const auto = await prisma.viajes.findFirst({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      orderBy: { hora_inicio_carga: "asc" },
+    });
+    expect(auto?.hora_inicio_carga?.getTime()).not.toBe(manual.getTime());
   });
 });

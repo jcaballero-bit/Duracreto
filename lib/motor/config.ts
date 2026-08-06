@@ -78,6 +78,21 @@ export function cierreProgramaDe(fecha: Date): Date {
   );
 }
 
+/**
+ * TEMPORAL / REVERSIBLE — Override manual de hora de carga por el Administrador.
+ *
+ * Cuando está en `true`, el Admin puede FIJAR la hora de carga de un pedido a la
+ * hora que quiera (campo `pedidos.hora_carga_manual`), AUNQUE choque con la carga de
+ * otro pedido: tras la cascada normal, un post-paso reubica ese pedido a la hora
+ * fijada (desplaza sus viajes preservando duraciones), sin validar traslapes.
+ *
+ * Para REVERTIR y dejar el sistema como estaba: poner esto en `false` y desplegar.
+ * El motor vuelve a su comportamiento original (la cascada manda) y los valores de
+ * `hora_carga_manual` quedan inertes (se ignoran). No se toca la lógica de la
+ * cascada; el post-paso simplemente deja de ejecutarse.
+ */
+export const PERMITIR_HORA_CARGA_MANUAL = true;
+
 /** Estados que dejan a un mixer/bomba fuera del pool asignable. */
 export const ESTADO_DISPONIBLE = "Disponible";
 

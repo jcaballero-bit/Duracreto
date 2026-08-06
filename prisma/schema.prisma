@@ -328,6 +328,12 @@ model pedidos {
   // simultánea, doble throughput); false = todos cargan en la planta elegida
   // (`planta_id`). En planteles de 1 planta no aplica (siempre esa planta).
   usar_ambas_plantas Boolean @default(false)
+  // TEMPORAL/REVERSIBLE — Override manual de hora de carga (solo Admin). Si tiene
+  // valor y el flag PERMITIR_HORA_CARGA_MANUAL está activo, tras la cascada un
+  // post-paso reubica los viajes de este pedido para que su carga arranque a esta
+  // hora exacta, aunque choque con otro pedido. null = automático (cascada manda).
+  // Con el flag apagado el campo se ignora por completo (no daña el motor).
+  hora_carga_manual DateTime?
   // Minutos mínimos entre la llegada de un camión y el siguiente (restricción de
   // acceso/espacio del sitio). El motor lo usa para escalonar los viajes del
   // pedido; null = sin restricción especial.

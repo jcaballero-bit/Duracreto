@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { especDiseno, textoHielo } from "@/lib/formato";
 import { sugerirRefuerzo } from "@/lib/motor/asignacion";
+import { PERMITIR_HORA_CARGA_MANUAL } from "@/lib/motor/config";
 import { filtroPedidoPorZona, filtroPlantelPorZona } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { compararPlanteles } from "@/lib/planteles-orden";
@@ -236,10 +237,20 @@ export default async function ProgramacionPage({
     const descargaDisplay =
       esBomba && p.bomba ? p.bomba.identificador : p.tipo_descarga;
 
+    // Hora de carga base (más temprana de la cascada) para prellenar el control de
+    // hora de carga manual del Admin; si no hay horario aún, la solicitada.
+    const cargasMs = p.viajes
+      .map((v) => v.hora_inicio_carga?.getTime())
+      .filter((t): t is number => t != null);
+    const cargaBase = cargasMs.length ? new Date(Math.min(...cargasMs)) : p.hora_solicitada;
+
     const vista: PedidoVista = {
       id: p.id,
       orden: p.orden_dia,
       horaFija: p.hora_bloqueada,
+      // TEMPORAL/REVERSIBLE (override de hora de carga por Admin).
+      horaCargaLocal: toLocalInput(cargaBase),
+      horaCargaManualLocal: p.hora_carga_manual ? toLocalInput(p.hora_carga_manual) : null,
       // "Llegada" = hora de llegada al proyecto (lo que se solicita). Se toma la
       // llegada calculada de la cascada; si aún no hay horario, la solicitada.
       horaTxt: fmtHM(horaLlegadaMin(p.viajes) ?? p.hora_solicitada),
@@ -448,6 +459,8 @@ export default async function ProgramacionPage({
                   pedidos={g.pedidos}
                   opciones={opciones}
                   puedeEditar={puedeEditar}
+                  esAdmin={alcance.esAdmin}
+                  permitirHoraCargaManual={PERMITIR_HORA_CARGA_MANUAL}
                 />
               </div>
             ))}

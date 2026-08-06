@@ -2,10 +2,11 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { Ban, ChevronDown, ChevronRight, Lock, Pencil, Trash2, X } from "lucide-react";
+import { Ban, ChevronDown, ChevronRight, Clock, Lock, Pencil, Trash2, X } from "lucide-react";
 import {
   confirmarRefuerzoAction,
   eliminarPedidoAction,
+  fijarHoraCargaManualAction,
   reordenarPedidoAction,
 } from "../actions";
 import {
@@ -69,6 +70,11 @@ export interface PedidoVista {
   id: number;
   orden: number | null;
   horaFija: boolean;
+  // TEMPORAL/REVERSIBLE — override de hora de carga (Admin). `horaCargaLocal` es la
+  // hora de carga base (para prellenar el control); `horaCargaManualLocal` es el
+  // override vigente en formato datetime-local, o null si está en automático.
+  horaCargaLocal: string;
+  horaCargaManualLocal: string | null;
   horaTxt: string;
   empresa: string;
   proyecto: string;
@@ -92,10 +98,15 @@ export function TablaPedidos({
   pedidos,
   opciones,
   puedeEditar = true,
+  esAdmin = false,
+  permitirHoraCargaManual = false,
 }: {
   pedidos: PedidoVista[];
   opciones: OpcionesModal;
   puedeEditar?: boolean;
+  // TEMPORAL/REVERSIBLE — habilita el control de hora de carga manual (solo Admin).
+  esAdmin?: boolean;
+  permitirHoraCargaManual?: boolean;
 }) {
   const router = useRouter();
   const [expandidos, setExpandidos] = useState<Set<number>>(new Set());
@@ -161,6 +172,7 @@ export function TablaPedidos({
                 onReordenar={(nuevo) => reordenar(p.id, p.orden, nuevo)}
                 borrando={borrando}
                 puedeEditar={puedeEditar}
+                horaCargaManualHabilitada={esAdmin && permitirHoraCargaManual}
               />
             );
           })}
@@ -249,6 +261,7 @@ function FragmentoPedido({
   onReordenar,
   borrando,
   puedeEditar,
+  horaCargaManualHabilitada,
 }: {
   p: PedidoVista;
   abierto: boolean;
@@ -259,6 +272,8 @@ function FragmentoPedido({
   onReordenar: (nuevo: number) => void;
   borrando: boolean;
   puedeEditar: boolean;
+  // TEMPORAL/REVERSIBLE — muestra el control de hora de carga manual (Admin + flag).
+  horaCargaManualHabilitada: boolean;
 }) {
   return (
     <>
@@ -280,6 +295,13 @@ function FragmentoPedido({
             {p.horaTxt}
             {p.horaFija && (
               <Lock size={12} className="text-accent" aria-label="Hora fija" />
+            )}
+            {p.horaCargaManualLocal && (
+              <Clock
+                size={12}
+                className="text-amber-600"
+                aria-label="Hora de carga fijada manualmente"
+              />
             )}
           </span>
         </td>
@@ -356,6 +378,13 @@ function FragmentoPedido({
               <BotonesMapa ubicacion={p.ubicacion} />
             </div>
             <DetalleViajes viajes={p.viajes} />
+            {horaCargaManualHabilitada && (
+              <HoraCargaManualAdmin
+                pedidoId={p.id}
+                base={p.horaCargaManualLocal ?? p.horaCargaLocal}
+                overrideActivo={p.horaCargaManualLocal}
+              />
+            )}
             {p.sinCubrir && (
               <RefuerzoBlock
                 pedidoId={p.id}
@@ -430,6 +459,72 @@ function RefuerzoBlock({
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/**
+ * TEMPORAL/REVERSIBLE — Control (solo Admin, cuando el flag está activo) para FIJAR
+ * la hora de carga de un pedido a cualquier horario, aunque choque con la carga de
+ * otro pedido. Vacío / "Volver a automático" devuelve el pedido al control de la
+ * cascada. Al desactivar el flag este control no se renderiza.
+ */
+function HoraCargaManualAdmin({
+  pedidoId,
+  base,
+  overrideActivo,
+}: {
+  pedidoId: number;
+  base: string; // datetime-local para prellenar el input
+  overrideActivo: string | null; // override vigente, o null = automático
+}) {
+  const router = useRouter();
+  const [valor, setValor] = useState(base);
+  const [pendiente, startTransition] = useTransition();
+
+  useEffect(() => {
+    setValor(overrideActivo ?? base);
+  }, [overrideActivo, base]);
+
+  const guardar = (horaLocal: string | null) => {
+    startTransition(async () => {
+      const res = await fijarHoraCargaManualAction(pedidoId, horaLocal);
+      if (res.ok) router.refresh();
+      else alert(res.mensaje ?? "No se pudo fijar la hora de carga.");
+    });
+  };
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs">
+      <Clock size={14} className="shrink-0 text-amber-700" />
+      <span className="font-medium text-amber-900">Hora de carga manual (Admin):</span>
+      <input
+        type="datetime-local"
+        value={valor}
+        onChange={(e) => setValor(e.target.value)}
+        className="rounded border border-amber-300 bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent"
+      />
+      <button
+        onClick={() => guardar(valor)}
+        disabled={pendiente || !valor}
+        className="rounded bg-amber-600 px-3 py-1 font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+      >
+        {pendiente ? "…" : "Fijar"}
+      </button>
+      {overrideActivo && (
+        <button
+          onClick={() => guardar(null)}
+          disabled={pendiente}
+          className="rounded border border-amber-400 px-3 py-1 font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+        >
+          Volver a automático
+        </button>
+      )}
+      <span className="w-full text-amber-700 sm:w-auto">
+        {overrideActivo
+          ? "Fijada manualmente — puede chocar con otros pedidos."
+          : "Automático (la programación manda)."}
+      </span>
     </div>
   );
 }

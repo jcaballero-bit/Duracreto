@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA } from "@/lib/auth/acceso";
 import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
-import { UMBRAL_IMPACTO_INSERCION_MIN } from "@/lib/motor/config";
+import { PERMITIR_HORA_CARGA_MANUAL, UMBRAL_IMPACTO_INSERCION_MIN } from "@/lib/motor/config";
 import {
   agregarVolumenAlPedido,
   avanzarEstadoViaje,
@@ -898,6 +898,82 @@ export async function agregarViajePedidoAction(
     return {
       ok: false,
       mensaje: e instanceof Error ? e.message : "No se pudo agregar el volumen.",
+    };
+  }
+}
+
+/**
+ * TEMPORAL/REVERSIBLE (flag PERMITIR_HORA_CARGA_MANUAL). Solo Admin: FIJA (o limpia)
+ * la hora de carga manual de un pedido. Con valor, tras la cascada el post-paso
+ * reubica los viajes para que la carga arranque a esa hora, AUNQUE choque con otro
+ * pedido. `horaLocal` = "YYYY-MM-DDTHH:mm"; "" o null vuelve a automático.
+ */
+export async function fijarHoraCargaManualAction(
+  pedidoId: number,
+  horaLocal: string | null,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  try {
+    if (!PERMITIR_HORA_CARGA_MANUAL) {
+      return { ok: false, mensaje: "La hora de carga manual está deshabilitada." };
+    }
+    const alcance = await alcanceActual();
+    if (!alcance) return { ok: false, mensaje: "Sesión no válida." };
+    if (!alcance.esAdmin) {
+      return {
+        ok: false,
+        mensaje: "Solo el Administrador puede fijar la hora de carga manual.",
+      };
+    }
+    const pedido = await prisma.pedidos.findUnique({
+      where: { id: pedidoId },
+      select: { planta_id: true, hora_solicitada: true, hora_carga_manual: true },
+    });
+    if (!pedido) return { ok: false, mensaje: "Pedido no encontrado." };
+
+    const limpiar = !horaLocal || !horaLocal.trim();
+    const nueva = limpiar ? null : new Date(horaLocal!);
+    if (!limpiar && Number.isNaN(nueva!.getTime())) {
+      return { ok: false, mensaje: "Hora de carga no válida." };
+    }
+
+    await prisma.pedidos.update({
+      where: { id: pedidoId },
+      data: { hora_carga_manual: nueva },
+    });
+    // Recalcular la planta+día: la cascada corre normal y el post-paso reubica.
+    await recalcularCascadaPlanta(pedido.planta_id, pedido.hora_solicitada);
+
+    // Valor ASCII-safe para la bitácora (BD local WIN1252).
+    const fmtManual = (d: Date | null) =>
+      d == null
+        ? "automatico"
+        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+            d.getDate(),
+          ).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(
+            d.getMinutes(),
+          ).padStart(2, "0")}`;
+    const sesion = await auth();
+    const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "pedidos",
+        registro_id: pedidoId,
+        usuario: quien,
+        campo_modificado: "hora_carga_manual",
+        valor_anterior: fmtManual(pedido.hora_carga_manual),
+        valor_nuevo: fmtManual(nueva),
+        motivo: nueva
+          ? "Hora de carga fijada manualmente (Admin)"
+          : "Hora de carga vuelta a automatico (Admin)",
+      },
+    });
+
+    revalidarPantallas();
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      mensaje: e instanceof Error ? e.message : "No se pudo fijar la hora de carga.",
     };
   }
 }

@@ -22,6 +22,7 @@ import {
   HORA_APERTURA_POR_DEFECTO,
   MARGEN_MINIMO_MIN,
   MIN_SALIDA_TRAS_CARGA,
+  PERMITIR_HORA_CARGA_MANUAL,
   SECUENCIA_ESTADOS_VIAJE,
 } from "./config";
 import { planificarCombinacion, unidadLibreEnVentana } from "./planificador";
@@ -245,7 +246,79 @@ export async function recalcularCascadaPlanta(
   for (const p of plantas) {
     cambios.push(...(await cascadaDeUnaPlanta(p.id, dia)));
   }
+  // Post-paso TEMPORAL/REVERSIBLE: reubica los pedidos con hora de carga fijada por
+  // el Admin. No modifica la cascada; con el flag apagado no hace nada.
+  await aplicarHoraCargaManual(planta.plantel_id, dia);
   return cambios;
+}
+
+/**
+ * TEMPORAL/REVERSIBLE (flag `PERMITIR_HORA_CARGA_MANUAL`). Post-paso que corre
+ * DESPUÉS de la cascada: por cada pedido del plantel+día con `hora_carga_manual`
+ * fijada por el Admin, DESPLAZA sus viajes movibles (no iniciados) para que la carga
+ * arranque a esa hora exacta, preservando duraciones y escalonamiento. NO valida
+ * traslapes con otros pedidos (es justo lo que el Admin pidió permitir). No toca la
+ * lógica de la cascada; si el flag está apagado, retorna de inmediato.
+ */
+async function aplicarHoraCargaManual(plantelId: number, dia: Date): Promise<void> {
+  if (!PERMITIR_HORA_CARGA_MANUAL) return;
+  const pedidos = await prisma.pedidos.findMany({
+    where: {
+      plantel_id: plantelId,
+      estado_pedido: "Activo",
+      hora_carga_manual: { not: null },
+      hora_solicitada: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
+    },
+    select: {
+      id: true,
+      hora_carga_manual: true,
+      viajes: {
+        // Solo viajes MOVIBLES: no cancelados, no completados, sin carga real
+        // iniciada, con horario calculado. Los ya iniciados conservan su realidad.
+        where: {
+          estado: { notIn: ["Cancelado", "Completado"] },
+          ts_inicio_carga_real: null,
+          motivo_asignacion: { not: "Sin cubrir" },
+          hora_inicio_carga: { not: null },
+        },
+        select: {
+          id: true,
+          hora_inicio_carga: true,
+          hora_fin_carga: true,
+          hora_salida_planta: true,
+          hora_llegada_proyecto: true,
+          hora_inicio_descarga: true,
+          hora_fin_descarga: true,
+          hora_regreso_planta: true,
+        },
+      },
+    },
+  });
+
+  for (const p of pedidos) {
+    if (p.hora_carga_manual == null || p.viajes.length === 0) continue;
+    // Ancla = inicio de carga más temprano que la cascada acaba de calcular para
+    // este pedido. Desplazamos TODO el bloque para que ese arranque sea la hora
+    // manual (el resto de sus viajes conserva su separación relativa).
+    const firstMs = Math.min(...p.viajes.map((v) => v.hora_inicio_carga!.getTime()));
+    const deltaMs = p.hora_carga_manual.getTime() - firstMs;
+    if (deltaMs === 0) continue;
+    const desplazar = (d: Date | null) => (d == null ? null : new Date(d.getTime() + deltaMs));
+    for (const v of p.viajes) {
+      await prisma.viajes.update({
+        where: { id: v.id },
+        data: {
+          hora_inicio_carga: desplazar(v.hora_inicio_carga),
+          hora_fin_carga: desplazar(v.hora_fin_carga),
+          hora_salida_planta: desplazar(v.hora_salida_planta),
+          hora_llegada_proyecto: desplazar(v.hora_llegada_proyecto),
+          hora_inicio_descarga: desplazar(v.hora_inicio_descarga),
+          hora_fin_descarga: desplazar(v.hora_fin_descarga),
+          hora_regreso_planta: desplazar(v.hora_regreso_planta),
+        },
+      });
+    }
+  }
 }
 
 /** Cascada de UNA planta (bahía única): agenda los viajes cuyo `planta_id` es esta

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { ChevronLeft, ChevronRight, Plus, Trash2, X } from "lucide-react";
 import { eliminarSolicitudAction, guardarSolicitudAction } from "../solicitudes-actions";
 import { ClienteFormModal, type Opcion } from "../cliente-form-modal";
@@ -96,6 +96,15 @@ export function GridSemana({
   const [agregados, setAgregados] = useState<number[]>([]);
   const [filtroPlantel, setFiltroPlantel] = useState<number>(0); // 0 = todos
   const [, startEliminar] = useTransition();
+  // Día seleccionado en la vista MÓVIL (una columna a la vez). Arranca en el
+  // primer día y salta a HOY si está en la semana visible (útil en celular).
+  const [diaSelIso, setDiaSelIso] = useState<string>(dias[0]?.iso ?? "");
+  useEffect(() => {
+    const hoy = new Date();
+    const iso = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-${String(hoy.getDate()).padStart(2, "0")}`;
+    setDiaSelIso(dias.some((d) => d.iso === iso) ? iso : (dias[0]?.iso ?? ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dias.map((d) => d.iso).join(",")]);
 
   // Elimina una proyección (solo Pendiente/Descartada; el servidor rechaza las ya
   // Programado para conservar la trazabilidad).
@@ -202,9 +211,10 @@ export function GridSemana({
 
   return (
     <>
-      {/* Barra superior: navegación de semana + total general + filtro + alta */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
+      {/* Barra superior: navegación de semana + total general + filtro + alta.
+          En celular apila en columna; en ≥sm es una fila que se reparte. */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
             href={`${basePath}?inicio=${prevIso}${suf}`}
             className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-sm text-ink hover:bg-content"
@@ -218,15 +228,15 @@ export function GridSemana({
           >
             Siguiente <ChevronRight size={16} />
           </Link>
-          <span className="ml-2 rounded-lg bg-accent/10 px-3 py-1.5 text-sm font-semibold text-accent">
+          <span className="rounded-lg bg-accent/10 px-3 py-1.5 text-sm font-semibold text-accent">
             Total semana: {totalGeneral.toFixed(1)} m³
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select
             value={filtroPlantel}
             onChange={(e) => setFiltroPlantel(Number(e.target.value))}
-            className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-ink"
+            className="flex-1 rounded-lg border border-border bg-surface px-2.5 py-2 text-sm text-ink sm:flex-none sm:py-1.5"
             title="Filtrar por planta"
           >
             <option value={0}>Todas las plantas</option>
@@ -239,7 +249,7 @@ export function GridSemana({
           {!soloLectura && (
             <button
               onClick={() => setAgregarAbierto(true)}
-              className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover"
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover sm:flex-none"
             >
               <Plus size={16} /> Agregar cliente a esta semana
             </button>
@@ -258,7 +268,8 @@ export function GridSemana({
         </div>
       )}
 
-      <div className="overflow-x-auto">
+      {/* ===== Vista de ESCRITORIO: tabla semanal (7 columnas) ===== */}
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full table-fixed border-collapse text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
@@ -335,6 +346,125 @@ export function GridSemana({
             </tr>
           </tfoot>
         </table>
+      </div>
+
+      {/* ===== Vista MÓVIL: selector de día + tarjetas (una columna) ===== */}
+      <div className="md:hidden">
+        {/* Selector de día: chips desplazables con el total de m³ de cada día. */}
+        <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
+          {dias.map((d) => {
+            const activo = d.iso === diaSelIso;
+            return (
+              <button
+                key={d.iso}
+                onClick={() => setDiaSelIso(d.iso)}
+                className={`flex shrink-0 flex-col items-center rounded-lg border px-3 py-1.5 text-center ${
+                  activo
+                    ? "border-accent bg-accent text-white"
+                    : "border-border bg-surface text-ink"
+                }`}
+              >
+                <span className="whitespace-nowrap text-xs font-medium">{d.label}</span>
+                <span className={`text-[10px] ${activo ? "text-white/85" : "text-link"}`}>
+                  {totalPorDia[d.iso].toFixed(1)} m³
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Desglose por planta del día seleccionado (si hay). */}
+        {(desglosePorDia[diaSelIso]?.length ?? 0) > 0 && (
+          <div className="mb-3 text-xs text-muted">
+            <span className="font-medium text-ink">Por planta:</span>{" "}
+            {desglosePorDia[diaSelIso]
+              .map((x) => `${x.abbr}: ${x.m3.toFixed(0)}`)
+              .join(" · ")}
+          </div>
+        )}
+
+        {grupos.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted">
+            {soloLectura ? (
+              "Este asesor no tiene proyecciones esta semana."
+            ) : (
+              <>
+                Ningún cliente proyectado. Usa{" "}
+                <strong>+ Agregar cliente a esta semana</strong>.
+              </>
+            )}
+          </p>
+        ) : (
+          grupos.map((g) => {
+            // Solo clientes con entradas ese día o que el usuario puede editar
+            // (para no llenar la vista de tarjetas vacías ajenas).
+            const clientesDia = g.clientes.filter((c) => {
+              const ent = (c.celdas[diaSelIso] ?? []).filter(visibleCelda);
+              return ent.length > 0 || (c.editable && !soloLectura);
+            });
+            if (clientesDia.length === 0) return null;
+            const grupoPropio = resaltarEditables && g.clientes.some((c) => c.editable);
+            return (
+              <div key={g.asesorNombre} className="mb-4">
+                <div
+                  className={`mb-2 flex items-center gap-2 rounded px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
+                    grupoPropio ? "bg-accent/10 text-accent" : "bg-content/60 text-muted"
+                  }`}
+                >
+                  {g.asesorNombre}
+                  {grupoPropio && (
+                    <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium normal-case text-white">
+                      Tu área
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  {clientesDia.map((c) => {
+                    const entradas = (c.celdas[diaSelIso] ?? []).filter(visibleCelda);
+                    const editable = c.editable && !soloLectura;
+                    const resaltada = resaltarEditables && c.editable;
+                    return (
+                      <div
+                        key={c.id}
+                        className={`rounded-lg border border-border bg-surface p-3 ${
+                          resaltada ? "border-l-2 border-l-accent/60" : ""
+                        }`}
+                      >
+                        <div className="mb-2">
+                          <div className="font-medium text-ink">{c.empresa}</div>
+                          {c.proyecto && (
+                            <div className="text-xs text-link">{c.proyecto}</div>
+                          )}
+                          <div className="text-[11px] text-muted">
+                            Total semana: {(totalPorFila.get(c.id) ?? 0).toFixed(1)} m³
+                          </div>
+                        </div>
+                        <CeldasDia
+                          clienteId={c.id}
+                          iso={diaSelIso}
+                          entradas={entradas}
+                          editable={editable}
+                          planteles={planteles}
+                          abbrDe={abbrDe}
+                          editando={editando}
+                          onEditar={(cid, iso, sid) =>
+                            setEditando({ clienteId: cid, iso, solicitudId: sid })
+                          }
+                          onEliminar={eliminarSolicitud}
+                          onCerrar={() => setEditando(null)}
+                          onGuardado={() => {
+                            setEditando(null);
+                            router.refresh();
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
 
       {/* Modal: agregar cliente a la semana (elegir existente o crear nuevo). */}
@@ -440,62 +570,21 @@ function FragmentoGrupo({
             const entradas = (c.celdas[d.iso] ?? []).filter(
               (e) => filtroPlantel === 0 || e.plantelId === filtroPlantel,
             );
-            const enEsteDia = editando?.clienteId === c.id && editando?.iso === d.iso;
-            const agregando = enEsteDia && editando?.solicitudId === null;
             return (
               <td key={d.iso} className="border-l border-border/50 px-1.5 py-1.5 align-top">
-                <div className="space-y-1">
-                  {entradas.map((entrada) =>
-                    enEsteDia && editando?.solicitudId === entrada.id ? (
-                      <CeldaEditor
-                        key={entrada.id}
-                        clienteId={c.id}
-                        iso={d.iso}
-                        solicitudId={entrada.id}
-                        celda={entrada}
-                        planteles={planteles}
-                        onCancelar={onCerrar}
-                        onGuardado={onGuardado}
-                      />
-                    ) : (
-                      <CeldaVista
-                        key={entrada.id}
-                        celda={entrada}
-                        editable={editable}
-                        abbrDe={abbrDe}
-                        onClick={() => editable && onEditar(c.id, d.iso, entrada.id)}
-                        onEliminar={() => onEliminar(entrada.id)}
-                      />
-                    ),
-                  )}
-
-                  {agregando && (
-                    <CeldaEditor
-                      clienteId={c.id}
-                      iso={d.iso}
-                      solicitudId={null}
-                      celda={null}
-                      planteles={planteles}
-                      onCancelar={onCerrar}
-                      onGuardado={onGuardado}
-                    />
-                  )}
-
-                  {/* Botón para agregar OTRA proyección ese día. Si no hay ninguna
-                      y no es editable, muestra un guion tenue. */}
-                  {editable && !agregando ? (
-                    <button
-                      onClick={() => onEditar(c.id, d.iso, null)}
-                      className="w-full rounded border border-dashed border-border px-2 py-0.5 text-[10px] text-muted hover:border-accent hover:text-accent"
-                    >
-                      {entradas.length === 0 ? "+ Agregar" : "+"}
-                    </button>
-                  ) : (
-                    entradas.length === 0 && !agregando && (
-                      <div className="px-2 py-1 text-xs text-muted/40">—</div>
-                    )
-                  )}
-                </div>
+                <CeldasDia
+                  clienteId={c.id}
+                  iso={d.iso}
+                  entradas={entradas}
+                  editable={editable}
+                  planteles={planteles}
+                  abbrDe={abbrDe}
+                  editando={editando}
+                  onEditar={onEditar}
+                  onEliminar={onEliminar}
+                  onCerrar={onCerrar}
+                  onGuardado={onGuardado}
+                />
               </td>
             );
           })}
@@ -506,6 +595,94 @@ function FragmentoGrupo({
         );
       })}
     </>
+  );
+}
+
+/**
+ * Renderiza las proyecciones de UN cliente en UN día: cada entrada (vista o
+ * editor), el editor de "nueva proyección" y el botón "+ Agregar". Se comparte
+ * entre la tabla de escritorio (una celda) y la vista móvil (dentro de la
+ * tarjeta del cliente), para que el comportamiento sea idéntico en ambas.
+ */
+function CeldasDia({
+  clienteId,
+  iso,
+  entradas,
+  editable,
+  planteles,
+  abbrDe,
+  editando,
+  onEditar,
+  onEliminar,
+  onCerrar,
+  onGuardado,
+}: {
+  clienteId: number;
+  iso: string;
+  entradas: Celda[];
+  editable: boolean;
+  planteles: PlantelOpc[];
+  abbrDe: Map<number, string>;
+  editando: { clienteId: number; iso: string; solicitudId: number | null } | null;
+  onEditar: (clienteId: number, iso: string, solicitudId: number | null) => void;
+  onEliminar: (solicitudId: number) => void;
+  onCerrar: () => void;
+  onGuardado: () => void;
+}) {
+  const enEsteDia = editando?.clienteId === clienteId && editando?.iso === iso;
+  const agregando = enEsteDia && editando?.solicitudId === null;
+  return (
+    <div className="space-y-1">
+      {entradas.map((entrada) =>
+        enEsteDia && editando?.solicitudId === entrada.id ? (
+          <CeldaEditor
+            key={entrada.id}
+            clienteId={clienteId}
+            iso={iso}
+            solicitudId={entrada.id}
+            celda={entrada}
+            planteles={planteles}
+            onCancelar={onCerrar}
+            onGuardado={onGuardado}
+          />
+        ) : (
+          <CeldaVista
+            key={entrada.id}
+            celda={entrada}
+            editable={editable}
+            abbrDe={abbrDe}
+            onClick={() => editable && onEditar(clienteId, iso, entrada.id)}
+            onEliminar={() => onEliminar(entrada.id)}
+          />
+        ),
+      )}
+
+      {agregando && (
+        <CeldaEditor
+          clienteId={clienteId}
+          iso={iso}
+          solicitudId={null}
+          celda={null}
+          planteles={planteles}
+          onCancelar={onCerrar}
+          onGuardado={onGuardado}
+        />
+      )}
+
+      {/* Botón para agregar OTRA proyección ese día. Si no hay ninguna y no es
+          editable, muestra un guion tenue. */}
+      {editable && !agregando ? (
+        <button
+          onClick={() => onEditar(clienteId, iso, null)}
+          className="w-full rounded border border-dashed border-border px-2 py-1 text-[11px] text-muted hover:border-accent hover:text-accent"
+        >
+          {entradas.length === 0 ? "+ Agregar" : "+"}
+        </button>
+      ) : (
+        entradas.length === 0 &&
+        !agregando && <div className="px-2 py-1 text-xs text-muted/40">—</div>
+      )}
+    </div>
   );
 }
 
