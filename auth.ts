@@ -14,7 +14,7 @@ type DatosToken = {
   nombre?: string | null;
   debeCambiar?: boolean;
   plantelAsignado?: number | null;
-  plantaAsignada?: number | null;
+  plantaPredeterminada?: number | null; // planta predeterminada del Dosificador
   revalMs?: number; // última revalidación contra la BD (epoch ms)
 };
 
@@ -102,7 +102,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       t.nombre = dbu.name ?? null;
       t.debeCambiar = dbu.debe_cambiar_password ?? false;
       t.plantelAsignado = dbu.plantel_asignado_id ?? null;
-      t.plantaAsignada = dbu.planta_asignada_id ?? null;
+      t.plantaPredeterminada = dbu.planta_predeterminada_id ?? null;
       t.revalMs = ahora;
       return token;
     },

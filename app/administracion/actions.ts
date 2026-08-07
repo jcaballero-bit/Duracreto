@@ -141,16 +141,18 @@ export async function fijarPlantelesJefeAction(
   return { ok: true };
 }
 
-/** Fija (o limpia) la PLANTA asignada de un Dosificador. Al fijar una planta, se
- *  ajusta también su plantel_asignado a la del plantel de esa planta (coherencia). */
-export async function fijarPlantaAsignadaAction(
+/** Fija (o limpia) la PLANTA PREDETERMINADA de un Dosificador (donde trabaja
+ *  normalmente). Al fijar una planta, ajusta también su plantel_asignado a la del
+ *  plantel de esa planta (coherencia). La reasignación por día es aparte
+ *  (reasignaciones_dosificador_planta), la hace el Jefe de Planta/Programador. */
+export async function fijarPlantaPredeterminadaAction(
   userId: string,
   plantaId: string,
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const guard = await exigirAdmin();
   if (!guard.ok) return guard;
   if (plantaId === "") {
-    await prisma.user.update({ where: { id: userId }, data: { planta_asignada_id: null } });
+    await prisma.user.update({ where: { id: userId }, data: { planta_predeterminada_id: null } });
     revalidatePath("/administracion");
     return { ok: true };
   }
@@ -161,7 +163,7 @@ export async function fijarPlantaAsignadaAction(
   if (!planta) return { ok: false, mensaje: "Planta no encontrada." };
   await prisma.user.update({
     where: { id: userId },
-    data: { planta_asignada_id: Number(plantaId), plantel_asignado_id: planta.plantel_id },
+    data: { planta_predeterminada_id: Number(plantaId), plantel_asignado_id: planta.plantel_id },
   });
   revalidatePath("/administracion");
   return { ok: true };

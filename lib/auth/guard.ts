@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { calcularAlcance, puedeAccederRuta, type Alcance } from "./acceso";
+import { resolverPlantaDosificador } from "@/lib/dosificador/planta";
 
 /**
  * Zona EFECTIVA del usuario. Para los roles asignados a un plantel (Jefe de Planta,
@@ -54,20 +55,28 @@ export async function exigirGestionFlota(): Promise<
 
 /**
  * Construye el Alcance a partir del usuario de sesión, cargando de BD lo que no vive
- * en el token: los planteles del Jefe de Planta (M2M) y la zona efectiva. Para el
- * Jefe de Planta la zona se deriva de SUS planteles asignados; para el Dosificador,
- * de su plantel asignado; para el resto, User.zona.
+ * en el token: los planteles del Jefe de Planta (M2M) y, para el Dosificador, la
+ * planta EFECTIVA de hoy. Para el Jefe de Planta la zona se deriva de SUS planteles;
+ * para el Dosificador, de la planta efectiva del día; para el resto, User.zona.
+ *
+ * Planta efectiva del Dosificador HOY = la reasignación de `reasignaciones_dosificador_
+ * planta` para (dosificador, hoy) si existe; si no, su `planta_predeterminada_id`. Se
+ * expone en `Alcance.plantaAsignadaId` (la planta que ve/opera ese día) y de ella se
+ * derivan `plantelAsignadoId` y `zona` (soporta reasignación a una planta de otro
+ * plantel). El Dosificador NO elige nada: solo ve el resultado.
  */
 async function construirAlcance(user: {
   id: string;
   roles?: string[];
   zona?: string | null;
   plantelAsignadoId?: number | null;
-  plantaAsignadaId?: number | null;
+  plantaPredeterminadaId?: number | null;
 }): Promise<Alcance> {
   const roles = user.roles ?? [];
   let plantelesAsignados: number[] = [];
   let zona: string | null;
+  let plantelAsignadoId = user.plantelAsignadoId ?? null;
+  let plantaEfectivaId = user.plantaPredeterminadaId ?? null;
 
   if (roles.includes("JefePlanta")) {
     const filas = await prisma.jefes_planta_planteles.findMany({
@@ -80,17 +89,18 @@ async function construirAlcance(user: {
     // planteles. Si no tiene planteles aún, conserva su User.zona.
     const zonas = [...new Set(filas.map((f) => f.plantel.zona))];
     zona = zonas.length === 1 ? zonas[0] : (user.zona ?? zonas[0] ?? null);
+  } else if (roles.includes("Dosificador")) {
+    // Planta EFECTIVA del día: reasignación de hoy (Jefe de Planta/Programador) o, si
+    // no hay, la planta predeterminada. Nunca la elige el propio Dosificador.
+    const r = await resolverPlantaDosificador(user.id, user.plantaPredeterminadaId ?? null, new Date());
+    plantaEfectivaId = r.plantaId;
+    plantelAsignadoId = r.plantelId ?? plantelAsignadoId;
+    zona = r.zona ?? user.zona ?? null;
   } else {
     zona = await zonaEfectiva(user.zona ?? null, user.plantelAsignadoId ?? null);
   }
 
-  return calcularAlcance(
-    roles,
-    zona,
-    user.plantelAsignadoId ?? null,
-    user.plantaAsignadaId ?? null,
-    plantelesAsignados,
-  );
+  return calcularAlcance(roles, zona, plantelAsignadoId, plantaEfectivaId, plantelesAsignados);
 }
 
 /** Alcance del usuario logueado, o null si no hay sesión. */
@@ -102,7 +112,7 @@ export async function alcanceActual(): Promise<Alcance | null> {
     roles: sesion.user.roles ?? [],
     zona: sesion.user.zona ?? null,
     plantelAsignadoId: sesion.user.plantelAsignadoId ?? null,
-    plantaAsignadaId: sesion.user.plantaAsignadaId ?? null,
+    plantaPredeterminadaId: sesion.user.plantaPredeterminadaId ?? null,
   });
 }
 
@@ -133,6 +143,6 @@ export async function requerirAcceso(ruta: string): Promise<Alcance> {
     roles,
     zona: sesion.user.zona ?? null,
     plantelAsignadoId: sesion.user.plantelAsignadoId ?? null,
-    plantaAsignadaId: sesion.user.plantaAsignadaId ?? null,
+    plantaPredeterminadaId: sesion.user.plantaPredeterminadaId ?? null,
   });
 }

@@ -6,7 +6,11 @@ import { prisma } from "@/lib/prisma";
 import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA } from "@/lib/auth/acceso";
 import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
-import { PERMITIR_HORA_CARGA_MANUAL, UMBRAL_IMPACTO_INSERCION_MIN } from "@/lib/motor/config";
+import {
+  PERMITIR_HORA_CARGA_MANUAL,
+  UMBRAL_IMPACTO_INSERCION_MIN,
+  cierreProgramaDe,
+} from "@/lib/motor/config";
 import {
   agregarVolumenAlPedido,
   avanzarEstadoViaje,
@@ -161,6 +165,29 @@ async function autorizarOperacionPedido(): Promise<Permiso> {
     return { ok: true };
   }
   return { ok: false, mensaje: "Tu rol no permite crear ni modificar pedidos." };
+}
+
+/**
+ * Congelamiento del Programa DPCR-08: una vez pasado el cierre (4:00 p.m. del día
+ * ANTERIOR a la fecha del programa), AGREGAR o QUITAR pedidos del documento queda
+ * reservado SOLO al Administrador. Los demás roles siguen operando normalmente ANTES
+ * del cierre. Las ADICIONES de Despacho (`es_adicion = true`) NO son parte del
+ * DPCR-08, así que nunca se bloquean por esta regla.
+ */
+async function autorizarCambioPrograma(fecha: Date, esAdicion: boolean): Promise<Permiso> {
+  if (esAdicion) return { ok: true }; // las adiciones no tocan el DPCR-08
+  const a = await alcanceActual();
+  if (!a) return { ok: false, mensaje: "Sesión no válida." };
+  if (a.esAdmin) return { ok: true }; // el Admin puede aún después del cierre
+  const congelado = new Date().getTime() >= cierreProgramaDe(fecha).getTime();
+  if (congelado) {
+    return {
+      ok: false,
+      mensaje:
+        "El Programa DPCR-08 de esa fecha ya está cerrado (pasadas las 4:00 p.m. del día anterior). Solo un Administrador puede agregar o quitar pedidos del programa.",
+    };
+  }
+  return { ok: true };
 }
 
 /** El mixer que se reasigna debe pertenecer a la ZONA del operador (se permiten
@@ -372,6 +399,10 @@ export async function crearPedidoAction(
       entrada!.hora_solicitada,
     );
     if (!permiso.ok) return { ok: false, mensaje: permiso.mensaje };
+    // Programa congelado: agregar un pedido de PROGRAMA tras el cierre = solo Admin.
+    // (Las adiciones de Despacho no cuentan; ver autorizarCambioPrograma.)
+    const cong = await autorizarCambioPrograma(entrada!.hora_solicitada, !!entrada!.es_adicion);
+    if (!cong.ok) return { ok: false, mensaje: cong.mensaje };
     const errBomba = await validarBombaMantenimiento(entrada!);
     if (errBomba) return { ok: false, mensaje: errBomba };
 
@@ -800,6 +831,15 @@ export async function cancelarPedidoAction(
     if (!op.ok) return op;
     const permiso = await autorizarPorPedido(pedidoId);
     if (!permiso.ok) return permiso;
+    // Programa congelado: quitar (cancelar) un pedido de PROGRAMA tras el cierre =
+    // solo Admin. Las adiciones de Despacho no cuentan.
+    const pedidoCong = await prisma.pedidos.findUnique({
+      where: { id: pedidoId },
+      select: { hora_solicitada: true, es_adicion: true },
+    });
+    if (!pedidoCong) return { ok: false, mensaje: "Pedido no encontrado." };
+    const cong = await autorizarCambioPrograma(pedidoCong.hora_solicitada, pedidoCong.es_adicion);
+    if (!cong.ok) return cong;
 
     if (!MOTIVOS_CANCELACION.includes(motivo as (typeof MOTIVOS_CANCELACION)[number])) {
       return { ok: false, mensaje: "Motivo de cancelación no válido." };
@@ -1057,6 +1097,14 @@ export async function eliminarPedidoAction(
     if (!op.ok) return op;
     const permiso = await autorizarPorPedido(pedidoId);
     if (!permiso.ok) return permiso;
+    // Programa congelado: eliminar un pedido de PROGRAMA tras el cierre = solo Admin.
+    const pedidoCong = await prisma.pedidos.findUnique({
+      where: { id: pedidoId },
+      select: { hora_solicitada: true, es_adicion: true },
+    });
+    if (!pedidoCong) return { ok: false, mensaje: "Pedido no encontrado." };
+    const cong = await autorizarCambioPrograma(pedidoCong.hora_solicitada, pedidoCong.es_adicion);
+    if (!cong.ok) return cong;
     await cancelarPedido(pedidoId);
     revalidatePath("/");
     revalidatePath("/programacion");

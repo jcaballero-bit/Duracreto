@@ -122,6 +122,26 @@ model asignaciones_laboratorista_planta {
   @@index([laboratorista_id])
 }
 
+// Reasignación TEMPORAL (por día) de un Dosificador a otra planta. La crea el Jefe de
+// Planta o el Programador (o Admin); el Dosificador NO elige nada, solo ve el
+// resultado. La planta EFECTIVA de un Dosificador ese día = esta reasignación si
+// existe para (dosificador, fecha), si no su `User.planta_predeterminada_id`. Solo
+// una reasignación activa por dosificador y día (unique → upsert reemplaza).
+model reasignaciones_dosificador_planta {
+  id             Int      @id @default(autoincrement())
+  dosificador_id String
+  planta_id      Int
+  fecha          DateTime // día (medianoche local)
+  creado_por     String // usuario Jefe de Planta / Programador / Admin
+  creado_en      DateTime @default(now())
+
+  dosificador User    @relation(fields: [dosificador_id], references: [id], onDelete: Cascade)
+  planta      plantas @relation(fields: [planta_id], references: [id], onDelete: Cascade)
+
+  @@unique([dosificador_id, fecha])
+  @@index([fecha])
+}
+
 // ── Plantas dosificadoras ──────────────────────────────────────────────────
 // Un plantel puede tener 1 o 2 plantas simultáneas (Santa Marta y Tegucigalpa
 // tienen 2). El límite de m³/h de la cascada de horarios es POR PLANTA.
@@ -137,8 +157,9 @@ model plantas {
   plantel planteles @relation(fields: [plantel_id], references: [id])
   pedidos pedidos[]
   viajes  viajes[] // viajes dosificados en esta planta (un pedido puede repartirse)
-  dosificadores User[] @relation("PlantaAsignadaUsuario") // Dosificadores de esta planta
+  dosificadores User[] @relation("PlantaPredeterminadaUsuario") // Dosificadores cuya planta predeterminada es esta
   asignaciones_lab_planta asignaciones_laboratorista_planta[] // Laboratorista de control de salida
+  reasignaciones_dosificador reasignaciones_dosificador_planta[] // reasignaciones de Dosificador a esta planta por día
 
   @@index([plantel_id])
 }
@@ -632,10 +653,11 @@ model User {
   // Plantel específico asignado (aplica a JefePlanta/Dosificador: ven/operan solo
   // ese plantel — alcance más fino que por zona). Null para los demás roles.
   plantel_asignado_id Int?
-  // Planta específica del Dosificador (más fino que el plantel): en un plantel de 2
-  // plantas cada planta necesita SU propio usuario Dosificador; solo ve/opera los
-  // viajes de esa planta. Null para los demás roles.
-  planta_asignada_id Int?
+  // Planta PREDETERMINADA del Dosificador (donde trabaja normalmente). Es su default;
+  // un día puntual el Jefe de Planta/Programador puede reasignarlo a otra planta vía
+  // `reasignaciones_dosificador_planta` (la planta efectiva del día = reasignación de
+  // hoy si existe, si no la predeterminada). Null para los demás roles.
+  planta_predeterminada_id Int?
   // Si true, el usuario DEBE cambiar su contraseña antes de operar (primer ingreso).
   // Los usuarios nuevos creados por el Admin nacen en true; se apaga al cambiarla.
   debe_cambiar_password Boolean @default(true)
@@ -646,12 +668,13 @@ model User {
   roles    UserRole[]
   asesor   asesores? // 1:1 si este usuario es un asesor comercial
   plantel_asignado planteles? @relation("PlantelAsignadoUsuario", fields: [plantel_asignado_id], references: [id])
-  planta_asignada  plantas?   @relation("PlantaAsignadaUsuario", fields: [planta_asignada_id], references: [id])
+  planta_predeterminada plantas? @relation("PlantaPredeterminadaUsuario", fields: [planta_predeterminada_id], references: [id])
   asignaciones_lab asignaciones_laboratorista[] // proyectos asignados si es Laboratorista
   jefe_planteles   jefes_planta_planteles[] @relation("JefePlantaPlanteles") // planteles si es Jefe de Planta (M2M)
   asignaciones_lab_planta asignaciones_laboratorista_planta[] @relation("LaboratoristaPlanta") // plantas asignadas (control de calidad de salida)
   control_calidad_viajes  control_calidad_viaje[]   @relation("ControlCalidadViajeLab")
   control_calidad_generales control_calidad_general[] @relation("ControlCalidadGeneralLab")
+  reasignaciones_dosificador reasignaciones_dosificador_planta[] // reasignaciones de planta por día (si es Dosificador)
 }
 
 // Un usuario puede tener más de un rol activo a la vez.

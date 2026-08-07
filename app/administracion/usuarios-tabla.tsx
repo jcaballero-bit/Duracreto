@@ -10,7 +10,7 @@ import {
   alternarRolAction,
   crearUsuarioAction,
   eliminarUsuarioAction,
-  fijarPlantaAsignadaAction,
+  fijarPlantaPredeterminadaAction,
   fijarPlantelesJefeAction,
   fijarZonaAction,
   forzarCambioPasswordAction,
@@ -22,7 +22,7 @@ export interface UsuarioAdmin {
   correo: string;
   zona: string | null;
   plantelAsignadoId: number | null;
-  plantaAsignadaId: number | null;
+  plantaPredeterminadaId: number | null; // planta predeterminada del Dosificador
   /** Planteles asignados si es Jefe de Planta (M2M). */
   plantelesJefe: number[];
   roles: string[];
@@ -91,7 +91,7 @@ export function UsuariosTabla({
               <th className="px-3 py-2">Correo</th>
               <th className="px-3 py-2">Zona</th>
               <th className="px-3 py-2">Plantel (Jefe)</th>
-              <th className="px-3 py-2">Planta (Dosif.)</th>
+              <th className="px-3 py-2">Planta predet. (Dosif.)</th>
               <th className="px-3 py-2">Roles</th>
               <th className="px-3 py-2">Activo</th>
               <th className="px-3 py-2">Acciones</th>
@@ -130,11 +130,11 @@ export function UsuariosTabla({
                 </td>
                 <td className="px-3 py-2">
                   <select
-                    value={u.plantaAsignadaId != null ? String(u.plantaAsignadaId) : ""}
+                    value={u.plantaPredeterminadaId != null ? String(u.plantaPredeterminadaId) : ""}
                     disabled={pendiente}
-                    onChange={(e) => accion(() => fijarPlantaAsignadaAction(u.id, e.target.value))}
+                    onChange={(e) => accion(() => fijarPlantaPredeterminadaAction(u.id, e.target.value))}
                     className="rounded-md border border-border bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent"
-                    title="Planta específica del Dosificador (sincroniza su plantel)"
+                    title="Planta predeterminada del Dosificador (sincroniza su plantel). La reasignación por día la hace el Jefe de Planta/Programador."
                   >
                     <option value="">—</option>
                     {plantas.map((p) => (

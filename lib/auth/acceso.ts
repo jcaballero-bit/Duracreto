@@ -32,7 +32,7 @@ export interface Alcance {
   roles: string[];
   zona: string | null;
   plantelAsignadoId: number | null;
-  plantaAsignadaId: number | null; // planta específica del Dosificador
+  plantaAsignadaId: number | null; // planta EFECTIVA del Dosificador HOY (reasignación del día o su predeterminada; la resuelve el guard)
   /** Planteles asignados a un Jefe de Planta (M2M). Vacío para los demás roles. */
   plantelesAsignados: number[];
   esAdmin: boolean;
@@ -132,6 +132,9 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   // pestaña Operadores (motoristas) — la página filtra las pestañas por rol.
   "/flota": ["Administrador", "Programador", "Despachador", "Dosificador", "JefePlanta"],
   "/reportes": ["Administrador", "JefePlanta"],
+  // Reasignación de planta de Dosificadores por día: la gestiona el Jefe de Planta,
+  // el Programador o el Admin (el Dosificador NO — solo ve el resultado).
+  "/reasignaciones": ["Administrador", "JefePlanta", "Programador"],
   // Programa DPCR-08: lo pueden VER todos los roles. Si el usuario tiene una zona
   // asignada, se filtra a esa zona; si no, ve ambas (ver `zonasParaPrograma`).
   "/programa": [

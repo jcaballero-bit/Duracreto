@@ -98,12 +98,18 @@ export function TablaPedidos({
   pedidos,
   opciones,
   puedeEditar = true,
+  puedeAgregarQuitar = true,
   esAdmin = false,
   permitirHoraCargaManual = false,
 }: {
   pedidos: PedidoVista[];
   opciones: OpcionesModal;
   puedeEditar?: boolean;
+  // ¿Puede AGREGAR o QUITAR pedidos del programa? Tras el cierre del DPCR-08 (4pm del
+  // día anterior) solo el Admin puede: para los demás se ocultan Cancelar/Eliminar
+  // (y el botón Nuevo pedido lo oculta la página). Editar/reordenar siguen con
+  // `puedeEditar`. El servidor lo refuerza en las acciones.
+  puedeAgregarQuitar?: boolean;
   // TEMPORAL/REVERSIBLE — habilita el control de hora de carga manual (solo Admin).
   esAdmin?: boolean;
   permitirHoraCargaManual?: boolean;
@@ -172,6 +178,7 @@ export function TablaPedidos({
                 onReordenar={(nuevo) => reordenar(p.id, p.orden, nuevo)}
                 borrando={borrando}
                 puedeEditar={puedeEditar}
+                puedeAgregarQuitar={puedeAgregarQuitar}
                 horaCargaManualHabilitada={esAdmin && permitirHoraCargaManual}
               />
             );
@@ -261,6 +268,7 @@ function FragmentoPedido({
   onReordenar,
   borrando,
   puedeEditar,
+  puedeAgregarQuitar,
   horaCargaManualHabilitada,
 }: {
   p: PedidoVista;
@@ -272,6 +280,7 @@ function FragmentoPedido({
   onReordenar: (nuevo: number) => void;
   borrando: boolean;
   puedeEditar: boolean;
+  puedeAgregarQuitar: boolean;
   // TEMPORAL/REVERSIBLE — muestra el control de hora de carga manual (Admin + flag).
   horaCargaManualHabilitada: boolean;
 }) {
@@ -338,22 +347,28 @@ function FragmentoPedido({
               >
                 <Pencil size={16} />
               </button>
-              <button
-                title="Cancelar pedido (con motivo)"
-                disabled={borrando}
-                onClick={onCancelar}
-                className="rounded-md p-1.5 text-amber-600 hover:bg-amber-50 disabled:opacity-50"
-              >
-                <Ban size={16} />
-              </button>
-              <button
-                title="Eliminar pedido"
-                disabled={borrando}
-                onClick={onEliminar}
-                className="rounded-md p-1.5 text-danger hover:bg-red-50 disabled:opacity-50"
-              >
-                <Trash2 size={16} />
-              </button>
+              {/* Cancelar/Eliminar (QUITAR del programa): tras el cierre del DPCR-08
+                  solo el Admin (puedeAgregarQuitar). Editar/reordenar siguen arriba. */}
+              {puedeAgregarQuitar && (
+                <>
+                  <button
+                    title="Cancelar pedido (con motivo)"
+                    disabled={borrando}
+                    onClick={onCancelar}
+                    className="rounded-md p-1.5 text-amber-600 hover:bg-amber-50 disabled:opacity-50"
+                  >
+                    <Ban size={16} />
+                  </button>
+                  <button
+                    title="Eliminar pedido"
+                    disabled={borrando}
+                    onClick={onEliminar}
+                    className="rounded-md p-1.5 text-danger hover:bg-red-50 disabled:opacity-50"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </>
+              )}
             </div>
           ) : (
             <span className="text-xs text-muted">—</span>

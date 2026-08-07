@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { especDiseno, textoHielo } from "@/lib/formato";
 import { sugerirRefuerzo } from "@/lib/motor/asignacion";
-import { PERMITIR_HORA_CARGA_MANUAL } from "@/lib/motor/config";
+import { PERMITIR_HORA_CARGA_MANUAL, cierreProgramaDe } from "@/lib/motor/config";
 import { filtroPedidoPorZona, filtroPlantelPorZona } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { compararPlanteles } from "@/lib/planteles-orden";
@@ -93,6 +93,13 @@ export default async function ProgramacionPage({
   const [y, m, d] = fecha.split("-").map(Number);
   const ini = new Date(y, m - 1, d, 0, 0, 0, 0);
   const fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
+
+  // Congelamiento del Programa DPCR-08 (4:00 p.m. del día anterior): pasado el cierre,
+  // solo el Admin puede AGREGAR o QUITAR pedidos del programa. Los demás roles pueden
+  // seguir EDITando/reordenando, pero no añadir ni cancelar/eliminar. Se refuerza en
+  // el servidor (app/actions.ts autorizarCambioPrograma).
+  const programaCongelado = new Date().getTime() >= cierreProgramaDe(ini).getTime();
+  const puedeAgregarQuitar = alcance.esAdmin || !programaCongelado;
 
   const [planteles, clientes, disenos, bombas, asesores, pedidos] = await Promise.all([
     prisma.planteles.findMany({
@@ -497,8 +504,12 @@ export default async function ProgramacionPage({
         titulo="Programación de pedidos"
         descripcion="Registro de pedidos con asignación automática de mixers, bombas y ventana de despacho."
         accion={
-          puedeEditar ? (
+          puedeEditar && puedeAgregarQuitar ? (
             <NuevoPedidoModal {...opciones} fechaInicial={fecha} />
+          ) : puedeEditar && !puedeAgregarQuitar ? (
+            <span className="text-xs text-muted">
+              Programa cerrado — solo el Administrador agrega o quita pedidos
+            </span>
           ) : (
             <span className="text-xs text-muted">
               Solo lectura (día pasado)
@@ -557,6 +568,7 @@ export default async function ProgramacionPage({
                   pedidos={g.pedidos}
                   opciones={opciones}
                   puedeEditar={puedeEditar}
+                  puedeAgregarQuitar={puedeAgregarQuitar}
                   esAdmin={alcance.esAdmin}
                   permitirHoraCargaManual={PERMITIR_HORA_CARGA_MANUAL}
                 />

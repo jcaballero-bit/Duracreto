@@ -100,7 +100,7 @@ interface Ctx {
     email: string | null;
     zona: string | null;
     plantel_asignado_id: number | null;
-    planta_asignada_id: number | null;
+    planta_predeterminada_id: number | null;
     activo: boolean;
     roles: { rol: string }[];
     jefe_planteles: { plantel_id: number }[];
@@ -344,7 +344,7 @@ async function renderTab(tab: string, ctx: Ctx) {
         correo: u.email ?? "—",
         zona: u.zona,
         plantelAsignadoId: u.plantel_asignado_id,
-        plantaAsignadaId: u.planta_asignada_id,
+        plantaPredeterminadaId: u.planta_predeterminada_id,
         plantelesJefe: u.jefe_planteles.map((j) => j.plantel_id),
         roles: u.roles.map((r) => r.rol),
         activo: u.activo,

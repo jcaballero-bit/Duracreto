@@ -8,7 +8,7 @@ declare module "next-auth" {
       zona: string | null;
       debeCambiarPassword: boolean;
       plantelAsignadoId: number | null;
-      plantaAsignadaId: number | null;
+      plantaPredeterminadaId: number | null; // planta predeterminada del Dosificador
     } & DefaultSession["user"];
   }
 }
@@ -21,6 +21,6 @@ declare module "next-auth/jwt" {
     nombre?: string | null;
     debeCambiar?: boolean;
     plantelAsignado?: number | null;
-    plantaAsignada?: number | null;
+    plantaPredeterminada?: number | null;
   }
 }
