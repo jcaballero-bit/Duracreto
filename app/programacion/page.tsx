@@ -8,6 +8,7 @@ import { compararPlanteles } from "@/lib/planteles-orden";
 import { Card, PageHeader } from "../components/ui";
 import { AutoRefresh } from "../components/auto-refresh";
 import { Filtros } from "./filtros";
+import { GanttRecursos, type FilaGantt, type SeccionGantt } from "./gantt-recursos";
 import { NuevoPedidoModal } from "./nuevo-pedido-modal";
 import { PendientesDelDia, type PendienteVista } from "./pendientes-panel";
 import {
@@ -404,6 +405,91 @@ export default async function ProgramacionPage({
     disenoSugeridoId: sugerirDiseno(s.tipo_concreto_estimado, disenosSimple),
   }));
 
+  // ── Gantt de recursos del día (Plantas / Mixers / Bombas, eje compartido) ────
+  const COLOR_ORIGEN_GANTT: Record<string, string> = {
+    "Flota propia": "bg-emerald-500",
+    "Préstamo de zona": "bg-sky-500",
+    "Refuerzo excepcional": "bg-amber-500",
+  };
+  const msDe = (dt: Date | null | undefined) => (dt ? dt.getTime() : null);
+  const etiquetaCliente = (empresa: string, proyecto: string | null) =>
+    empresa + (proyecto ? ` · ${proyecto}` : "");
+
+  // Plantas: todas las plantas de los planteles que tienen pedidos ese día (para ver
+  // también las plantas ociosas de un plantel activo). Respeta el filtro de la vista.
+  const plantelesConPedidos = new Set(pedidos.map((p) => p.plantel_id));
+  const filasPlanta = new Map<number, FilaGantt>();
+  for (const pl of [...planteles].sort((a, b) => compararPlanteles(a.nombre, b.nombre))) {
+    if (!plantelesConPedidos.has(pl.id)) continue;
+    for (const pt of pl.plantas) filasPlanta.set(pt.id, { id: pt.id, label: pt.nombre, barras: [] });
+  }
+  const filasMixer = new Map<number, FilaGantt>();
+  const filasBomba = new Map<number, FilaGantt>();
+
+  for (const p of pedidos) {
+    const etq = etiquetaCliente(p.cliente.empresa, p.cliente.proyecto);
+    for (const v of p.viajes) {
+      if (v.mixer_id == null) continue; // solo viajes con mixer asignado
+      const iniCarga = msDe(v.hora_inicio_carga);
+      const finCarga = msDe(v.hora_fin_carga);
+      const regreso = msDe(v.hora_regreso_planta);
+
+      // Plantas: bloque de CARGA (planta ocupada mientras dosifica este viaje).
+      if (iniCarga != null && finCarga != null) {
+        const fila = filasPlanta.get(v.planta_id ?? p.planta_id);
+        if (fila)
+          fila.barras.push({
+            id: `pl-${v.id}`,
+            inicioMs: iniCarga,
+            finMs: finCarga,
+            etiqueta: etq,
+            color: "bg-indigo-500",
+          });
+      }
+
+      // Mixers: ciclo completo carga → regreso (color por procedencia de la flota).
+      if (iniCarga != null && regreso != null && v.mixer) {
+        const fila =
+          filasMixer.get(v.mixer.id) ??
+          ({ id: v.mixer.id, label: v.mixer.identificador ?? `#${v.mixer.id}`, barras: [] } as FilaGantt);
+        fila.barras.push({
+          id: `mx-${v.id}`,
+          inicioMs: iniCarga,
+          finMs: regreso,
+          etiqueta: etq,
+          color: COLOR_ORIGEN_GANTT[v.motivo_asignacion ?? ""] ?? "bg-neutral-500",
+        });
+        filasMixer.set(v.mixer.id, fila);
+      }
+
+      // Bombas: ventana de descarga en obra del pedido que tiene bomba asignada.
+      if (p.bomba_id != null) {
+        const iniDesc = msDe(v.hora_inicio_descarga) ?? msDe(v.hora_llegada_proyecto);
+        const finDesc = msDe(v.hora_fin_descarga) ?? regreso;
+        if (iniDesc != null && finDesc != null) {
+          const fila =
+            filasBomba.get(p.bomba_id) ??
+            ({ id: p.bomba_id, label: p.bomba?.identificador ?? `#${p.bomba_id}`, barras: [] } as FilaGantt);
+          fila.barras.push({
+            id: `bo-${v.id}`,
+            inicioMs: iniDesc,
+            finMs: finDesc,
+            etiqueta: etq,
+            color: "bg-violet-500",
+          });
+          filasBomba.set(p.bomba_id, fila);
+        }
+      }
+    }
+  }
+
+  const seccionesGantt: SeccionGantt[] = [
+    { titulo: "Plantas", filas: [...filasPlanta.values()] },
+    { titulo: "Mixers", filas: [...filasMixer.values()].sort((a, b) => a.label.localeCompare(b.label)) },
+    { titulo: "Bombas", filas: [...filasBomba.values()].sort((a, b) => a.label.localeCompare(b.label)) },
+  ];
+  const hayGantt = seccionesGantt.some((s) => s.filas.some((f) => f.barras.length > 0));
+
   return (
     <>
       <AutoRefresh />
@@ -479,6 +565,17 @@ export default async function ProgramacionPage({
           </div>
         )}
       </Card>
+
+      {hayGantt && (
+        <Card className="mt-5 p-5">
+          <h2 className="mb-1 text-lg font-semibold text-ink">Línea de tiempo del día (recursos)</h2>
+          <p className="mb-4 text-sm text-muted">
+            Plantas, mixers y bombas en el mismo eje de horas. Las líneas verticales marcan
+            cada hora en punto para ver de un vistazo los tiempos muertos entre bloques.
+          </p>
+          <GanttRecursos secciones={seccionesGantt} />
+        </Card>
+      )}
     </>
   );
 }

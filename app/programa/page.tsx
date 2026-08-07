@@ -1,3 +1,4 @@
+import type { ReactElement } from "react";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import type { Alcance } from "@/lib/auth/acceso";
@@ -185,6 +186,7 @@ export default async function ProgramaPage({
           include: {
             mixer: { select: { identificador: true } },
             operador: { select: { nombre: true } },
+            planta: { select: { nombre: true } }, // planta de ESTE viaje (reparto 2 plantas)
           },
           orderBy: { hora_inicio_carga: "asc" },
         },
@@ -424,41 +426,114 @@ function renderPedido(
   // Franja izquierda de color en la celda del cliente (diferencia la bomba).
   const franja = color ? { borderLeft: `4px solid ${color}` } : undefined;
 
-  return filas.map((v: unknown, i: number) => {
-    const viaje = v as null | {
-      volumen_asignado_m3: number;
-      operador: { nombre: string } | null;
-      mixer: { identificador: string | null } | null;
-      hora_inicio_carga: Date | null;
-      hora_llegada_proyecto: Date | null;
-      hora_fin_descarga: Date | null;
-      hora_regreso_planta: Date | null;
-    };
-    return (
+  type ViajeDoc = {
+    volumen_asignado_m3: number;
+    operador: { nombre: string } | null;
+    mixer: { identificador: string | null } | null;
+    planta: { nombre: string } | null;
+    hora_inicio_carga: Date | null;
+    hora_llegada_proyecto: Date | null;
+    hora_fin_descarga: Date | null;
+    hora_regreso_planta: Date | null;
+  };
+
+  // ¿Se reparte entre 2+ plantas? Solo entonces agrupamos por planta con subtítulo
+  // (puntos 1 y 10). En planteles de 1 planta o si todos los viajes cargan en la
+  // misma, se lista plano (la "Planta: X" ya la muestra la celda del cliente).
+  const plantasDistintas = new Set(
+    (trips as ViajeDoc[]).map((v) => v.planta?.nombre ?? p.planta?.nombre ?? "—"),
+  );
+  const agrupar = mostrarPlanta && trips.length > 0 && plantasDistintas.size >= 2;
+
+  // Celda de una fila de viaje (las 7 columnas centrales + la de volumen). Se
+  // reutiliza en el modo plano y en el agrupado.
+  const celdasViaje = (viaje: ViajeDoc | null, num: number | null) => (
+    <>
+      <td className={`${td} text-center`}>{viaje ? num : "—"}</td>
+      <td className={td}>{viaje?.operador?.nombre ?? "—"}</td>
+      <td className={`${td} text-center`}>{viaje?.mixer?.identificador ?? "—"}</td>
+      <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_inicio_carga ?? null)}</td>
+      <td className={`${td} text-center whitespace-nowrap font-semibold`}>
+        {hhmm(viaje?.hora_llegada_proyecto ?? null)}
+      </td>
+      <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_fin_descarga ?? null)}</td>
+      <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_regreso_planta ?? null)}</td>
+    </>
+  );
+  const celdaVol = (viaje: ViajeDoc | null) => (
+    <td className={`${td} text-center whitespace-nowrap`}>
+      {viaje ? `${viaje.volumen_asignado_m3.toFixed(2)} m³` : "—"}
+    </td>
+  );
+
+  // ── Modo PLANO (comportamiento original) ────────────────────────────────────
+  if (!agrupar) {
+    return (filas as (ViajeDoc | null)[]).map((viaje, i) => (
       <tr key={`${p.id}-${i}`}>
         {i === 0 && (
           <td className={td} rowSpan={filas.length} style={franja}>
             {cliente}
           </td>
         )}
-        <td className={`${td} text-center`}>{viaje ? i + 1 : "—"}</td>
-        <td className={td}>{viaje?.operador?.nombre ?? "—"}</td>
-        <td className={`${td} text-center`}>{viaje?.mixer?.identificador ?? "—"}</td>
-        <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_inicio_carga ?? null)}</td>
-        <td className={`${td} text-center whitespace-nowrap font-semibold`}>
-          {hhmm(viaje?.hora_llegada_proyecto ?? null)}
-        </td>
-        <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_fin_descarga ?? null)}</td>
-        <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_regreso_planta ?? null)}</td>
+        {celdasViaje(viaje, i + 1)}
         {i === 0 && (
           <td className={`${td} text-center`} rowSpan={filas.length}>
             {tipo}
           </td>
         )}
-        <td className={`${td} text-center whitespace-nowrap`}>
-          {viaje ? `${viaje.volumen_asignado_m3.toFixed(2)} m³` : "—"}
-        </td>
+        {celdaVol(viaje)}
       </tr>
+    ));
+  }
+
+  // ── Modo AGRUPADO POR PLANTA (reparto en 2 plantas) ─────────────────────────
+  // Grupos ordenados por nombre de planta; dentro, por hora de carga. Se intercala
+  // una fila de subtítulo por planta. Cliente/Tipo se rowspanean sobre TODO el bloque.
+  const porPlanta = new Map<string, ViajeDoc[]>();
+  for (const v of trips as ViajeDoc[]) {
+    const nombre = v.planta?.nombre ?? p.planta?.nombre ?? "—";
+    const arr = porPlanta.get(nombre);
+    if (arr) arr.push(v);
+    else porPlanta.set(nombre, [v]);
+  }
+  const grupos = [...porPlanta.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const totalFilas = grupos.length + trips.length; // subtítulos + viajes
+
+  const filasJSX: ReactElement[] = [];
+  let numViaje = 0;
+  let primeraFila = true;
+  const subCls =
+    "border border-slate-300 bg-slate-50 px-2 py-1 text-left text-[10px] font-bold uppercase tracking-wide text-slate-700";
+  for (const [nombrePlanta, vs] of grupos) {
+    // Fila de subtítulo de la planta (colspan de las 7 columnas centrales).
+    filasJSX.push(
+      <tr key={`${p.id}-sub-${nombrePlanta}`}>
+        {primeraFila && (
+          <td className={td} rowSpan={totalFilas} style={franja}>
+            {cliente}
+          </td>
+        )}
+        <td className={subCls} colSpan={7}>
+          Planta: {nombrePlanta}
+        </td>
+        {primeraFila && (
+          <td className={`${td} text-center`} rowSpan={totalFilas}>
+            {tipo}
+          </td>
+        )}
+        <td className={`${td} bg-slate-50`} />
+      </tr>,
     );
-  });
+    primeraFila = false;
+    for (const v of vs) {
+      numViaje += 1;
+      filasJSX.push(
+        <tr key={`${p.id}-v-${numViaje}`}>
+          {celdasViaje(v, numViaje)}
+          {celdaVol(v)}
+        </tr>,
+      );
+    }
+  }
+  return filasJSX;
 }
