@@ -138,6 +138,7 @@ export function TableroDespacho({
   puedeCambiarPlanta = false,
   puedeAgregar = false,
   puedeCapturarCalidad = false,
+  esAdmin = false,
 }: {
   grupos: GrupoDespacho[];
   mixers: MixerOpcion[];
@@ -158,6 +159,9 @@ export function TableroDespacho({
   // roles de calidad (Laboratorista/Admin/JefeLaboratorio/GerenteControlCalidad); y solo
   // aparece cuando el pedido tiene Laboratorista asignado. El Despachador NO.
   puedeCapturarCalidad?: boolean;
+  // Solo el Admin puede ingresar volúmenes fuera del paso de 0.5 m³ (editar volumen /
+  // agregar viaje con step libre). Los demás roles quedan con paso 0.5.
+  esAdmin?: boolean;
 }) {
   // En solo lectura no hay reasignación de mixer ni cambio de motorista, así que no
   // se necesitan (ni se envían al cliente) los catálogos de flota/operadores.
@@ -192,6 +196,7 @@ export function TableroDespacho({
                 puedeCambiarPlanta={puedeCambiarPlanta}
                 puedeAgregar={puedeAgregar}
                 puedeCapturarCalidad={puedeCapturarCalidad}
+                esAdmin={esAdmin}
               />
             ))}
           </div>
@@ -230,6 +235,7 @@ function FilaViaje({
   puedeCambiarPlanta,
   puedeAgregar,
   puedeCapturarCalidad,
+  esAdmin,
 }: {
   v: ViajeDespacho;
   mixers: MixerOpcion[];
@@ -239,6 +245,7 @@ function FilaViaje({
   puedeCambiarPlanta: boolean;
   puedeAgregar: boolean;
   puedeCapturarCalidad: boolean;
+  esAdmin: boolean;
 }) {
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
@@ -314,6 +321,7 @@ function FilaViaje({
         <AgregarViajeModal
           pedidoId={v.pedidoId}
           cliente={v.cliente}
+          esAdmin={esAdmin}
           onClose={() => setAgregando(false)}
           onAgregado={(msg) => {
             setAgregando(false);
@@ -364,6 +372,7 @@ function FilaViaje({
             editable={v.volumenEditable}
             bloqueoMsg={v.volumenBloqueoMsg}
             soloLectura={soloLectura}
+            esAdmin={esAdmin}
           />
         </Campo>
 
@@ -472,12 +481,14 @@ function CampoVolumen({
   editable,
   bloqueoMsg,
   soloLectura,
+  esAdmin,
 }: {
   viajeId: number;
   volumen: number;
   editable: boolean;
   bloqueoMsg: string | null;
   soloLectura: boolean;
+  esAdmin: boolean;
 }) {
   const router = useRouter();
   const [editando, setEditando] = useState(false);
@@ -508,7 +519,7 @@ function CampoVolumen({
       <input
         type="number"
         min="0.5"
-        step="0.5"
+        step={esAdmin ? "any" : "0.5"}
         autoFocus
         defaultValue={volumen}
         onBlur={(e) => guardar(e.target.value)}

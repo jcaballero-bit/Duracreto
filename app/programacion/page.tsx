@@ -185,6 +185,7 @@ export default async function ProgramacionPage({
       plantelId: b.plantel_base_id,
     })),
     asesores: asesores.map((a) => ({ id: a.id, etiqueta: a.nombre })),
+    esAdmin: alcance.esAdmin, // volumen con step libre solo para Admin
   };
 
   // Número de viaje por cliente y día (dinámico, NO se guarda) — mismo criterio que

@@ -99,6 +99,7 @@ export function PedidoForm({
   valores,
   preset,
   esAdicion = false,
+  esAdmin = false,
   onExito,
 }: {
   clientes: ClienteOpcion[];
@@ -114,6 +115,9 @@ export function PedidoForm({
   // true = el pedido se crea desde Despacho en vivo como ADICIÓN (fuera del
   // programa/DPCR-08). Cambia la etiqueta del botón y marca el pedido.
   esAdicion?: boolean;
+  // Solo el Admin puede ingresar volúmenes que NO sean múltiplos de 0.5 m³ (step
+  // libre); los demás roles quedan con paso 0.5. Se refuerza en el servidor.
+  esAdmin?: boolean;
   onExito?: () => void;
 }) {
   const esEdicion = pedidoId != null;
@@ -495,12 +499,18 @@ export function PedidoForm({
             type="number"
             name="volumen_total_m3"
             min="0.5"
-            step="0.5"
+            // Admin: cualquier volumen (p. ej. 6.7). Otros roles: múltiplos de 0.5.
+            step={esAdmin ? "any" : "0.5"}
             value={volumen}
             onChange={(e) => setVolumen(e.target.value)}
             className={inputCls}
             required
           />
+          {esAdmin && (
+            <span className="mt-1 block text-[11px] text-muted">
+              Como Administrador puedes ingresar cualquier volumen (no solo múltiplos de 0.5).
+            </span>
+          )}
           {/* Carga reducida por pendiente/acceso difícil: el motor usa la capacidad
               efectiva (config en Administración) en vez de la nominal. */}
           <label className="mt-1 flex items-start gap-2 text-xs text-muted">

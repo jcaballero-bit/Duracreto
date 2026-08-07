@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA } from "@/lib/auth/acceso";
 import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
+import { validarVolumenPorRol } from "@/lib/volumen";
 import {
   PERMITIR_HORA_CARGA_MANUAL,
   UMBRAL_IMPACTO_INSERCION_MIN,
@@ -165,6 +166,17 @@ async function autorizarOperacionPedido(): Promise<Permiso> {
     return { ok: true };
   }
   return { ok: false, mensaje: "Tu rol no permite crear ni modificar pedidos." };
+}
+
+/**
+ * Solo el Administrador puede ingresar volúmenes que NO sean múltiplos de 0.5 m³
+ * (p. ej. 6.7). Los demás roles quedan restringidos al paso estándar. Refuerza en el
+ * servidor la restricción del input (`step`). El `esAdmin` se toma del alcance.
+ */
+async function autorizarVolumen(volumen: number): Promise<Permiso> {
+  const a = await alcanceActual();
+  const err = validarVolumenPorRol(volumen, !!a?.esAdmin);
+  return err ? { ok: false, mensaje: err } : { ok: true };
 }
 
 /**
@@ -403,6 +415,8 @@ export async function crearPedidoAction(
     // (Las adiciones de Despacho no cuentan; ver autorizarCambioPrograma.)
     const cong = await autorizarCambioPrograma(entrada!.hora_solicitada, !!entrada!.es_adicion);
     if (!cong.ok) return { ok: false, mensaje: cong.mensaje };
+    const vol = await autorizarVolumen(entrada!.volumen_total_m3);
+    if (!vol.ok) return { ok: false, mensaje: vol.mensaje };
     const errBomba = await validarBombaMantenimiento(entrada!);
     if (errBomba) return { ok: false, mensaje: errBomba };
 
@@ -489,6 +503,8 @@ export async function modificarPedidoAction(
       entrada!.hora_solicitada,
     );
     if (!permisoDestino.ok) return { ok: false, mensaje: permisoDestino.mensaje };
+    const vol = await autorizarVolumen(entrada!.volumen_total_m3);
+    if (!vol.ok) return { ok: false, mensaje: vol.mensaje };
     const errBomba = await validarBombaMantenimiento(entrada!);
     if (errBomba) return { ok: false, mensaje: errBomba };
     const r = await modificarPedido(pedidoId, entrada!);
@@ -707,6 +723,8 @@ export async function editarVolumenAction(
   if (!permiso.ok) return permiso;
   const ed = await autorizarEdicionCampos();
   if (!ed.ok) return ed;
+  const vol = await autorizarVolumen(nuevoVolumen);
+  if (!vol.ok) return vol;
   const res = await editarVolumenViaje(viajeId, nuevoVolumen, "despachador");
   if (res.ok) revalidarPantallas();
   return res;
@@ -967,6 +985,8 @@ export async function agregarViajePedidoAction(
     if (!(volumenAdicional > 0)) {
       return { ok: false, mensaje: "El volumen adicional debe ser mayor que 0." };
     }
+    const vol = await autorizarVolumen(volumenAdicional);
+    if (!vol.ok) return vol;
 
     const antes = await prisma.pedidos.findUnique({
       where: { id: pedidoId },

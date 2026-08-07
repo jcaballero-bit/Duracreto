@@ -32,6 +32,7 @@ export function NuevoPedidoModal({
   plantelInicial,
   fechaInicial,
   esAdicion = false,
+  esAdmin = false,
 }: {
   clientes: ClienteOpcion[];
   disenos: DisenoOpcion[];
@@ -42,6 +43,8 @@ export function NuevoPedidoModal({
   fechaInicial?: string;
   // true en "Despacho en vivo": el pedido es una ADICIÓN (fuera del programa/DPCR-08).
   esAdicion?: boolean;
+  // Solo el Admin puede ingresar volúmenes fuera del paso de 0.5 m³.
+  esAdmin?: boolean;
 }) {
   const [abierto, setAbierto] = useState(false);
   const router = useRouter();
@@ -82,6 +85,7 @@ export function NuevoPedidoModal({
                 plantelInicial={plantelInicial}
                 fechaInicial={fechaInicial}
                 esAdicion={esAdicion}
+                esAdmin={esAdmin}
                 onExito={() => router.refresh()}
               />
             </div>

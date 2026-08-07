@@ -505,6 +505,7 @@ export default async function DespachoPage({
         plantelId: b.plantel_base_id,
       })),
     asesores: asesoresLista.map((a) => ({ id: a.id, etiqueta: a.nombre })),
+    esAdmin: alcance.esAdmin, // volumen con step libre solo para Admin
   };
 
   return (
@@ -538,6 +539,7 @@ export default async function DespachoPage({
           puedeCambiarPlanta={puedeCambiarPlanta}
           puedeAgregar={puedeAgregar}
           puedeCapturarCalidad={puedeCapturarCalidad}
+          esAdmin={alcance.esAdmin}
         />
       </Card>
 
