@@ -42,7 +42,7 @@ export const NAV: ItemNav[] = [
   { href: "/reportes", label: "Indicadores", icon: BarChart3 },
   { href: "/flota", label: "Flota", icon: Building2 },
   { href: "/laboratorio", label: "Laboratorio", icon: FlaskConical },
-  { href: "/calidad", label: "Control de calidad", icon: ClipboardCheck },
+  { href: "/calidad", label: "Reporte de Calidad", icon: ClipboardCheck },
   { href: "/programa", label: "Programa DPCR-08", icon: FileText },
   { href: "/administracion", label: "Administración", icon: Settings },
   { href: "/bitacora", label: "Bitácora", icon: ScrollText },

@@ -184,6 +184,10 @@ export default async function DespachoPage({
           plantel: true,
           diseno: true,
           bomba: { select: { identificador: true } },
+          // Control de calidad: si hay Laboratorista asignado (para mostrar la captura
+          // en la tarjeta) y las preguntas generales ya guardadas del pedido.
+          asignacion_lab: { select: { laboratorista_id: true } },
+          control_calidad_general: true,
           viajes: {
             where: {
               mixer_id: { not: null },
@@ -202,6 +206,7 @@ export default async function DespachoPage({
               },
               operador: { select: { id: true, nombre: true } },
               planta: { select: { id: true, nombre: true } },
+              control_calidad: true, // revenimiento/temperatura ya capturados
             },
           },
         },
@@ -247,6 +252,17 @@ export default async function DespachoPage({
     alcance.esJefePlanta ||
     alcance.esDosificador;
 
+  // ¿Puede CAPTURAR control de calidad dentro de Despacho? Solo los roles de calidad
+  // (mismo conjunto que autoriza `puedeCapturarPedido`): Laboratorista (sus proyectos
+  // asignados), Admin, JefeLaboratorio (su zona) y GerenteControlCalidad. El
+  // Despachador NO captura calidad (marca los estados, sin datos de laboratorio). Los
+  // campos además solo aparecen en pedidos CON Laboratorista asignado (ver `tieneLab`).
+  const puedeCapturarCalidad =
+    alcance.esLaboratorista ||
+    alcance.esAdmin ||
+    alcance.esJefeLaboratorio ||
+    alcance.esGerenteControlCalidad;
+
   // Número de viaje por CLIENTE y DÍA (dinámico, NO se guarda): reinicia en 1 cada
   // día por cliente. Se ordena por la hora PROGRAMADA de carga (la misma clave que
   // el orden fijo de las tarjetas, `ordenCargaMs`), NUNCA por la hora real: si se
@@ -276,6 +292,37 @@ export default async function DespachoPage({
   const filasTimeline = new Map<number, FilaMixer>();
 
   for (const p of pedidos) {
+    // ── Control de calidad a nivel de PEDIDO (para la captura en Despacho) ─────
+    const tieneLab = p.asignacion_lab != null;
+    const cg = p.control_calidad_general;
+    const generalCalidad = cg
+      ? {
+          observaciones: cg.observaciones ?? "",
+          humedecio_area: cg.humedecio_area,
+          vibro_concreto: cg.vibro_concreto,
+          m3_colocados: cg.m3_colocados ?? null,
+          aplico_aditivo: cg.aplico_aditivo,
+          aditivo_unidades: cg.aditivo_unidades ?? "",
+          uso_curador: cg.uso_curador,
+          existe_reclamo: cg.existe_reclamo,
+          detalle_reclamo: cg.detalle_reclamo ?? "",
+        }
+      : null;
+    const m3SugeridoCalidad =
+      Math.round(
+        p.viajes
+          .filter((v) => v.estado === "Completado")
+          .reduce((s, v) => s + v.volumen_asignado_m3, 0) * 10,
+      ) / 10;
+    // Último viaje del pedido (por hora de carga programada) → ahí va "Finalizar".
+    const ordenDe = (v: (typeof p.viajes)[number]) =>
+      (v.hora_inicio_carga ?? p.hora_solicitada).getTime();
+    const ultimoViajePedidoId =
+      [...p.viajes]
+        .filter((v) => v.mixer)
+        .sort((a, b) => ordenDe(a) - ordenDe(b) || a.id - b.id)
+        .at(-1)?.id ?? -1;
+
     for (const v of p.viajes) {
       if (!v.mixer) continue;
       // Flota: siempre "Flota [Plantel del mixer]"; tono neutro si es del propio
@@ -340,6 +387,14 @@ export default async function DespachoPage({
           latitud: p.cliente.latitud,
           longitud: p.cliente.longitud,
         },
+        // Control de calidad (captura del Laboratorista en Despacho).
+        tieneLab,
+        revenimientoObra: v.control_calidad?.revenimiento_obra ?? null,
+        temperaturaConcreto: v.control_calidad?.temperatura_concreto ?? null,
+        llegadaAlcanzada: v.ts_llegada_real != null,
+        esUltimoDelPedido: v.id === ultimoViajePedidoId,
+        generalCalidad,
+        m3SugeridoCalidad,
       };
       const g =
         gruposMap.get(p.plantel_id) ??
@@ -482,6 +537,7 @@ export default async function DespachoPage({
           estadosEditables={estadosEditables}
           puedeCambiarPlanta={puedeCambiarPlanta}
           puedeAgregar={puedeAgregar}
+          puedeCapturarCalidad={puedeCapturarCalidad}
         />
       </Card>
 

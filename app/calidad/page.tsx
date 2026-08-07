@@ -1,10 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import { requerirAcceso } from "@/lib/auth/guard";
-import { UNIDAD_TEMPERATURA, textoRevenimiento, textoTemperatura } from "@/lib/calidad/config";
+import { textoRevenimiento, textoTemperatura } from "@/lib/calidad/config";
 import { PageHeader } from "../components/ui";
 import { CalidadFiltros } from "./calidad-filtros";
-import { CalidadCaptura, type ViajeCaptura, type GeneralCaptura } from "./captura";
 
 export const dynamic = "force-dynamic";
 
@@ -111,7 +110,6 @@ export default async function CalidadPage({
     .map(([id, nombre]) => ({ id, nombre }))
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
 
-  const COMPLETADO = "Completado";
   const pedidosVista = clienteSel ? pedidos : [];
 
   return (
@@ -119,8 +117,8 @@ export default async function CalidadPage({
       <style dangerouslySetInnerHTML={{ __html: PRINT_CSS }} />
       <div className="no-print">
         <PageHeader
-          titulo="Control de calidad"
-          descripcion="Reporte formal por cliente y fecha. El Laboratorista captura revenimiento, temperatura y las preguntas generales; lo demás se lee del sistema. Genera el PDF con el botón Descargar."
+          titulo="Reporte de calidad"
+          descripcion="Vista y generación del PDF de control de calidad por cliente y fecha (solo lectura). La CAPTURA de revenimiento, temperatura y preguntas generales se hace en Despacho en vivo. Elige cliente y fecha y toca Descargar PDF."
         />
       </div>
 
@@ -133,7 +131,7 @@ export default async function CalidadPage({
 
       {!clienteSel ? (
         <p className="no-print rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted">
-          Elige un cliente para ver y capturar su control de calidad del día.
+          Elige un cliente para ver su reporte de control de calidad del día.
         </p>
       ) : pedidosVista.length === 0 ? (
         <p className="no-print rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted">
@@ -141,50 +139,6 @@ export default async function CalidadPage({
         </p>
       ) : (
         <>
-          {/* Captura editable (no se imprime) */}
-          {pedidosVista.map((p) => {
-            const viajes: ViajeCaptura[] = p.viajes.map((v) => ({
-              id: v.id,
-              mixerLabel: v.mixer?.identificador ?? `#${v.mixer_id}`,
-              llegadaTxt: hhmm(v.ts_llegada_real),
-              inicioDescargaTxt: hhmm(v.ts_inicio_descarga_real),
-              finDescargaTxt: hhmm(v.ts_fin_descarga_real),
-              revenimiento: v.control_calidad?.revenimiento_obra ?? null,
-              temperatura: v.control_calidad?.temperatura_concreto ?? null,
-            }));
-            const cg = p.control_calidad_general;
-            const general: GeneralCaptura | null = cg
-              ? {
-                  observaciones: cg.observaciones ?? "",
-                  humedecio_area: cg.humedecio_area,
-                  vibro_concreto: cg.vibro_concreto,
-                  m3_colocados: cg.m3_colocados ?? null,
-                  aplico_aditivo: cg.aplico_aditivo,
-                  aditivo_unidades: cg.aditivo_unidades ?? "",
-                  uso_curador: cg.uso_curador,
-                  existe_reclamo: cg.existe_reclamo,
-                  detalle_reclamo: cg.detalle_reclamo ?? "",
-                }
-              : null;
-            const m3Sugerido = Math.round(
-              p.viajes.filter((v) => v.estado === COMPLETADO).reduce((s, v) => s + v.volumen_asignado_m3, 0) * 10,
-            ) / 10;
-            return (
-              <div key={`cap-${p.id}`} className="no-print mb-4">
-                <h3 className="mb-2 text-sm font-semibold text-ink">
-                  {p.cliente.empresa}
-                  {p.cliente.proyecto ? ` · ${p.cliente.proyecto}` : ""} · {p.plantel.nombre}
-                </h3>
-                <CalidadCaptura
-                  pedidoId={p.id}
-                  viajes={viajes}
-                  general={general}
-                  m3Sugerido={m3Sugerido}
-                  unidadTemp={UNIDAD_TEMPERATURA}
-                />
-              </div>
-            );
-          })}
 
           {/* Documento formal (esto es lo que se imprime a PDF) */}
           <div className="calidad-doc rounded-lg border border-border bg-white p-6 text-ink">

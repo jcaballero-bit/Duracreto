@@ -15,6 +15,11 @@ import { Badge } from "../components/ui";
 import { BotonesMapa, type UbicacionCliente } from "../components/maps-buttons";
 import { CancelarViajeModal } from "../components/cancelar-viaje-modal";
 import { AgregarViajeModal } from "../components/agregar-viaje-modal";
+import {
+  CapturaCalidadViaje,
+  FinalizarCalidadBoton,
+  type GeneralCalidad,
+} from "./calidad-captura";
 import type { CampoTsReal } from "@/lib/motor/asignacion";
 
 export interface HitoVista {
@@ -61,6 +66,19 @@ export interface ViajeDespacho {
   estado: string;
   hitos: HitoVista[];
   ubicacion: UbicacionCliente;
+  // ── Control de calidad (captura del Laboratorista dentro de Despacho) ─────
+  // El pedido tiene un Laboratorista asignado ese día (si no, no hay captura).
+  tieneLab: boolean;
+  // Lecturas ya guardadas de este viaje (control_calidad_viaje).
+  revenimientoObra: number | null;
+  temperaturaConcreto: number | null;
+  // ¿La llegada real ya está sellada? (para auto-abrir la captura de la muestra).
+  llegadaAlcanzada: boolean;
+  // ¿Es el último viaje del PEDIDO? (ahí se muestra "Finalizar control de calidad").
+  esUltimoDelPedido: boolean;
+  // Preguntas generales ya guardadas del pedido (o null) + m³ sugerido (despachado).
+  generalCalidad: GeneralCalidad | null;
+  m3SugeridoCalidad: number;
 }
 export interface GrupoDespacho {
   plantelNombre: string;
@@ -119,6 +137,7 @@ export function TableroDespacho({
   estadosEditables = null,
   puedeCambiarPlanta = false,
   puedeAgregar = false,
+  puedeCapturarCalidad = false,
 }: {
   grupos: GrupoDespacho[];
   mixers: MixerOpcion[];
@@ -135,6 +154,10 @@ export function TableroDespacho({
   // JefePlanta/Dosificador). Independiente de soloLectura (el Programador ve el
   // despacho en solo lectura pero sí puede agregar adiciones).
   puedeAgregar?: boolean;
+  // ¿Puede CAPTURAR control de calidad (revenimiento/temperatura/preguntas)? Solo los
+  // roles de calidad (Laboratorista/Admin/JefeLaboratorio/GerenteControlCalidad); y solo
+  // aparece cuando el pedido tiene Laboratorista asignado. El Despachador NO.
+  puedeCapturarCalidad?: boolean;
 }) {
   // En solo lectura no hay reasignación de mixer ni cambio de motorista, así que no
   // se necesitan (ni se envían al cliente) los catálogos de flota/operadores.
@@ -168,6 +191,7 @@ export function TableroDespacho({
                 estadosEditables={estadosEditables}
                 puedeCambiarPlanta={puedeCambiarPlanta}
                 puedeAgregar={puedeAgregar}
+                puedeCapturarCalidad={puedeCapturarCalidad}
               />
             ))}
           </div>
@@ -205,6 +229,7 @@ function FilaViaje({
   estadosEditables,
   puedeCambiarPlanta,
   puedeAgregar,
+  puedeCapturarCalidad,
 }: {
   v: ViajeDespacho;
   mixers: MixerOpcion[];
@@ -213,6 +238,7 @@ function FilaViaje({
   estadosEditables: string[] | null;
   puedeCambiarPlanta: boolean;
   puedeAgregar: boolean;
+  puedeCapturarCalidad: boolean;
 }) {
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
@@ -237,7 +263,7 @@ function FilaViaje({
             Viaje {v.numClienteDia} de {v.totalClienteDia}
           </span>
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Badge tono={tonoEstado(v.estado)}>{v.estado}</Badge>
           {/* Solo en el ÚLTIMO viaje del cliente ese día (evita repetir el botón en
               cada tarjeta): la adición se agrega al final de la secuencia del cliente. */}
@@ -258,6 +284,16 @@ function FilaViaje({
             >
               <Ban size={13} /> Cancelar viaje
             </button>
+          )}
+          {/* Preguntas generales del pedido: en el ÚLTIMO viaje del pedido, solo si
+              hay Laboratorista asignado y el usuario captura calidad. */}
+          {puedeCapturarCalidad && v.tieneLab && v.esUltimoDelPedido && (
+            <FinalizarCalidadBoton
+              pedidoId={v.pedidoId}
+              cliente={v.cliente}
+              general={v.generalCalidad}
+              m3Sugerido={v.m3SugeridoCalidad}
+            />
           )}
         </div>
       </div>
@@ -385,6 +421,18 @@ function FilaViaje({
           </Fragment>
         ))}
       </div>
+
+      {/* Captura de la muestra (revenimiento + temperatura). Solo con Laboratorista
+          asignado y rol de calidad. Se abre sola al marcar "Llegada"; NO bloquea el
+          avance del viaje (Descargando/Regresando no dependen de estos valores). */}
+      {puedeCapturarCalidad && v.tieneLab && (
+        <CapturaCalidadViaje
+          viajeId={v.id}
+          revenimiento={v.revenimientoObra}
+          temperatura={v.temperaturaConcreto}
+          llegadaAlcanzada={v.llegadaAlcanzada}
+        />
+      )}
     </div>
   );
 }
