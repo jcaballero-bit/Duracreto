@@ -455,6 +455,8 @@ model pedidos {
   solicitud solicitudes_anticipadas?
   // Laboratorista asignado a este programa (o ninguno).
   asignacion_lab asignaciones_laboratorista?
+  // Preguntas generales del control de calidad (una vez por pedido/cliente/día).
+  control_calidad_general control_calidad_general?
 
   @@index([plantel_id])
   @@index([planta_id])
@@ -565,11 +567,53 @@ model viajes {
 
   pedido pedidos @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
   mixer  mixers? @relation(fields: [mixer_id], references: [id])
+  control_calidad control_calidad_viaje?
 
   @@index([pedido_id])
   @@index([mixer_id])
   @@index([estado])
   @@index([planta_id])
+}
+
+// ── Control de calidad (reporte formal por cliente/día) ──────────────────────
+// Datos que captura el Laboratorista y que NO existen en otro dominio. Las horas
+// (ts_*_real), volumenes y datos del pedido NO se recapturan: se leen de viajes/
+// pedidos. Estas dos tablas guardan SOLO lo nuevo del control de calidad.
+
+// Por VIAJE (una fila por viaje): revenimiento medido en obra + temperatura.
+model control_calidad_viaje {
+  id                  Int      @id @default(autoincrement())
+  viaje_id            Int      @unique
+  revenimiento_obra   Float? // pulgadas
+  temperatura_concreto Float? // unidad configurable (ver lib/calidad/config.ts)
+  laboratorista_id    String?
+  creado_en           DateTime @default(now())
+  actualizado_en      DateTime @default(now()) @updatedAt
+
+  viaje         viajes @relation(fields: [viaje_id], references: [id], onDelete: Cascade)
+  laboratorista User?  @relation("ControlCalidadViajeLab", fields: [laboratorista_id], references: [id])
+}
+
+// General, UNA vez por pedido (cliente/día): preguntas al finalizar el servicio.
+model control_calidad_general {
+  id               Int      @id @default(autoincrement())
+  pedido_id        Int      @unique
+  laboratorista_id String?
+  observaciones    String?
+  humedecio_area   Boolean  @default(false)
+  vibro_concreto   Boolean  @default(false)
+  m3_programados   Float? // se trae de pedidos.volumen_total_m3 (snapshot al guardar)
+  m3_colocados     Float? // sugerido = suma volumen_asignado de viajes completados, editable
+  aplico_aditivo   Boolean  @default(false)
+  aditivo_unidades String? // relevante solo si aplico_aditivo = true
+  uso_curador      Boolean  @default(false)
+  existe_reclamo   Boolean  @default(false)
+  detalle_reclamo  String? // relevante solo si existe_reclamo = true
+  creado_en        DateTime @default(now())
+  actualizado_en   DateTime @default(now()) @updatedAt
+
+  pedido        pedidos @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
+  laboratorista User?   @relation("ControlCalidadGeneralLab", fields: [laboratorista_id], references: [id])
 }
 
 // ── Autenticación y roles (Fase 3) ───────────────────────────────────────────
@@ -606,6 +650,8 @@ model User {
   asignaciones_lab asignaciones_laboratorista[] // proyectos asignados si es Laboratorista
   jefe_planteles   jefes_planta_planteles[] @relation("JefePlantaPlanteles") // planteles si es Jefe de Planta (M2M)
   asignaciones_lab_planta asignaciones_laboratorista_planta[] @relation("LaboratoristaPlanta") // plantas asignadas (control de calidad de salida)
+  control_calidad_viajes  control_calidad_viaje[]   @relation("ControlCalidadViajeLab")
+  control_calidad_generales control_calidad_general[] @relation("ControlCalidadGeneralLab")
 }
 
 // Un usuario puede tener más de un rol activo a la vez.

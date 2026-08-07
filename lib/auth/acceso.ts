@@ -140,6 +140,10 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
     "GerenteControlCalidad", "Almacen",
   ],
   "/laboratorio": ["Administrador", "JefeLaboratorio", "Laboratorista", "GerenteControlCalidad"],
+  // Reporte de control de calidad (captura + PDF). Lo llena el Laboratorista (solo
+  // sus proyectos asignados); el JefeLaboratorio (su zona) y el Gerente de Control
+  // de Calidad / Admin también.
+  "/calidad": ["Administrador", "Laboratorista", "JefeLaboratorio", "GerenteControlCalidad"],
   "/administracion": ["Administrador"],
   "/bitacora": ["Administrador"],
 };

@@ -108,6 +108,15 @@ describe("acceso a rutas por rol", () => {
     expect(puedeAccederRuta(["GerenteControlCalidad"], "/administracion")).toBe(false);
   });
 
+  it("Control de calidad: solo Laboratorio y Control de Calidad (no Despachador/Almacen)", () => {
+    expect(puedeAccederRuta(["Laboratorista"], "/calidad")).toBe(true);
+    expect(puedeAccederRuta(["JefeLaboratorio"], "/calidad")).toBe(true);
+    expect(puedeAccederRuta(["GerenteControlCalidad"], "/calidad")).toBe(true);
+    expect(puedeAccederRuta(["Administrador"], "/calidad")).toBe(true);
+    expect(puedeAccederRuta(["Despachador"], "/calidad")).toBe(false);
+    expect(puedeAccederRuta(["Almacen"], "/calidad")).toBe(false);
+  });
+
   it("Almacen: SOLO Programa Semana y Programa DPCR-08 (nada más)", () => {
     expect(puedeAccederRuta(["Almacen"], "/clientes/semana")).toBe(true);
     expect(puedeAccederRuta(["Almacen"], "/programa")).toBe(true);
