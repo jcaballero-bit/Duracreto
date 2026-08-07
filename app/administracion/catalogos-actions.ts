@@ -15,7 +15,8 @@ export type Catalogo =
   | "pickups"
   | "operadores"
   | "asesores"
-  | "disenos";
+  | "disenos"
+  | "capacidades_reducidas";
 
 type Datos = Record<string, string>;
 type Res = { ok: boolean; mensaje?: string };
@@ -123,6 +124,11 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         revenimiento: s(d.revenimiento) || "-",
         aditivo_especial: sNull(d.aditivo_especial),
       };
+    case "capacidades_reducidas":
+      return {
+        capacidad_nominal_m3: int(d.capacidad_nominal_m3),
+        capacidad_efectiva_m3: int(d.capacidad_efectiva_m3),
+      };
   }
 }
 
@@ -138,6 +144,7 @@ function modelo(catalogo: Catalogo) {
     operadores: prisma.operadores,
     asesores: prisma.asesores,
     disenos: prisma.disenos_mezcla,
+    capacidades_reducidas: prisma.capacidades_reducidas,
   } as const;
   return mapa[catalogo];
 }

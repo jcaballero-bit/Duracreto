@@ -58,6 +58,8 @@ export interface ValoresPedido {
   asesor_id: number | null;
   hora_bloqueada: boolean;
   usar_ambas_plantas: boolean;
+  carga_simultanea: boolean;
+  carga_reducida: boolean;
   frecuencia_entre_camiones_min: number | null;
   tiempo_transporte_min: number | null;
   elemento: string | null;
@@ -194,8 +196,12 @@ export function PedidoForm({
   );
   // Hora de llegada FIJA (excepción): no autocompletar ni reprogramar.
   const [bloqueada, setBloqueada] = useState<boolean>(valores?.hora_bloqueada ?? false);
-  // Cargar en ambas plantas simultáneamente (solo aplica a planteles de 2 plantas).
+  // Cargar en ambas plantas (solo aplica a planteles de 2 plantas).
   const [usarAmbas, setUsarAmbas] = useState<boolean>(valores?.usar_ambas_plantas ?? false);
+  // Carga SIMULTÁNEA: sub-opción de "ambas plantas" (forzar arranque a la vez).
+  const [simultanea, setSimultanea] = useState<boolean>(valores?.carga_simultanea ?? false);
+  // Carga REDUCIDA: acceso difícil / pendiente (usa capacidad efectiva).
+  const [reducida, setReducida] = useState<boolean>(valores?.carga_reducida ?? false);
   const fechaBase = horaLocal.slice(0, 10);
 
   // Tipo de servicio (Normal / Servicio de Construcción): lo precarga la solicitud
@@ -242,8 +248,11 @@ export function PedidoForm({
     if (!plantasDelPlantel.some((pl) => pl.id === plantaId)) {
       setPlantaId(plantasDelPlantel[0]?.id ?? 0);
     }
-    // "Ambas plantas" solo tiene sentido con 2+ plantas; en 1 planta se apaga.
-    if (plantasDelPlantel.length < 2 && usarAmbas) setUsarAmbas(false);
+    // "Ambas plantas" (y su simultaneidad) solo aplica con 2+ plantas; en 1 se apaga.
+    if (plantasDelPlantel.length < 2) {
+      if (usarAmbas) setUsarAmbas(false);
+      if (simultanea) setSimultanea(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plantelId]);
 
@@ -442,21 +451,42 @@ export function PedidoForm({
           </select>
           {/* Solo en planteles de 2 plantas: elegir carga en una o en ambas. */}
           {plantasDelPlantel.length >= 2 && (
-            <label className="mt-1 flex items-start gap-2 text-xs text-muted">
-              <input
-                type="checkbox"
-                name="usar_ambas_plantas"
-                value="1"
-                checked={usarAmbas}
-                onChange={(e) => setUsarAmbas(e.target.checked)}
-                className="mt-0.5 h-3.5 w-3.5 accent-accent"
-              />
-              <span>
-                Cargar en <strong>ambas plantas</strong> simultáneamente (reparte los
-                viajes entre las 2 para acelerar la entrega). Sin marcar, todo carga
-                en la planta elegida.
-              </span>
-            </label>
+            <>
+              <label className="mt-1 flex items-start gap-2 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  name="usar_ambas_plantas"
+                  value="1"
+                  checked={usarAmbas}
+                  onChange={(e) => {
+                    setUsarAmbas(e.target.checked);
+                    if (!e.target.checked) setSimultanea(false); // simultánea depende de ambas
+                  }}
+                  className="mt-0.5 h-3.5 w-3.5 accent-accent"
+                />
+                <span>
+                  Cargar en <strong>ambas plantas</strong> (reparte los viajes entre las
+                  2 para acelerar la entrega). Sin marcar, todo carga en la planta elegida.
+                </span>
+              </label>
+              {/* Sub-opción: forzar arranque a la MISMA hora en ambas plantas. */}
+              {usarAmbas && (
+                <label className="ml-5 mt-1 flex items-start gap-2 text-xs text-muted">
+                  <input
+                    type="checkbox"
+                    name="carga_simultanea"
+                    value="1"
+                    checked={simultanea}
+                    onChange={(e) => setSimultanea(e.target.checked)}
+                    className="mt-0.5 h-3.5 w-3.5 accent-accent"
+                  />
+                  <span>
+                    Carga <strong>simultánea</strong>: forzar que ambas plantas arranquen
+                    a la misma hora (máximo paralelismo), no solo repartir por hueco libre.
+                  </span>
+                </label>
+              )}
+            </>
           )}
         </Campo>
 
@@ -471,6 +501,22 @@ export function PedidoForm({
             className={inputCls}
             required
           />
+          {/* Carga reducida por pendiente/acceso difícil: el motor usa la capacidad
+              efectiva (config en Administración) en vez de la nominal. */}
+          <label className="mt-1 flex items-start gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              name="carga_reducida"
+              value="1"
+              checked={reducida}
+              onChange={(e) => setReducida(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 accent-accent"
+            />
+            <span>
+              <strong>Carga reducida</strong> (pendiente / acceso difícil): los mixers no
+              cargan al 100%; el motor usa la capacidad efectiva reducida.
+            </span>
+          </label>
         </Campo>
 
         <Campo label="Fecha y hora de llegada al proyecto">
@@ -662,6 +708,14 @@ function ResultadoPanel({
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
           ⚠️ Quedan <strong>{r.volumenSinCubrir} m³</strong> sin cubrir con flota
           propia + préstamo de zona. Revisa las sugerencias de refuerzo.
+        </p>
+      )}
+
+      {r.avisoSimultaneidad && (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          ⚠️ No se pudo arrancar en simultáneo: <strong>{r.avisoSimultaneidad.plantaTarde}</strong>{" "}
+          empieza ~<strong>{r.avisoSimultaneidad.minutosDiferencia} min</strong> más tarde
+          (estaba ocupada). Puedes esperar a que se libere o continuar así.
         </p>
       )}
 

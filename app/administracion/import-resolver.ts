@@ -116,5 +116,12 @@ export function resolverFila(catalogo: Catalogo, r: Fila, m: Mapas): Resuelto {
         },
       };
     }
+    case "capacidades_reducidas": {
+      const nom = entero(r.capacidad_nominal_m3);
+      const efe = entero(r.capacidad_efectiva_m3);
+      if (nom === null) return { error: "capacidad_nominal_m3 inválida" };
+      if (efe === null) return { error: "capacidad_efectiva_m3 inválida" };
+      return { data: { capacidad_nominal_m3: nom, capacidad_efectiva_m3: efe } };
+    }
   }
 }

@@ -111,6 +111,23 @@ export function cargaSeguraMixer(capacidadFisica: number): number {
   return Math.max(1, capacidadFisica - MARGEN_CARGA_SEGURA_M3);
 }
 
+/**
+ * Capacidad que usa la PLANEACIÓN para un mixer de `capacidadFisica`:
+ *  · Pedido normal → carga segura (física − margen).
+ *  · Pedido con CARGA REDUCIDA (pendiente/acceso difícil) → capacidad EFECTIVA del
+ *    mapa `capacidades_reducidas` (editable en Administración). Si no hay entrada
+ *    para esa capacidad física, cae a la carga segura.
+ * `reducidas` = Map<capacidad_nominal_m3, capacidad_efectiva_m3>.
+ */
+export function capacidadPlaneacion(
+  capacidadFisica: number,
+  cargaReducida: boolean,
+  reducidas: Map<number, number>,
+): number {
+  if (cargaReducida) return reducidas.get(capacidadFisica) ?? cargaSeguraMixer(capacidadFisica);
+  return cargaSeguraMixer(capacidadFisica);
+}
+
 /** Estados que dejan a un mixer/bomba fuera del pool asignable. */
 export const ESTADO_DISPONIBLE = "Disponible";
 

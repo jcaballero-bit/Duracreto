@@ -19,6 +19,7 @@ const TABS: { key: string; label: string }[] = [
   { key: "plantas", label: "Plantas" },
   { key: "asesores", label: "Asesores" },
   { key: "disenos", label: "Diseños de mezcla" },
+  { key: "capacidades", label: "Capacidades reducidas" },
   { key: "usuarios", label: "Usuarios y roles" },
 ];
 
@@ -299,6 +300,37 @@ async function renderTab(tab: string, ctx: Ctx) {
           { name: "aditivo_especial", label: "Aditivo especial", tipo: "text" },
         ],
         filas,
+      );
+    }
+    case "capacidades": {
+      const filas0 = await prisma.capacidades_reducidas.findMany({
+        orderBy: { capacidad_nominal_m3: "asc" },
+      });
+      const filas: FilaCatalogo[] = filas0.map((c) => ({
+        id: c.id,
+        celdas: {
+          nominal: `${c.capacidad_nominal_m3} m³`,
+          efectiva: `${c.capacidad_efectiva_m3} m³`,
+        },
+        valores: {
+          capacidad_nominal_m3: String(c.capacidad_nominal_m3),
+          capacidad_efectiva_m3: String(c.capacidad_efectiva_m3),
+        },
+      }));
+      return bloque(
+        "capacidades_reducidas",
+        "capacidad reducida",
+        "Carga efectiva por acceso difícil/pendiente. Un pedido marcado con 'carga reducida' usa la capacidad EFECTIVA (no la nominal) al planear los viajes. Editable por si aparecen otras capacidades de mixer.",
+        [
+          { key: "nominal", label: "Capacidad nominal" },
+          { key: "efectiva", label: "Capacidad efectiva (acceso difícil)" },
+        ],
+        [
+          { name: "capacidad_nominal_m3", label: "Capacidad nominal (m³)", tipo: "number", requerido: true },
+          { name: "capacidad_efectiva_m3", label: "Capacidad efectiva (m³)", tipo: "number", requerido: true },
+        ],
+        filas,
+        true, // sin importación CSV
       );
     }
     case "usuarios": {

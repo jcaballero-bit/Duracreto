@@ -222,6 +222,9 @@ export interface EstadoFormulario {
       margenMin: number;
     }>;
     recalculados: number[];
+    // Carga simultánea: si una planta no pudo arrancar a la vez (ocupada), avisa
+    // cuál y por cuántos minutos. null/undefined = arrancaron juntas o no aplica.
+    avisoSimultaneidad?: { plantaTarde: string; minutosDiferencia: number } | null;
   };
 }
 
@@ -268,6 +271,8 @@ function construirEntrada(
       asesor_id: Number(formData.get("asesor_id")) || null,
       hora_bloqueada: !!formData.get("hora_bloqueada"),
       usar_ambas_plantas: !!formData.get("usar_ambas_plantas"),
+      carga_simultanea: !!formData.get("carga_simultanea"),
+      carga_reducida: !!formData.get("carga_reducida"),
       es_adicion: !!formData.get("es_adicion"),
       frecuencia_entre_camiones_min:
         Number(formData.get("frecuencia_entre_camiones_min")) || null,
@@ -312,6 +317,7 @@ function mapResultado(r: ResultadoProgramacion): EstadoFormulario["resultado"] {
       margenMin: a.margenMin,
     })),
     recalculados: r.viajesRecalculados,
+    avisoSimultaneidad: r.avisoSimultaneidad ?? null,
   };
 }
 

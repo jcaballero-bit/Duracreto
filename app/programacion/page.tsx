@@ -311,6 +311,8 @@ export default async function ProgramacionPage({
         asesor_id: p.asesor_id,
         hora_bloqueada: p.hora_bloqueada,
         usar_ambas_plantas: p.usar_ambas_plantas,
+        carga_simultanea: p.carga_simultanea,
+        carga_reducida: p.carga_reducida,
         frecuencia_entre_camiones_min: p.frecuencia_entre_camiones_min,
         tiempo_transporte_min: p.tiempo_transporte_min,
         elemento: p.elemento,

@@ -1251,6 +1251,52 @@ describe("planta por viaje (planteles de 2 plantas)", () => {
     expect(difMin).toBeLessThanOrEqual(25); // antes del arreglo: ~150 min de diferencia
   });
 
+  it("carga_simultanea fuerza que ambas plantas arranquen a la MISMA hora", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Sim", zona: "Norte", esHub: true });
+    await prisma.plantas.create({ data: { plantel_id: plantelId, nombre: "SANY", capacidad_m3h: 45 } });
+    await crearMixers(plantelId, [[11, 6]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 88, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+      usar_ambas_plantas: true, carga_simultanea: true,
+    });
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null }, hora_inicio_carga: { not: null } },
+      orderBy: { hora_inicio_carga: "asc" },
+      select: { planta_id: true, hora_inicio_carga: true },
+    });
+    // Primer viaje de cada planta EXACTAMENTE a la misma hora (arranque sincronizado).
+    const primera = new Map<number, number>();
+    for (const v of viajes) {
+      if (!primera.has(v.planta_id!)) primera.set(v.planta_id!, v.hora_inicio_carga!.getTime());
+    }
+    const arranques = [...primera.values()];
+    expect(arranques.length).toBe(2);
+    expect(arranques[0]).toBe(arranques[1]); // misma hora_inicio_carga
+  });
+
+  it("carga_reducida usa la capacidad EFECTIVA (config) en vez de la nominal", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Red", zona: "Norte", esHub: true });
+    // Físico 12 (crearMixers suma el margen). Config: 12 → efectiva 10.
+    await crearMixers(plantelId, [[11, 4]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 20, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+      carga_reducida: true,
+    });
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+    });
+    // 20 m³ con carga efectiva 10 → 10 + 10 (2 viajes de 10), NO 11 + 9.
+    expect(viajes.length).toBe(2);
+    expect(viajes.every((v) => v.capacidad_asignada_m3 === 10)).toBe(true);
+    expect(viajes.reduce((s, v) => s + v.volumen_asignado_m3, 0)).toBeCloseTo(20, 5);
+  });
+
   it("por defecto (sin usar_ambas_plantas) TODO carga en la planta elegida", async () => {
     const { plantelId, plantaId } = await crearPlantel({ nombre: "Doble3", zona: "Norte", esHub: true });
     await prisma.plantas.create({ data: { plantel_id: plantelId, nombre: "SANY3", capacidad_m3h: 45 } });

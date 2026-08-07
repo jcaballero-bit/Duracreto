@@ -137,6 +137,17 @@ model mixers {
   @@index([capacidad_m3])
 }
 
+// ── Capacidades reducidas (carga por pendiente/acceso difícil) ───────────────
+// Config editable desde Administración (NO hardcodeada): mapea la capacidad NOMINAL
+// del mixer a la capacidad EFECTIVA real utilizable cuando el acceso al proyecto no
+// permite cargar al 100%. Un pedido con `carga_reducida = true` usa la efectiva.
+// Precarga conocida: 8→6, 10→8, 12→10.
+model capacidades_reducidas {
+  id                    Int @id @default(autoincrement())
+  capacidad_nominal_m3  Int @unique // capacidad física del mixer (8/10/12/…)
+  capacidad_efectiva_m3 Int // carga real utilizable con acceso difícil
+}
+
 // ── Bombas ─────────────────────────────────────────────────────────────────
 model bombas {
   id              Int    @id @default(autoincrement())
@@ -328,6 +339,15 @@ model pedidos {
   // simultánea, doble throughput); false = todos cargan en la planta elegida
   // (`planta_id`). En planteles de 1 planta no aplica (siempre esa planta).
   usar_ambas_plantas Boolean @default(false)
+  // Carga SIMULTÁNEA: junto con `usar_ambas_plantas`, fuerza que el motor priorice
+  // arrancar un viaje en CADA planta a la misma hora (paralelismo máximo), en vez de
+  // dejar que cada viaje caiga en la planta con el próximo hueco (que puede terminar
+  // secuencial). Solo aplica en planteles de 2 plantas.
+  carga_simultanea   Boolean @default(false)
+  // Carga REDUCIDA: por pendiente/acceso difícil, este pedido no permite cargar el
+  // mixer al 100%. El motor usa la `capacidad_efectiva_m3` de `capacidades_reducidas`
+  // (en vez de la carga segura normal) al combinar capacidades y asignar volumen.
+  carga_reducida     Boolean @default(false)
   // TEMPORAL/REVERSIBLE — Override manual de hora de carga (solo Admin). Si tiene
   // valor y el flag PERMITIR_HORA_CARGA_MANUAL está activo, tras la cascada un
   // post-paso reubica los viajes de este pedido para que su carga arranque a esta

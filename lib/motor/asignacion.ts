@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { prisma } from "@/lib/prisma";
 import {
+  capacidadPlaneacion,
   cargaSeguraMixer,
   cierreProgramaDe,
   DEFAULT_TIEMPO_REGRESO_MIN,
@@ -56,6 +57,8 @@ export interface EntradaPedido {
   asesor_id?: number | null; // asesor que gestiona el pedido (precargado del cliente)
   hora_bloqueada?: boolean; // true = hora de llegada fija (no reprogramar)
   usar_ambas_plantas?: boolean; // true = repartir viajes entre las 2 plantas del plantel
+  carga_simultanea?: boolean; // true = forzar carga a la vez en ambas plantas
+  carga_reducida?: boolean; // true = usar capacidad efectiva reducida (acceso difícil)
   es_adicion?: boolean; // true = adición desde Despacho (fuera del programa/DPCR-08)
   frecuencia_entre_camiones_min?: number | null; // min entre llegadas de camión
   tiempo_transporte_min?: number | null; // override de transporte (ida); null = usa el del cliente
@@ -71,6 +74,10 @@ export interface ResultadoProgramacion {
   sugerenciasRefuerzo: SugerenciaRefuerzo[];
   alertasMargen: AlertaMargen[];
   viajesRecalculados: number[]; // ids de viajes cuyos horarios cambiaron
+  // Carga simultánea: si el pedido la pidió pero una planta no pudo arrancar a la vez
+  // (estaba ocupada), avisa cuál planta arrancó más tarde y por cuántos minutos. El
+  // Programador decide si espera o continúa sin simultaneidad. null = arrancaron juntas.
+  avisoSimultaneidad?: { plantaTarde: string; minutosDiferencia: number } | null;
 }
 
 export interface ViajeResumen {
@@ -171,6 +178,15 @@ export async function mantenimientoDeUnidad(
       fecha_fin: { gte: dia },
     },
   });
+}
+
+/** Mapa capacidad_nominal_m3 → capacidad_efectiva_m3 (config `capacidades_reducidas`).
+ *  Lo usan los pedidos con `carga_reducida` para planear con la carga efectiva. */
+async function cargarCapacidadesReducidas(): Promise<Map<number, number>> {
+  const filas = await prisma.capacidades_reducidas.findMany({
+    select: { capacidad_nominal_m3: true, capacidad_efectiva_m3: true },
+  });
+  return new Map(filas.map((f) => [f.capacidad_nominal_m3, f.capacidad_efectiva_m3]));
 }
 
 async function candidatosDePlanta(
@@ -341,6 +357,7 @@ async function cascadaDeUnaPlanta(
   });
 
   const candidatos = await candidatosDePlanta(plantel.id, plantel.hub_id, dia);
+  const reducidas = await cargarCapacidadesReducidas();
   // Metadatos de TODOS los mixers (para viajes fijos/manuales cuyo mixer podría
   // no estar entre los candidatos, p. ej. un refuerzo de otro plantel).
   const metaTodos = new Map<number, MetaMixer>();
@@ -497,10 +514,13 @@ async function cascadaDeUnaPlanta(
       const meta = metaTodos.get(v.mixer_id);
       elegibles = meta ? [meta] : [];
     } else {
-      // Empareja por CARGA SEGURA (capacidad fisica - margen): el viaje se planifico
-      // con la carga segura, y el mixer que lo sirve es el de esa carga segura.
+      // Empareja por la CAPACIDAD DE PLANEACIÓN del mixer (carga segura normal, o
+      // carga efectiva reducida si el pedido tiene `carga_reducida`): el viaje se
+      // planificó con ese valor y el mixer que lo sirve es el de esa capacidad.
       elegibles = candidatos.filter(
-        (m) => cargaSeguraMixer(m.capacidad_m3) === v.capacidad_asignada_m3,
+        (m) =>
+          capacidadPlaneacion(m.capacidad_m3, v.pedido.carga_reducida, reducidas) ===
+          v.capacidad_asignada_m3,
       );
     }
 
@@ -578,9 +598,13 @@ async function cascadaDeUnaPlanta(
       where: { id: v.id },
       data: {
         mixer_id: mixer.id,
-        // Carga segura de planeacion (no la fisica): asi la programacion no
-        // sobrecarga la unidad. El despacho puede subir el volumen hasta la fisica.
-        capacidad_asignada_m3: cargaSeguraMixer(mixer.capacidad_m3),
+        // Capacidad de planeacion (carga segura, o efectiva reducida si el pedido
+        // tiene carga_reducida). El despacho puede subir el volumen hasta la fisica.
+        capacidad_asignada_m3: capacidadPlaneacion(
+          mixer.capacidad_m3,
+          v.pedido.carga_reducida,
+          reducidas,
+        ),
         motivo_asignacion: motivo,
         // El motorista sigue al mixer solo en asignaciones automáticas (una
         // reasignación/refuerzo manual ya fijó su propio operador).
@@ -641,6 +665,7 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
   const plantaIds = plantasDb.map((p) => p.id);
 
   const candidatos = await candidatosDePlanta(plantel.id, plantel.hub_id, dia);
+  const reducidas = await cargarCapacidadesReducidas();
   const metaTodos = new Map<number, MetaMixer>();
   for (const m of await prisma.mixers.findMany({
     select: { id: true, capacidad_m3: true, plantel_base_id: true, operador_asignado_id: true },
@@ -755,7 +780,9 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
       elegibles = meta ? [meta] : [];
     } else {
       elegibles = candidatos.filter(
-        (m) => cargaSeguraMixer(m.capacidad_m3) === v.capacidad_asignada_m3,
+        (m) =>
+          capacidadPlaneacion(m.capacidad_m3, v.pedido.carga_reducida, reducidas) ===
+          v.capacidad_asignada_m3,
       );
     }
     if (elegibles.length === 0) return null;
@@ -808,7 +835,11 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
       where: { id: v.id },
       data: {
         mixer_id: plan.mixer.id,
-        capacidad_asignada_m3: cargaSeguraMixer(plan.mixer.capacidad_m3),
+        capacidad_asignada_m3: capacidadPlaneacion(
+          plan.mixer.capacidad_m3,
+          v.pedido.carga_reducida,
+          reducidas,
+        ),
         motivo_asignacion: plan.motivo,
         ...(v.ajustado_manualmente ? {} : { operador_id: plan.mixer.operador_asignado_id }),
         hora_inicio_carga: plan.inicioCarga,
@@ -839,6 +870,24 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
         hora_regreso_planta: null,
       },
     });
+  };
+
+  // Re-ancla un plan a un nuevo inicio de carga, desplazando todos sus horarios (para
+  // sincronizar el arranque de dos plantas en carga simultánea).
+  const reanclarPlan = (plan: PlanCascada, nuevoInicioMs: number): PlanCascada => {
+    const delta = nuevoInicioMs - plan.inicioCarga.getTime();
+    if (delta === 0) return plan;
+    const s = (d: Date) => new Date(d.getTime() + delta);
+    return {
+      ...plan,
+      inicioCarga: s(plan.inicioCarga),
+      finCarga: s(plan.finCarga),
+      salida: s(plan.salida),
+      llegada: s(plan.llegada),
+      inicioDescarga: s(plan.inicioDescarga),
+      finDescarga: s(plan.finDescarga),
+      regreso: s(plan.regreso),
+    };
   };
 
   // Pasada MERGED: en cada vuelta se descartan las cabezas fijas y sin-cubrir, y de las
@@ -873,6 +922,31 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
       (a, b) => a.plan.inicioCarga.getTime() - b.plan.inicioCarga.getTime() || a.e.planta.id - b.e.planta.id,
     );
     const elegido = candidatosPaso[0];
+    // CARGA SIMULTÁNEA: si el pedido la pidió y hay un viaje del MISMO pedido listo en
+    // la OTRA planta, ambos arrancan a la MISMA hora (la más tardía de las dos, para
+    // que ninguno cargue antes de que el otro pueda). Se re-anclan a esa hora.
+    const hermano = elegido.v.pedido.carga_simultanea
+      ? candidatosPaso.find((c) => c !== elegido && c.v.pedido_id === elegido.v.pedido_id)
+      : undefined;
+    if (hermano) {
+      const T = Math.max(
+        elegido.plan.inicioCarga.getTime(),
+        hermano.plan.inicioCarga.getTime(),
+      );
+      await comprometerPlan(elegido.v, reanclarPlan(elegido.plan, T), elegido.e);
+      elegido.e.ptr++;
+      // Recalcular el hermano con la flota ya actualizada (evita doble reserva del
+      // mismo mixer); arranca a T si su mixer lo permite, si no lo más pronto posible.
+      const planH = calcularPlan(hermano.v, hermano.e);
+      if (planH) {
+        const th = Math.max(T, planH.inicioCarga.getTime());
+        await comprometerPlan(hermano.v, reanclarPlan(planH, th), hermano.e);
+      } else {
+        await marcarSinCubrir(hermano.v);
+      }
+      hermano.e.ptr++;
+      continue;
+    }
     await comprometerPlan(elegido.v, elegido.plan, elegido.e);
     elegido.e.ptr++;
   }
@@ -1174,6 +1248,8 @@ export async function programarPedido(
       orden_dia: ordenDia,
       hora_bloqueada: entrada.hora_bloqueada ?? false,
       usar_ambas_plantas: entrada.usar_ambas_plantas ?? false,
+      carga_simultanea: entrada.carga_simultanea ?? false,
+      carga_reducida: entrada.carga_reducida ?? false,
       frecuencia_entre_camiones_min: entrada.frecuencia_entre_camiones_min ?? null,
       tiempo_transporte_min: entrada.tiempo_transporte_min ?? null,
       elemento: entrada.elemento ?? null,
@@ -1233,6 +1309,8 @@ export async function modificarPedido(
       asesor_id: entrada.asesor_id ?? null,
       hora_bloqueada: entrada.hora_bloqueada ?? false,
       usar_ambas_plantas: entrada.usar_ambas_plantas ?? false,
+      carga_simultanea: entrada.carga_simultanea ?? false,
+      carga_reducida: entrada.carga_reducida ?? false,
       frecuencia_entre_camiones_min: entrada.frecuencia_entre_camiones_min ?? null,
       tiempo_transporte_min: entrada.tiempo_transporte_min ?? null,
       elemento: entrada.elemento ?? null,
@@ -1274,6 +1352,7 @@ export async function agregarVolumenAlPedido(
       hora_solicitada: true,
       volumen_total_m3: true,
       usar_ambas_plantas: true,
+      carga_reducida: true,
       estado_pedido: true,
     },
   });
@@ -1290,8 +1369,14 @@ export async function agregarVolumenAlPedido(
     plantel.hub_id,
     pedido.hora_solicitada,
   );
-  // Cargas SEGURAS (capacidad fisica - margen): la planeacion no sobrecarga.
-  const capacidades = [...new Set(candidatos.map((m) => cargaSeguraMixer(m.capacidad_m3)))];
+  // Capacidad de planeación por mixer (carga segura, o efectiva reducida si el pedido
+  // tiene `carga_reducida`).
+  const reducidas = await cargarCapacidadesReducidas();
+  const capacidades = [
+    ...new Set(
+      candidatos.map((m) => capacidadPlaneacion(m.capacidad_m3, pedido.carga_reducida, reducidas)),
+    ),
+  ];
   const plan = planificarCombinacion(volumenAdicional, capacidades);
 
   // Planta de los viajes nuevos: respeta el modo "ambas plantas" del pedido.
@@ -1494,8 +1579,16 @@ async function asignarViajesDePedido(
     plantel.hub_id,
     entrada.hora_solicitada,
   );
-  // Cargas SEGURAS (capacidad fisica - margen): la planeacion no sobrecarga.
-  const capacidades = [...new Set(candidatos.map((m) => cargaSeguraMixer(m.capacidad_m3)))];
+  // Capacidad de planeación por mixer: carga segura normal, o carga EFECTIVA reducida
+  // si el pedido tiene `carga_reducida` (acceso difícil / pendiente).
+  const reducidas = await cargarCapacidadesReducidas();
+  const capacidades = [
+    ...new Set(
+      candidatos.map((m) =>
+        capacidadPlaneacion(m.capacidad_m3, entrada.carga_reducida ?? false, reducidas),
+      ),
+    ),
+  ];
 
   const plan = planificarCombinacion(entrada.volumen_total_m3, capacidades);
 
@@ -1566,6 +1659,10 @@ async function asignarViajesDePedido(
 
   const alertasMargen = await detectarAlertasMargen(entrada.hora_solicitada);
   const viajes = await resumenViajes(pedidoId);
+  // Aviso de simultaneidad: solo si el pedido la pidió (2 plantas a la vez).
+  const avisoSimultaneidad = entrada.carga_simultanea
+    ? await avisoSimultaneidadDePedido(pedidoId)
+    : null;
 
   return {
     pedidoId,
@@ -1574,7 +1671,35 @@ async function asignarViajesDePedido(
     sugerenciasRefuerzo,
     alertasMargen,
     viajesRecalculados,
+    avisoSimultaneidad,
   };
+}
+
+/**
+ * Aviso de carga simultánea: revisa el primer viaje (por hora de carga) de CADA planta
+ * de un pedido; si una planta arrancó más tarde que la otra por más de 5 min (porque
+ * estaba ocupada con otro cliente), devuelve cuál y la diferencia. null = arrancaron a
+ * la vez (o el pedido no usó 2 plantas).
+ */
+async function avisoSimultaneidadDePedido(
+  pedidoId: number,
+): Promise<{ plantaTarde: string; minutosDiferencia: number } | null> {
+  const viajes = await prisma.viajes.findMany({
+    where: { pedido_id: pedidoId, mixer_id: { not: null }, hora_inicio_carga: { not: null } },
+    select: { hora_inicio_carga: true, planta_id: true, planta: { select: { nombre: true } } },
+  });
+  const primera = new Map<number, { nombre: string; ms: number }>();
+  for (const v of viajes) {
+    if (v.planta_id == null) continue;
+    const ms = v.hora_inicio_carga!.getTime();
+    const prev = primera.get(v.planta_id);
+    if (!prev || ms < prev.ms) primera.set(v.planta_id, { nombre: v.planta?.nombre ?? "?", ms });
+  }
+  const arr = [...primera.values()].sort((a, b) => a.ms - b.ms);
+  if (arr.length < 2) return null; // no repartió en 2 plantas
+  const dif = Math.round((arr[arr.length - 1].ms - arr[0].ms) / 60000);
+  if (dif <= 5) return null; // arrancaron ~a la vez
+  return { plantaTarde: arr[arr.length - 1].nombre, minutosDiferencia: dif };
 }
 
 /**
@@ -1834,10 +1959,11 @@ export async function reasignarMixer(
       : "Préstamo de zona";
 
   // Cambio de capacidad: si el nuevo mixer es MÁS PEQUEÑO que el volumen que
-  // llevaba el viaje, se recorta a la capacidad y el remanente se redistribuye.
-  // Carga segura del nuevo mixer (planeacion): el remanente se redistribuye. Si el
-  // despachador necesita cargar por encima (emergencia), lo hace con el campo Volumen.
-  const nuevaCap = cargaSeguraMixer(mixer.capacidad_m3);
+  // llevaba el viaje, se recorta a la capacidad de planeación y el remanente se
+  // redistribuye. Capacidad de planeación = carga segura, o efectiva reducida si el
+  // pedido tiene `carga_reducida`. (En emergencia el despacho sube por el campo Volumen.)
+  const reducidas = await cargarCapacidadesReducidas();
+  const nuevaCap = capacidadPlaneacion(mixer.capacidad_m3, viaje.pedido.carga_reducida, reducidas);
   const volCapado = Math.min(viaje.volumen_asignado_m3, nuevaCap);
   let remanente = round(viaje.volumen_asignado_m3 - volCapado);
 
@@ -1919,7 +2045,13 @@ export async function reasignarMixer(
         plantelPedido.hub_id,
         dia,
       );
-      const caps = [...new Set(candidatos.map((m) => cargaSeguraMixer(m.capacidad_m3)))];
+      const caps = [
+        ...new Set(
+          candidatos.map((m) =>
+            capacidadPlaneacion(m.capacidad_m3, viaje.pedido.carga_reducida, reducidas),
+          ),
+        ),
+      ];
       const plan = planificarCombinacion(remanente, caps);
       for (const vp of plan.viajes) {
         const nuevo = await prisma.viajes.create({
@@ -2289,7 +2421,7 @@ export async function confirmarRefuerzo(
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const pedido = await prisma.pedidos.findUniqueOrThrow({
     where: { id: pedidoId },
-    select: { planta_id: true, hora_solicitada: true },
+    select: { planta_id: true, hora_solicitada: true, carga_reducida: true },
   });
   const placeholders = await prisma.viajes.findMany({
     where: { pedido_id: pedidoId, motivo_asignacion: "Sin cubrir" },
@@ -2305,7 +2437,10 @@ export async function confirmarRefuerzo(
     return { ok: false, mensaje: "El mixer de refuerzo no está disponible." };
   }
 
-  const cargaSegura = cargaSeguraMixer(mixer.capacidad_m3);
+  // Capacidad de planeación (carga segura, o efectiva reducida si el pedido tiene
+  // `carga_reducida`).
+  const reducidas = await cargarCapacidadesReducidas();
+  const cargaSegura = capacidadPlaneacion(mixer.capacidad_m3, pedido.carga_reducida, reducidas);
   const cubierto = Math.min(cargaSegura, faltante);
 
   const nuevo = await prisma.viajes.create({

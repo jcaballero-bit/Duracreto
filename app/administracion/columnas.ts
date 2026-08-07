@@ -16,6 +16,7 @@ export const COLUMNAS_ESPERADAS: Record<Catalogo, string[]> = {
   operadores: ["nombre", "estado"],
   asesores: ["nombre", "correo"],
   disenos: ["codigo", "resistencia", "tamano_agregado", "revenimiento", "aditivo"],
+  capacidades_reducidas: ["capacidad_nominal_m3", "capacidad_efectiva_m3"],
 };
 
 const DIACRITICOS = new RegExp("[\\u0300-\\u036f]", "g");
