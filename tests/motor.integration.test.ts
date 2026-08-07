@@ -15,6 +15,7 @@ import {
   programarPedido,
   reasignarMixer,
   recalcularCascadaPlanta,
+  recalcularTransportePromedioCliente,
   reordenarPedidoDia,
   sugerirHoraDisponible,
 } from "@/lib/motor/asignacion";
@@ -1221,6 +1222,35 @@ describe("planta por viaje (planteles de 2 plantas)", () => {
     expect(new Set(viajes.map((v) => v.planta_id)).size).toBe(2);
   });
 
+  it("con flota escasa, las 2 plantas cargan EN PARALELO (no una tras otra)", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Paral", zona: "Norte", esHub: true });
+    await prisma.plantas.create({ data: { plantel_id: plantelId, nombre: "SANY", capacidad_m3h: 45 } });
+    // Flota escasa a propósito: sin paralelizar, la primera planta acapara los mixers
+    // y la segunda arranca ~2 h después (el bug que reproducíamos).
+    await crearMixers(plantelId, [[11, 6]]);
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 176, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+      usar_ambas_plantas: true,
+    });
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null }, hora_inicio_carga: { not: null } },
+      select: { planta_id: true, hora_inicio_carga: true },
+    });
+    expect(new Set(viajes.map((v) => v.planta_id)).size).toBe(2); // ambas plantas
+    // Primer inicio de carga de CADA planta ~ a la misma hora (paralelo).
+    const minPorPlanta = new Map<number, number>();
+    for (const v of viajes) {
+      const t = v.hora_inicio_carga!.getTime();
+      minPorPlanta.set(v.planta_id!, Math.min(minPorPlanta.get(v.planta_id!) ?? Infinity, t));
+    }
+    const mins = [...minPorPlanta.values()];
+    const difMin = Math.abs(mins[0] - mins[1]) / 60000;
+    expect(difMin).toBeLessThanOrEqual(25); // antes del arreglo: ~150 min de diferencia
+  });
+
   it("por defecto (sin usar_ambas_plantas) TODO carga en la planta elegida", async () => {
     const { plantelId, plantaId } = await crearPlantel({ nombre: "Doble3", zona: "Norte", esHub: true });
     await prisma.plantas.create({ data: { plantel_id: plantelId, nombre: "SANY3", capacidad_m3h: 45 } });
@@ -1300,6 +1330,16 @@ describe("adiciones y congelamiento del Programa DPCR-08", () => {
     // La línea base NO cambia: el exceso queda como adición en métricas comerciales.
     expect(despues.volumen_programado).toBe(antes.volumen_programado);
     expect(viajesDespues).toBeGreaterThan(viajesAntes);
+    // Los viajes AGREGADOS quedan marcados es_adicion=true (no van al DPCR-08); los
+    // viajes originales del programa siguen es_adicion=false.
+    const agregados = await prisma.viajes.count({
+      where: { pedido_id: r.pedidoId, es_adicion: true },
+    });
+    const programa = await prisma.viajes.count({
+      where: { pedido_id: r.pedidoId, es_adicion: false, mixer_id: { not: null } },
+    });
+    expect(agregados).toBeGreaterThan(0);
+    expect(programa).toBeGreaterThan(0);
   });
 
   it("cancelar DESPUÉS del cierre conserva mixer/horarios (documento congelado)", async () => {
@@ -1452,5 +1492,63 @@ describe("adiciones/cancelaciones comerciales = diferencia suministrado vs progr
     const res = await escenario(55, 50);
     expect(res.adicionesM3Total).toBeCloseTo(5, 5);
     expect(res.cancelacionesM3Total).toBeCloseTo(0, 5);
+  });
+
+  it("pedido de ADICION (Despacho) tiene base 0 y todo lo suministrado es adicion", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Adi2", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[11, 4]]);
+    const asesor = await prisma.asesores.create({ data: { nombre: "AseAdi" } });
+    const clienteId = await crearCliente(true);
+    await prisma.clientes.update({ where: { id: clienteId }, data: { asesor_id: asesor.id } });
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 20, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+      es_adicion: true, // creado desde Despacho en vivo
+    });
+    const ped = await prisma.pedidos.findUniqueOrThrow({ where: { id: r.pedidoId } });
+    expect(ped.es_adicion).toBe(true);
+    expect(ped.volumen_programado).toBe(0); // una adicion no tiene linea base de programa
+    // Suministra todo -> todo cuenta como adicion (no cancelacion).
+    await prisma.viajes.updateMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      data: { estado: "Completado" },
+    });
+    const res = await calcularDesempeno({ anio: DIA.getFullYear(), mes: DIA.getMonth() + 1, zona: null });
+    expect(res.adicionesM3Total).toBeCloseTo(20, 5);
+    expect(res.cancelacionesM3Total).toBeCloseTo(0, 5);
+  });
+
+  it("recalcularTransportePromedioCliente ajusta el transporte al promedio real", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Trans", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[11, 3]]);
+    const clienteId = await crearCliente(true); // arranca con 20 min de referencia
+    const disenoId = await crearDiseno();
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 20, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+    });
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      orderBy: { id: "asc" },
+    });
+    expect(viajes.length).toBeGreaterThanOrEqual(2);
+    // Salida→llegada real: 30 min en uno y 50 min en otro → promedio 40.
+    const base = new Date("2026-08-01T08:00:00");
+    await prisma.viajes.update({
+      where: { id: viajes[0].id },
+      data: { ts_salida_real: base, ts_llegada_real: new Date(base.getTime() + 30 * 60000) },
+    });
+    await prisma.viajes.update({
+      where: { id: viajes[1].id },
+      data: { ts_salida_real: base, ts_llegada_real: new Date(base.getTime() + 50 * 60000) },
+    });
+
+    const cambio = await recalcularTransportePromedioCliente(clienteId);
+    expect(cambio?.anterior).toBe(20);
+    expect(cambio?.nuevo).toBe(40);
+    const cli = await prisma.clientes.findUniqueOrThrow({ where: { id: clienteId } });
+    expect(cli.tiempo_viaje_referencia_min).toBe(40);
+    expect(cli.tiempo_regreso_referencia_min).toBe(40); // espejo ida = regreso
   });
 });

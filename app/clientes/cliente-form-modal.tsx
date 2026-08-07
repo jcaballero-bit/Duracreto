@@ -243,6 +243,17 @@ export function ClienteFormModal({
     const fd = new FormData(e.currentTarget);
     const datos: Record<string, string> = {};
     for (const c of CAMPOS_CLIENTE) datos[c.name] = String(fd.get(c.name) ?? "");
+    // Advertencia: cliente NUEVO sin tiempo de transporte. No es obligatorio (el
+    // sistema usa un valor por defecto y luego lo ajusta al promedio real de los
+    // suministros), pero se avisa para que el usuario lo agregue si lo conoce.
+    if (!editando && !datos.tiempo_viaje_referencia_min.trim()) {
+      const ok = confirm(
+        "No agregaste el Tiempo de transporte (min). El sistema usará un valor por " +
+          "defecto y lo ajustará al promedio real después de los primeros suministros. " +
+          "¿Guardar de todos modos?",
+      );
+      if (!ok) return;
+    }
     // Ubicación desde el estado controlado.
     datos.google_maps_url = googleUrl.trim();
     datos.latitud = lat.trim();

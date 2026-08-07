@@ -31,6 +31,7 @@ export function NuevoPedidoModal({
   asesores,
   plantelInicial,
   fechaInicial,
+  esAdicion = false,
 }: {
   clientes: ClienteOpcion[];
   disenos: DisenoOpcion[];
@@ -39,14 +40,17 @@ export function NuevoPedidoModal({
   asesores: Opcion[];
   plantelInicial?: number;
   fechaInicial?: string;
+  // true en "Despacho en vivo": el pedido es una ADICIÓN (fuera del programa/DPCR-08).
+  esAdicion?: boolean;
 }) {
   const [abierto, setAbierto] = useState(false);
   const router = useRouter();
+  const titulo = esAdicion ? "Adicionar pedido" : "Nuevo pedido";
 
   return (
     <>
       <PrimaryButton conMas onClick={() => setAbierto(true)}>
-        Nuevo pedido
+        {titulo}
       </PrimaryButton>
 
       {abierto && (
@@ -59,7 +63,7 @@ export function NuevoPedidoModal({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
-              <h2 className="text-lg font-bold text-ink">Nuevo pedido</h2>
+              <h2 className="text-lg font-bold text-ink">{titulo}</h2>
               <button
                 onClick={() => setAbierto(false)}
                 className="rounded-md p-1 text-muted hover:bg-content hover:text-ink"
@@ -77,6 +81,7 @@ export function NuevoPedidoModal({
                 asesores={asesores}
                 plantelInicial={plantelInicial}
                 fechaInicial={fechaInicial}
+                esAdicion={esAdicion}
                 onExito={() => router.refresh()}
               />
             </div>

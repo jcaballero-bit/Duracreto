@@ -148,10 +148,10 @@ export default async function ProgramaPage({
       where: {
         hora_solicitada: { gte: ini, lt: fin },
         plantel: { zona },
-        // Solo lo que estaba en el PROGRAMA al momento del cierre (4pm del día
-        // anterior): un pedido creado DESPUÉS (p. ej. una adición desde Despacho en
-        // vivo) NO entra al documento — es una adición, no parte del programa.
-        creado_en: { lt: cierrePrograma },
+        // Las ADICIONES (creadas desde Despacho en vivo) NO son parte del programa
+        // y NO aparecen en el DPCR-08. Los pedidos de Programación (Nuevo pedido /
+        // conversión de solicitud) sí — son el programa.
+        es_adicion: false,
         // Congelamiento del Programa DPCR-08 (documento controlado): se incluye si
         // sigue Activo, o si se canceló DESPUÉS del cierre (permanece publicado).
         OR: [
@@ -165,6 +165,9 @@ export default async function ProgramaPage({
         planta: { select: { nombre: true } },
         bomba: { select: { identificador: true } },
         viajes: {
+          // Los viajes de ADICIÓN (agregados en Despacho a un pedido de programa)
+          // NO forman parte del documento publicado.
+          where: { es_adicion: false },
           include: {
             mixer: { select: { identificador: true } },
             operador: { select: { nombre: true } },
@@ -186,7 +189,8 @@ export default async function ProgramaPage({
     }
   }
 
-  const totalZona = pedidos.reduce((s, p) => s + p.volumen_total_m3, 0);
+  // Total del PROGRAMA (línea base congelada), sin el volumen adicionado en Despacho.
+  const totalZona = pedidos.reduce((s, p) => s + (p.volumen_programado ?? p.volumen_total_m3), 0);
 
   const th = "border border-slate-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-700";
   const td = "border border-slate-300 px-2 py-1 align-middle text-[11px] text-slate-800";
@@ -261,7 +265,7 @@ export default async function ProgramaPage({
         <div className="mt-3 space-y-5 overflow-x-auto">
           {plantelesOrd.map((pl) => {
             const suyos = pedidos.filter((p) => p.plantel_id === pl.id);
-            const totalPl = suyos.reduce((s, p) => s + p.volumen_total_m3, 0);
+            const totalPl = suyos.reduce((s, p) => s + (p.volumen_programado ?? p.volumen_total_m3), 0);
             // La planta solo se indica en planteles con 2+ plantas (para saber
             // dónde cargar); en los de una sola planta no aporta.
             const mostrarPlanta = pl.plantas.length >= 2;
@@ -391,7 +395,7 @@ function renderPedido(
       {(p.revenimiento || p.diseno.revenimiento) && (
         <div>Rev: {p.revenimiento || p.diseno.revenimiento}</div>
       )}
-      <div className="font-semibold">Total: {p.volumen_total_m3.toFixed(2)} m³</div>
+      <div className="font-semibold">Total: {(p.volumen_programado ?? p.volumen_total_m3).toFixed(2)} m³</div>
       {color && (
         <span
           className="mt-1 inline-block rounded-sm px-1.5 py-0.5 text-[10px] font-semibold text-white"

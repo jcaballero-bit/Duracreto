@@ -96,6 +96,7 @@ export function PedidoForm({
   pedidoId,
   valores,
   preset,
+  esAdicion = false,
   onExito,
 }: {
   clientes: ClienteOpcion[];
@@ -108,6 +109,9 @@ export function PedidoForm({
   pedidoId?: number; // si viene, el formulario está en modo EDICIÓN
   valores?: ValoresPedido; // valores iniciales para edición
   preset?: PresetPedido; // pre-llenado en creación (convertir solicitud)
+  // true = el pedido se crea desde Despacho en vivo como ADICIÓN (fuera del
+  // programa/DPCR-08). Cambia la etiqueta del botón y marca el pedido.
+  esAdicion?: boolean;
   onExito?: () => void;
 }) {
   const esEdicion = pedidoId != null;
@@ -276,6 +280,7 @@ export function PedidoForm({
           <input type="hidden" name="solicitud_id" value={preset.solicitud_id} />
         )}
         {forzarImpacto && <input type="hidden" name="confirmar_impacto" value="1" />}
+        {esAdicion && <input type="hidden" name="es_adicion" value="1" />}
         <Campo label="Cliente">
           <select
             name="cliente_id"
@@ -600,9 +605,13 @@ export function PedidoForm({
               ? pendiente
                 ? "Guardando…"
                 : "Guardar cambios"
-              : pendiente
-                ? "Programando…"
-                : "Programar pedido"}
+              : esAdicion
+                ? pendiente
+                  ? "Adicionando…"
+                  : "Adicionar pedido"
+                : pendiente
+                  ? "Programando…"
+                  : "Programar pedido"}
           </PrimaryButton>
         </div>
       </form>

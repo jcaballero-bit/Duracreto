@@ -23,6 +23,7 @@ import {
   programarPedido,
   reasignarMixer,
   recalcularCascadaPlanta,
+  recalcularTransportePromedioCliente,
   reordenarPedidoDia,
   sugerirHoraDisponible,
   type CampoTsReal,
@@ -267,6 +268,7 @@ function construirEntrada(
       asesor_id: Number(formData.get("asesor_id")) || null,
       hora_bloqueada: !!formData.get("hora_bloqueada"),
       usar_ambas_plantas: !!formData.get("usar_ambas_plantas"),
+      es_adicion: !!formData.get("es_adicion"),
       frecuencia_entre_camiones_min:
         Number(formData.get("frecuencia_entre_camiones_min")) || null,
       tiempo_transporte_min:
@@ -599,7 +601,33 @@ export async function avanzarEstadoAction(
   }
 
   const res = await avanzarEstadoViaje(viajeId, nuevoEstado);
-  if (res.ok) revalidarPantallas();
+  if (res.ok) {
+    // Al sellar la LLEGADA hay un nuevo dato real de transporte (salida→llegada):
+    // refresca el promedio de transporte del cliente para futuras programaciones.
+    if (nuevoEstado === "Llegada") {
+      const v = await prisma.viajes.findUnique({
+        where: { id: viajeId },
+        select: { pedido: { select: { cliente_id: true } } },
+      });
+      if (v) {
+        const cambio = await recalcularTransportePromedioCliente(v.pedido.cliente_id);
+        if (cambio) {
+          await prisma.bitacora_auditoria.create({
+            data: {
+              tabla_afectada: "clientes",
+              registro_id: v.pedido.cliente_id,
+              usuario: "sistema",
+              campo_modificado: "tiempo_viaje_referencia_min",
+              valor_anterior: cambio.anterior != null ? String(cambio.anterior) : null,
+              valor_nuevo: String(cambio.nuevo),
+              motivo: "Promedio real de transporte actualizado",
+            },
+          });
+        }
+      }
+    }
+    revalidarPantallas();
+  }
   return res;
 }
 
@@ -783,10 +811,12 @@ export async function cancelarPedidoAction(
 /**
  * Server action: cancela UN SOLO VIAJE (despacho en vivo). Ej.: un cliente tiene 3
  * viajes programados pero solo requiere 2 → se cancela el último y quedan los demás.
- * NO toca el pedido ni los otros viajes (no es una cancelación comercial del cliente:
- * el pedido sigue Activo, así que no afecta el desempeño del asesor). Marca el viaje
- * Cancelado, libera su mixer/operador y lo deja fuera del tablero. No se puede
- * cancelar un viaje ya Completado (entregado).
+ * El pedido sigue Activo; marca el viaje Cancelado, libera su mixer/operador y lo
+ * deja fuera del tablero. No se puede cancelar un viaje ya Completado (entregado).
+ * Nota: como reduce el volumen SUMINISTRADO, si el pedido cierra por debajo de lo
+ * programado esa diferencia SÍ se refleja como faltante del asesor en el dashboard
+ * comercial (modelo suministrado vs programado). No se cuenta como faltante el
+ * volumen que quede "Sin cubrir" por flota (eso es operativo, no del cliente).
  */
 export async function cancelarViajeAction(
   viajeId: number,

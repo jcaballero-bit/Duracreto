@@ -457,7 +457,7 @@ export default async function DespachoPage({
             ? "Seguimiento del día (solo lectura)."
             : "Tablero del día: avanza el estado de cada viaje, reasigna mixers al vuelo y crea pedidos de último momento."
         }
-        accion={puedeCrear ? <NuevoPedidoModal {...opciones} fechaInicial={fecha} /> : undefined}
+        accion={puedeCrear ? <NuevoPedidoModal {...opciones} fechaInicial={fecha} esAdicion /> : undefined}
       />
 
       <Filtros

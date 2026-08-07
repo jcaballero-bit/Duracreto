@@ -348,6 +348,12 @@ model pedidos {
   // "adiciones de volumen" en el día: si lo despachado supera este valor, la
   // diferencia es adición al programa. Backfill = volumen_total_m3 al migrar.
   volumen_programado Float?
+  // ADICIÓN vs PROGRAMA. true = pedido creado desde "Despacho en vivo" (Adicionar
+  // pedido): es una ADICION de ultimo momento, NO forma parte del Programa DPCR-08 y
+  // todo su volumen cuenta como adicion (volumen_programado = 0). false = pedido de
+  // "Programacion" (Nuevo pedido o conversion de solicitud): SI es parte del
+  // programa y aparece en el DPCR-08.
+  es_adicion           Boolean @default(false)
   // Estado del pedido a nivel de negocio: "Activo" | "Cancelado". Un pedido
   // cancelado se conserva (con su motivo) para el indicador comercial y la
   // bitácora, pero sale del programa/despacho activo.
@@ -454,6 +460,10 @@ model viajes {
 
   estado               String  @default("Programado") // "Programado" | "En carga" | "En ruta" | "Descargando" | "Regresando" | "Completado" | "Cancelado"
   ajustado_manualmente Boolean @default(false)
+  // true = viaje de ADICION: agregado con "Agregar viaje" en Despacho a un pedido de
+  // programa (o cualquier viaje de un pedido es_adicion). Cuenta como adicion en las
+  // metricas (via volumen suministrado) y NO se muestra en el Programa DPCR-08.
+  es_adicion           Boolean @default(false)
 
   // Motivo de la asignación, para mostrar en la interfaz de prueba:
   // "Flota propia" | "Préstamo de zona" | "Refuerzo excepcional" | "Sin cubrir"

@@ -52,12 +52,14 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
     select: {
       hora_solicitada: true,
       estado_pedido: true,
+      es_adicion: true,
       cliente_id: true,
       plantel: { select: { nombre: true } },
       planta: { select: { capacidad_m3h: true, tiempo_alistamiento_min: true } },
       viajes: {
         select: {
           estado: true,
+          es_adicion: true,
           volumen_asignado_m3: true,
           hora_inicio_carga: true,
           hora_llegada_proyecto: true,
@@ -88,6 +90,10 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
   let pedTotal = 0;
   let pedCancel = 0;
   let pedCompletados = 0;
+  // Cumplimiento de PROGRAMACIÓN: solo pedidos del programa (las adiciones desde
+  // Despacho no son parte del programa y no deben afectar este KPI).
+  let progTotal = 0;
+  let progCompletados = 0;
   let ocupadoMs = 0;
 
   const diaMs = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -97,11 +103,20 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
     if (p.estado_pedido === "Cancelado") pedCancel += 1;
 
     const conMixer = p.viajes;
+    // "Completado" para cumplimiento del PROGRAMA: solo los viajes del programa
+    // (los de adición no cuentan; un viaje de adición pendiente no debe hacer ver
+    // incompleto un pedido cuyo programa sí se cumplió).
+    const viajesPrograma = conMixer.filter((v) => !v.es_adicion);
     const esPedidoCompletado =
       p.estado_pedido !== "Cancelado" &&
-      conMixer.length > 0 &&
-      conMixer.every((v) => v.estado === "Completado");
+      viajesPrograma.length > 0 &&
+      viajesPrograma.every((v) => v.estado === "Completado");
     if (esPedidoCompletado) pedCompletados += 1;
+    // Cumplimiento de programación: denominador y numerador SIN adiciones.
+    if (!p.es_adicion) {
+      progTotal += 1;
+      if (esPedidoCompletado) progCompletados += 1;
+    }
 
     const nom = p.plantel.nombre;
     let c = ciclo.get(nom);
@@ -209,7 +224,7 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
     cargasEnFormaPct: cargaTot > 0 ? redondear((cargaOK / cargaTot) * 100, 0) : null,
     cargasTotal: cargaTot,
     volumenM3: redondear(volumenM3),
-    cumplimientoPct: pedTotal > 0 ? redondear((pedCompletados / pedTotal) * 100, 0) : null,
+    cumplimientoPct: progTotal > 0 ? redondear((progCompletados / progTotal) * 100, 0) : null,
     pedidosTotal: pedTotal,
     pedidosCompletados: pedCompletados,
     pedidosCancelados: pedCancel,

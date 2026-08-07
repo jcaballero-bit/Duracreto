@@ -119,7 +119,6 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
         volumen_total_m3: true,
         volumen_programado: true,
         hora_solicitada: true,
-        creado_en: true,
         estado_pedido: true,
         motivo_cancelacion: true,
         detalle_cancelacion: true,
@@ -195,8 +194,15 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
       (v) => v.mixer_id != null && v.estado !== "Cancelado",
     );
     const hayPendientes = viajesReales.some((v) => v.estado !== "Completado");
+    // Volumen aún SIN CUBRIR (hueco de flota, no una decisión del cliente): mientras
+    // exista, el pedido activo NO está cerrado — ese faltante es operativo (podría
+    // cubrirse con un refuerzo) y no debe cargarse como cancelación al asesor.
+    const tieneSinCubrir = p.viajes.some(
+      (v) => v.motivo_asignacion === "Sin cubrir" && v.volumen_asignado_m3 > 0,
+    );
     const cerrado =
-      p.estado_pedido === "Cancelado" || (viajesReales.length > 0 && !hayPendientes);
+      p.estado_pedido === "Cancelado" ||
+      (viajesReales.length > 0 && !hayPendientes && !tieneSinCubrir);
     const diff = redondear(suministrado - programado);
 
     if (diff > 0.01) {
@@ -241,7 +247,13 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
     // Contribuciones de este pedido (se suman al total mensual y a su semana).
     const m3 = volumenDespachado(p.viajes);
     const proj = p.solicitud?.volumen_estimado_m3 ?? 0;
-    const real = p.solicitud?.volumen_estimado_m3 != null ? p.volumen_total_m3 : 0;
+    // "Real" para medir la precisión de la PROYECCIÓN = lo PROGRAMADO (línea base),
+    // no `volumen_total_m3` (que crece con adiciones del día y penalizaría al asesor
+    // por algo que no fue un error de proyección).
+    const real =
+      p.solicitud?.volumen_estimado_m3 != null
+        ? (p.volumen_programado ?? p.volumen_total_m3)
+        : 0;
     const reales = p.viajes.filter((v) => v.mixer_id != null);
     const todosConfirmados =
       reales.length > 0 && reales.every((v) => v.estado_confirmacion === "Confirmado");
@@ -484,7 +496,6 @@ export async function registroAdicionesCancelaciones(
       volumen_total_m3: true,
       volumen_programado: true,
       hora_solicitada: true,
-      creado_en: true,
       estado_pedido: true,
       motivo_cancelacion: true,
       detalle_cancelacion: true,
@@ -531,8 +542,13 @@ export async function registroAdicionesCancelaciones(
       (v) => v.mixer_id != null && v.estado !== "Cancelado",
     );
     const hayPendientes = viajesReales.some((v) => v.estado !== "Completado");
+    // Un hueco de flota ("Sin cubrir") no cierra el pedido ni cuenta como cancelación.
+    const tieneSinCubrir = p.viajes.some(
+      (v) => v.motivo_asignacion === "Sin cubrir" && v.volumen_asignado_m3 > 0,
+    );
     const cerrado =
-      p.estado_pedido === "Cancelado" || (viajesReales.length > 0 && !hayPendientes);
+      p.estado_pedido === "Cancelado" ||
+      (viajesReales.length > 0 && !hayPendientes && !tieneSinCubrir);
     const diff = redondear(suministrado - programado);
 
     if (diff > 0.01) {

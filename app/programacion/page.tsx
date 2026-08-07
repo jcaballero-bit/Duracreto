@@ -125,7 +125,9 @@ export default async function ProgramacionPage({
         viajes: {
           // Los viajes cancelados en Despacho (1 viaje suelto) no se listan aquí.
           where: { estado: { not: "Cancelado" } },
-          orderBy: { id: "asc" },
+          // Orden CRONOLÓGICO por hora de carga programada (no por id), para que el
+          // detalle liste "Viaje 1, 2, 3…" en secuencia y las horas queden en orden.
+          orderBy: [{ hora_inicio_carga: "asc" }, { id: "asc" }],
           include: {
             mixer: {
               select: {
