@@ -2,13 +2,18 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition, type FormEvent } from "react";
-import { Pencil, Plus, Trash2, X } from "lucide-react";
+import { Clock, Pencil, Plus, Trash2, X } from "lucide-react";
 import {
   actualizarRegistro,
   crearRegistro,
   eliminarRegistro,
   type Catalogo,
 } from "./catalogos-actions";
+import {
+  cambiarEstadoUnidadAction,
+  historialEstadoUnidad,
+  type CambioEstadoUnidad,
+} from "../flota/actions";
 import { ImportarCsv } from "./importar-csv";
 
 export interface OpcionCampo {
@@ -43,6 +48,7 @@ export function CatalogoAdmin({
   campos,
   filas,
   sinImport = false,
+  estadoRapido,
 }: {
   catalogo: Catalogo;
   singular: string;
@@ -50,6 +56,9 @@ export function CatalogoAdmin({
   campos: CampoDef[];
   filas: FilaCatalogo[];
   sinImport?: boolean;
+  // Cuando se define, la columna "estado" se vuelve un cambio RÁPIDO (desplegable
+  // inline) para la unidad, con historial. `unidadTipo` = "Mixer"|"Bomba"|... .
+  estadoRapido?: { unidadTipo: string; opciones: OpcionCampo[] };
 }) {
   const router = useRouter();
   const [abierto, setAbierto] = useState(false);
@@ -126,7 +135,16 @@ export function CatalogoAdmin({
                 <tr key={f.id} className="border-b border-border/60">
                   {columnas.map((c) => (
                     <td key={c.key} className="px-3 py-2 text-ink">
-                      {f.celdas[c.key] ?? "—"}
+                      {estadoRapido && c.key === "estado" ? (
+                        <EstadoRapidoCelda
+                          unidadTipo={estadoRapido.unidadTipo}
+                          unidadId={f.id}
+                          valor={f.valores.estado ?? f.celdas.estado ?? ""}
+                          opciones={estadoRapido.opciones}
+                        />
+                      ) : (
+                        (f.celdas[c.key] ?? "—")
+                      )}
                     </td>
                   ))}
                   <td className="px-3 py-2">
@@ -228,5 +246,135 @@ export function CatalogoAdmin({
         </div>
       )}
     </>
+  );
+}
+
+/** Color del texto según el estado de la unidad (verde = disponible). */
+function colorEstado(estado: string): string {
+  if (estado === "Disponible") return "text-emerald-700";
+  if (estado === "En mantenimiento") return "text-amber-700";
+  return "text-red-700"; // Fuera de servicio / Dañado / otros
+}
+
+/**
+ * Cambio RÁPIDO de estado de una unidad (desplegable inline en la fila), sin abrir el
+ * formulario completo. Al cambiar, llama a la acción (que registra el historial) y
+ * refresca. El botón de reloj abre el historial de cambios de esa unidad.
+ */
+function EstadoRapidoCelda({
+  unidadTipo,
+  unidadId,
+  valor,
+  opciones,
+}: {
+  unidadTipo: string;
+  unidadId: number;
+  valor: string;
+  opciones: OpcionCampo[];
+}) {
+  const router = useRouter();
+  const [pendiente, startTransition] = useTransition();
+  const [historial, setHistorial] = useState<CambioEstadoUnidad[] | null>(null);
+  const [cargando, setCargando] = useState(false);
+
+  const cambiar = (nuevo: string) => {
+    if (nuevo === valor) return;
+    startTransition(async () => {
+      const res = await cambiarEstadoUnidadAction(unidadTipo, unidadId, nuevo);
+      if (res.ok) router.refresh();
+      else alert(res.mensaje ?? "No se pudo cambiar el estado.");
+    });
+  };
+
+  const verHistorial = async () => {
+    setCargando(true);
+    setHistorial([]);
+    const h = await historialEstadoUnidad(unidadTipo, unidadId);
+    setHistorial(h);
+    setCargando(false);
+  };
+
+  const fmt = (ms: number) =>
+    new Date(ms).toLocaleString("es-HN", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  return (
+    <div className="flex items-center gap-1">
+      <select
+        value={valor}
+        disabled={pendiente}
+        onChange={(e) => cambiar(e.target.value)}
+        className={`rounded border border-border bg-surface px-1.5 py-1 text-xs font-medium outline-none focus:border-accent disabled:opacity-50 ${colorEstado(valor)}`}
+      >
+        {/* Si el estado actual no está en la lista, se muestra igual. */}
+        {!opciones.some((o) => o.value === valor) && valor && (
+          <option value={valor}>{valor}</option>
+        )}
+        {opciones.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={verHistorial}
+        title="Ver historial de estados"
+        className="rounded-md p-1 text-muted hover:bg-content hover:text-ink"
+      >
+        <Clock size={14} />
+      </button>
+
+      {historial != null && (
+        <div
+          className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-8"
+          onClick={() => setHistorial(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl bg-surface shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <h2 className="text-base font-bold text-ink">Historial de estados</h2>
+              <button
+                onClick={() => setHistorial(null)}
+                className="rounded-md p-1 text-muted hover:bg-content hover:text-ink"
+                aria-label="Cerrar"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto p-5">
+              {cargando ? (
+                <p className="text-sm text-muted">Cargando…</p>
+              ) : historial.length === 0 ? (
+                <p className="text-sm text-muted">Sin cambios de estado registrados.</p>
+              ) : (
+                <ul className="space-y-2 text-sm">
+                  {historial.map((h, i) => (
+                    <li key={i} className="border-b border-border/60 pb-2">
+                      <div className="text-xs text-muted">{fmt(h.fechaMs)}</div>
+                      <div className="text-ink">
+                        <span className={colorEstado(h.anterior ?? "")}>
+                          {h.anterior ?? "—"}
+                        </span>{" "}
+                        <span className="text-muted">a</span>{" "}
+                        <span className={`font-medium ${colorEstado(h.nuevo)}`}>{h.nuevo}</span>
+                      </div>
+                      {h.usuario && <div className="text-[11px] text-muted">por {h.usuario}</div>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

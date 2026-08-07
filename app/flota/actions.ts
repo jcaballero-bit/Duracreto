@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { exigirGestionFlota } from "@/lib/auth/guard";
+import { cambiarEstadoUnidad } from "@/lib/flota/estado-unidad";
 
 const TIPOS = ["Mixer", "Bomba", "Camion", "Pickup"];
 const EVENTOS = ["Mantenimiento_Programado", "Fuera_de_Servicio", "Otro"];
@@ -90,4 +91,55 @@ export async function cambiarEstadoMantenimientoAction(
   });
   revalidatePath("/flota");
   return { ok: true };
+}
+
+// ── Cambio RÁPIDO de estado de una unidad (día a día) + historial ────────────
+
+/**
+ * Cambio RÁPIDO de estado de una unidad (desde la fila en /flota › Equipo), sin abrir
+ * el formulario completo. Registra el cambio en `historial_estado_unidad` con fecha/
+ * hora para poder consultar el estado día a día. Es el estado momentáneo; una baja por
+ * RANGO de días sigue programándose con `disponibilidad_flota`. Roles: gestión de flota.
+ * La lógica de BD vive en `lib/flota/estado-unidad.ts` (testeable); aquí solo el guard
+ * y la resolución del usuario.
+ */
+export async function cambiarEstadoUnidadAction(
+  unidadTipo: string,
+  unidadId: number,
+  nuevoEstado: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const g = await exigirGestionFlota();
+  if (!g.ok) return g;
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+  const res = await cambiarEstadoUnidad(unidadTipo, unidadId, nuevoEstado, quien);
+  if (res.ok) revalidatePath("/flota");
+  return res;
+}
+
+export interface CambioEstadoUnidad {
+  fechaMs: number;
+  anterior: string | null;
+  nuevo: string;
+  usuario: string | null;
+}
+
+/** Historial de cambios de estado de una unidad (más reciente primero). */
+export async function historialEstadoUnidad(
+  unidadTipo: string,
+  unidadId: number,
+): Promise<CambioEstadoUnidad[]> {
+  const g = await exigirGestionFlota();
+  if (!g.ok) return [];
+  const rows = await prisma.historial_estado_unidad.findMany({
+    where: { unidad_tipo: unidadTipo, unidad_id: unidadId },
+    orderBy: { fecha_hora: "desc" },
+    take: 100,
+  });
+  return rows.map((r) => ({
+    fechaMs: r.fecha_hora.getTime(),
+    anterior: r.estado_anterior,
+    nuevo: r.estado_nuevo,
+    usuario: r.usuario,
+  }));
 }

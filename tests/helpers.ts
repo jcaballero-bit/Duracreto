@@ -9,6 +9,7 @@ export async function limpiarBD() {
   await prisma.viajes.deleteMany();
   await prisma.pedidos.deleteMany();
   await prisma.disponibilidad_flota.deleteMany();
+  await prisma.historial_estado_unidad.deleteMany();
   await prisma.bombas.deleteMany();
   await prisma.mixers.deleteMany();
   await prisma.camiones.deleteMany(); // ref planteles (RESTRICT) → antes de planteles

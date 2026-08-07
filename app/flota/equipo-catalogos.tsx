@@ -7,10 +7,9 @@ import {
   type FilaCatalogo,
 } from "../administracion/catalogo-admin";
 import type { Catalogo } from "../administracion/catalogos-actions";
+import { ESTADOS_UNIDAD } from "@/lib/flota/estados";
 
-const ESTADO_UNIDAD = ["Disponible", "En mantenimiento", "Fuera de servicio"].map(
-  (e) => ({ value: e, label: e }),
-);
+const ESTADO_UNIDAD = ESTADOS_UNIDAD.map((e) => ({ value: e, label: e }));
 
 const SUBTABS: { key: string; label: string }[] = [
   { key: "mixers", label: "Mixers" },
@@ -61,6 +60,7 @@ export async function EquipoCatalogos({ equipo }: { equipo: string }) {
         columnas={bloque.columnas}
         campos={bloque.campos}
         filas={bloque.filas}
+        estadoRapido={{ unidadTipo: bloque.unidadTipo, opciones: ESTADO_UNIDAD }}
       />
     </div>
   );
@@ -77,6 +77,7 @@ async function construir(
   ctx: Ctx,
 ): Promise<{
   catalogo: Catalogo;
+  unidadTipo: string; // "Mixer" | "Bomba" | "Camion" | "Pickup" (para el cambio rápido)
   singular: string;
   subtitulo: string;
   columnas: ColumnaDef[];
@@ -112,6 +113,7 @@ async function construir(
     }));
     return {
       catalogo: "mixers",
+      unidadTipo: "Mixer",
       singular: "mixer",
       subtitulo:
         "Flota de mixers. El identificador y la placa son opcionales; la capacidad (máxima de la unidad, p. ej. 8/10/12 m³) y el plantel base alimentan el motor. La programación automática carga 1 m³ menos por seguridad; en despacho se puede cargar hasta el máximo en emergencia.",
@@ -147,6 +149,7 @@ async function construir(
     }));
     return {
       catalogo: "bombas",
+      unidadTipo: "Bomba",
       singular: "bomba",
       subtitulo: "Bombas de concreto por plantel base (pluma o estacionaria).",
       columnas: [
@@ -185,6 +188,7 @@ async function construir(
   }));
   return {
     catalogo: esCamion ? "camiones" : "pickups",
+    unidadTipo: esCamion ? "Camion" : "Pickup",
     singular: esCamion ? "camión" : "pickup",
     subtitulo: esCamion
       ? "Camiones para mover/remolcar las bombas estacionarias."

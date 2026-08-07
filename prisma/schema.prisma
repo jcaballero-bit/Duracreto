@@ -215,6 +215,24 @@ model disponibilidad_flota {
   @@index([fecha_inicio, fecha_fin])
 }
 
+// ── Historial de estado de una unidad (cambio rápido día a día) ──────────────
+// Cada cambio rápido de estado de una unidad (mixer/bomba/camión/pickup) queda
+// registrado con fecha/hora, para consultar "qué estado tuvo cada día". Es el
+// estado MOMENTÁNEO; la baja programada por rango de días sigue en
+// `disponibilidad_flota`. Polimórfico por unidad_tipo + unidad_id (sin FK).
+model historial_estado_unidad {
+  id              Int      @id @default(autoincrement())
+  unidad_tipo     String // "Mixer" | "Bomba" | "Camion" | "Pickup"
+  unidad_id       Int
+  estado_anterior String?
+  estado_nuevo    String
+  fecha_hora      DateTime @default(now())
+  usuario         String?
+
+  @@index([unidad_tipo, unidad_id])
+  @@index([fecha_hora])
+}
+
 // ── Clientes ───────────────────────────────────────────────────────────────
 model clientes {
   id        Int     @id @default(autoincrement())
