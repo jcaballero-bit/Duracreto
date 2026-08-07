@@ -116,6 +116,31 @@ export async function fijarPlantelAsignadoAction(
   return { ok: true };
 }
 
+/**
+ * Fija el CONJUNTO de planteles de un Jefe de Planta (M2M). Reemplaza por completo
+ * los planteles asignados a ese usuario. `plantelIds` vacío = sin planteles.
+ */
+export async function fijarPlantelesJefeAction(
+  userId: string,
+  plantelIds: number[],
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const guard = await exigirAdmin();
+  if (!guard.ok) return guard;
+  const ids = [...new Set(plantelIds.filter((n) => Number.isInteger(n) && n > 0))];
+  await prisma.$transaction([
+    prisma.jefes_planta_planteles.deleteMany({ where: { usuario_id: userId } }),
+    ...(ids.length
+      ? [
+          prisma.jefes_planta_planteles.createMany({
+            data: ids.map((plantel_id) => ({ usuario_id: userId, plantel_id })),
+          }),
+        ]
+      : []),
+  ]);
+  revalidatePath("/administracion");
+  return { ok: true };
+}
+
 /** Fija (o limpia) la PLANTA asignada de un Dosificador. Al fijar una planta, se
  *  ajusta también su plantel_asignado a la del plantel de esa planta (coherencia). */
 export async function fijarPlantaAsignadaAction(

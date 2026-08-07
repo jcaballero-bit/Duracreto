@@ -40,9 +40,15 @@ async function autorizarZonaPlantel(plantelId: number): Promise<Permiso> {
   const alcance = await alcanceActual();
   if (!alcance) return { ok: false, mensaje: "Sesión no válida." };
   if (alcance.esAdmin || alcance.esAsesor || alcance.esLaboratorista) return { ok: true };
-  // Dosificador: SOLO su plantel asignado (alcance fino por plantel). El Jefe de
-  // Planta NO: opera cualquier plantel de SU ZONA (para programar/hacer adiciones).
-  if (alcance.esDosificador && !alcance.esJefePlanta) {
+  // Jefe de Planta: SOLO sus planteles asignados (M2M). Puede operar CUALQUIERA de
+  // ellos (programar/hacer adiciones), no otros.
+  if (alcance.esJefePlanta) {
+    return alcance.plantelesAsignados.includes(plantelId)
+      ? { ok: true }
+      : { ok: false, mensaje: "Solo puedes operar tus planteles asignados." };
+  }
+  // Dosificador: SOLO su plantel asignado (alcance fino por plantel/planta).
+  if (alcance.esDosificador) {
     return alcance.plantelAsignadoId === plantelId
       ? { ok: true }
       : { ok: false, mensaje: "Solo puedes operar tu plantel asignado." };
@@ -113,15 +119,32 @@ async function validarBombaMantenimiento(entrada: EntradaPedido): Promise<string
   return `La bomba elegida tiene ${etq} del ${fmt(mant.fecha_inicio)} al ${fmt(mant.fecha_fin)} — no se puede asignar en esa fecha.`;
 }
 
-/** Autoriza operar sobre un viaje (zona + fecha del rol, por su pedido). */
+/** Autoriza operar sobre un viaje (zona + fecha del rol, por su pedido). Además,
+ *  el Dosificador queda acotado a SU planta asignada: solo puede operar (avanzar
+ *  estado, incl. "Completado" al regresar el mixer; editar) los viajes de su propia
+ *  planta, no los de otra planta del mismo plantel (punto 14). No aplica a quienes
+ *  también tienen un rol de despacho más amplio (Admin/Despachador/JefePlanta). */
 async function autorizarPorViaje(viajeId: number): Promise<Permiso> {
   const viaje = await prisma.viajes.findUnique({
     where: { id: viajeId },
-    select: { pedido: { select: { plantel_id: true, hora_solicitada: true } } },
+    select: { planta_id: true, pedido: { select: { plantel_id: true, hora_solicitada: true } } },
   });
   if (!viaje) return { ok: false, mensaje: "Viaje no encontrado." };
   const zona = await autorizarZonaPlantel(viaje.pedido.plantel_id);
   if (!zona.ok) return zona;
+
+  const a = await alcanceActual();
+  const dosificadorPuro =
+    !!a &&
+    a.esDosificador &&
+    !a.esAdmin &&
+    !a.esDespachador &&
+    !a.esJefePlanta &&
+    !a.esProgramador;
+  if (dosificadorPuro && a.plantaAsignadaId != null && viaje.planta_id !== a.plantaAsignadaId) {
+    return { ok: false, mensaje: "Solo puedes operar los viajes de tu planta asignada." };
+  }
+
   return autorizarFecha(viaje.pedido.hora_solicitada);
 }
 
@@ -152,8 +175,8 @@ async function autorizarMixerDeZona(mixerId: number): Promise<Permiso> {
     select: { plantel_base: { select: { zona: true } } },
   });
   if (!mixer?.plantel_base) return { ok: false, mensaje: "Mixer sin plantel base válido." };
-  // Zona(s) del operador: Programador/Despachador por User.zona; JefePlanta/
-  // Dosificador por la zona de su plantel asignado.
+  // Zona(s) del operador: Programador/Despachador por User.zona; Dosificador por la
+  // zona de su plantel asignado; Jefe de Planta por las zonas de SUS planteles (M2M).
   const zonas = new Set<string>();
   if (a.zona) zonas.add(a.zona);
   if (a.plantelAsignadoId != null) {
@@ -162,6 +185,13 @@ async function autorizarMixerDeZona(mixerId: number): Promise<Permiso> {
       select: { zona: true },
     });
     if (mio) zonas.add(mio.zona);
+  }
+  if (a.plantelesAsignados.length > 0) {
+    const suyos = await prisma.planteles.findMany({
+      where: { id: { in: a.plantelesAsignados } },
+      select: { zona: true },
+    });
+    for (const p of suyos) zonas.add(p.zona);
   }
   // Sin zona resoluble → no bloquear (fallback); si hay zona, debe coincidir.
   if (zonas.size === 0 || zonas.has(mixer.plantel_base.zona)) return { ok: true };

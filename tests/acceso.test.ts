@@ -2,6 +2,8 @@
 import { describe, expect, it } from "vitest";
 import {
   calcularAlcance,
+  filtroPedidoPorZona,
+  filtroPlantelPorZona,
   puedeAccederRuta,
   puedeOperarEnFecha,
   rolesDeRuta,
@@ -29,6 +31,48 @@ describe("calcularAlcance", () => {
     const a = calcularAlcance(["Asesor"], null);
     expect(a.zonasPermitidas.length).toBe(2);
   });
+
+  it("JefeLaboratorio ahora SÍ se limita por zona (Tanda 3, punto 12)", () => {
+    const a = calcularAlcance(["JefeLaboratorio"], "Norte");
+    expect(a.esJefeLaboratorio).toBe(true);
+    expect(a.zonasPermitidas).toEqual(["Norte"]);
+  });
+
+  it("GerenteControlCalidad ve ambas zonas (JefeLab sin límite de zona)", () => {
+    const a = calcularAlcance(["GerenteControlCalidad"], null);
+    expect(a.esGerenteControlCalidad).toBe(true);
+    expect(a.zonasPermitidas.length).toBe(2);
+  });
+
+  it("Almacen no queda con zona vacía (consulta ambas zonas)", () => {
+    const a = calcularAlcance(["Almacen"], null);
+    expect(a.esAlmacen).toBe(true);
+    expect(a.zonasPermitidas.length).toBe(2);
+  });
+});
+
+describe("filtros por alcance (Tanda 3)", () => {
+  it("Jefe de Planta filtra por el CONJUNTO de sus planteles (M2M)", () => {
+    const a = calcularAlcance(["JefePlanta"], "Norte", null, null, [3, 5]);
+    expect(filtroPlantelPorZona(a)).toEqual({ id: { in: [3, 5] } });
+    expect(filtroPedidoPorZona(a)).toEqual({ plantel_id: { in: [3, 5] } });
+  });
+
+  it("Jefe de Planta sin planteles asignados no ve nada", () => {
+    const a = calcularAlcance(["JefePlanta"], "Norte", null, null, []);
+    expect(filtroPlantelPorZona(a)).toEqual({ id: { in: [-1] } });
+  });
+
+  it("JefeLaboratorio filtra pedidos por su zona (no ve ambas)", () => {
+    const a = calcularAlcance(["JefeLaboratorio"], "Centro Sur");
+    expect(filtroPedidoPorZona(a)).toEqual({ plantel: { zona: { in: ["Centro Sur"] } } });
+  });
+
+  it("GerenteControlCalidad no tiene filtro de zona (ve todo)", () => {
+    const a = calcularAlcance(["GerenteControlCalidad"], null);
+    expect(filtroPedidoPorZona(a)).toEqual({});
+    expect(filtroPlantelPorZona(a)).toEqual({});
+  });
 });
 
 describe("acceso a rutas por rol", () => {
@@ -53,6 +97,25 @@ describe("acceso a rutas por rol", () => {
 
   it("match por prefijo en rutas anidadas", () => {
     expect(rolesDeRuta("/programacion/nuevo")).toContain("Programador");
+  });
+
+  it("GerenteControlCalidad accede a Laboratorio, Programación y Despacho (como JefeLab)", () => {
+    expect(puedeAccederRuta(["GerenteControlCalidad"], "/laboratorio")).toBe(true);
+    expect(puedeAccederRuta(["GerenteControlCalidad"], "/programacion")).toBe(true);
+    expect(puedeAccederRuta(["GerenteControlCalidad"], "/despacho")).toBe(true);
+    expect(puedeAccederRuta(["GerenteControlCalidad"], "/programa")).toBe(true);
+    // No entra a Administración.
+    expect(puedeAccederRuta(["GerenteControlCalidad"], "/administracion")).toBe(false);
+  });
+
+  it("Almacen: SOLO Programa Semana y Programa DPCR-08 (nada más)", () => {
+    expect(puedeAccederRuta(["Almacen"], "/clientes/semana")).toBe(true);
+    expect(puedeAccederRuta(["Almacen"], "/programa")).toBe(true);
+    expect(puedeAccederRuta(["Almacen"], "/despacho")).toBe(false);
+    expect(puedeAccederRuta(["Almacen"], "/programacion")).toBe(false);
+    expect(puedeAccederRuta(["Almacen"], "/comercial")).toBe(false);
+    expect(puedeAccederRuta(["Almacen"], "/flota")).toBe(false);
+    expect(puedeAccederRuta(["Almacen"], "/administracion")).toBe(false);
   });
 });
 

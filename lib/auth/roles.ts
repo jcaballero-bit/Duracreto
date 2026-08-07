@@ -9,6 +9,11 @@ export const ROLES = [
   "Dosificador",
   "Laboratorista",
   "JefeLaboratorio",
+  // Gerente de Control de Calidad: mismos permisos que JefeLaboratorio pero SIN
+  // limite de zona (ve/asigna en ambas zonas). Superior jerarquico del JefeLab.
+  "GerenteControlCalidad",
+  // Almacen: solo lectura de Programa Semana y del Programa DPCR-08. Nada mas.
+  "Almacen",
 ] as const;
 export type Rol = (typeof ROLES)[number];
 

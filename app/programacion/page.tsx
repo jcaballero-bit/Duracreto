@@ -340,9 +340,10 @@ export default async function ProgramacionPage({
   }));
 
   // Zona(s) del usuario para acotar los pendientes: Programador por su User.zona,
-  // Jefe de Planta por la zona de su plantel asignado. Admin → sin límite.
-  let zonasPendientes: string[] | null = null; // null = sin filtro (Admin)
-  if (!alcance.esAdmin) {
+  // Jefe de Planta por la(s) zona(s) de SUS planteles asignados (M2M). Admin → sin
+  // límite. (GerenteComercial/GerenteControlCalidad: sin límite, ven todo.)
+  let zonasPendientes: string[] | null = null; // null = sin filtro
+  if (!alcance.esAdmin && !alcance.esGerenteComercial && !alcance.esGerenteControlCalidad) {
     const zs = new Set<string>();
     if (alcance.zona) zs.add(alcance.zona);
     if (alcance.plantelAsignadoId != null) {
@@ -351,6 +352,13 @@ export default async function ProgramacionPage({
         select: { zona: true },
       });
       if (pl) zs.add(pl.zona);
+    }
+    if (alcance.plantelesAsignados.length > 0) {
+      const suyos = await prisma.planteles.findMany({
+        where: { id: { in: alcance.plantelesAsignados } },
+        select: { zona: true },
+      });
+      for (const p of suyos) zs.add(p.zona);
     }
     zonasPendientes = zs.size > 0 ? [...zs] : null;
   }

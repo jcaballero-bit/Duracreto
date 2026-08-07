@@ -125,8 +125,13 @@ export default async function DespachoPage({
     scopePedido = filtroPedidoPorLaboratorista(userId);
     soloLectura = true;
     estadosEditables = [...ESTADOS_LABORATORISTA]; // Llegada/Descargando/Regresando
-  } else if (alcance.esJefeLaboratorio || alcance.esGerenteComercial) {
+  } else if (alcance.esGerenteControlCalidad || alcance.esGerenteComercial) {
     scopePedido = {}; // ve TODAS las zonas, solo lectura
+    soloLectura = true;
+    estadosEditables = [];
+  } else if (alcance.esJefeLaboratorio) {
+    // JefeLaboratorio: SOLO su zona (Tanda 3, punto 12), solo lectura.
+    scopePedido = filtroPedidoPorZona(alcance);
     soloLectura = true;
     estadosEditables = [];
   } else if (alcance.esAsesor) {

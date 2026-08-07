@@ -52,25 +52,38 @@ export default async function ReportesPage({
 
   const { desde, hasta, etiqueta } = rangoFechas(rango, new Date());
 
-  // Alcance de plantel: Admin elige (o todos); Jefe de Planta va fijado al suyo.
-  const puedeElegirPlantel = alcance.esAdmin;
+  // Alcance de plantel: Admin elige entre TODOS (o "Todos"); Jefe de Planta elige
+  // entre SUS planteles asignados (M2M): si tiene uno solo queda fijado, si tiene
+  // varios puede elegir cuál ver (sin opción "Todos" nacional).
+  const planteles = await prisma.planteles.findMany({ orderBy: { nombre: "asc" } });
+  const esJefe = alcance.esJefePlanta && !alcance.esAdmin;
+
   let plantelId: number | null = null;
   let plantelFijoNombre: string | undefined;
+  let opcionesPlantel = planteles;
+  let permitirTodos = true;
 
-  const planteles = await prisma.planteles.findMany({ orderBy: { nombre: "asc" } });
-
-  if (puedeElegirPlantel) {
+  if (alcance.esAdmin) {
     const pedido = sp.plantel ? Number(sp.plantel) : NaN;
     plantelId = Number.isFinite(pedido) ? pedido : null;
+  } else if (esJefe) {
+    const suyos = alcance.plantelesAsignados;
+    opcionesPlantel = planteles.filter((p) => suyos.includes(p.id));
+    permitirTodos = false;
+    const pedido = sp.plantel ? Number(sp.plantel) : NaN;
+    plantelId =
+      Number.isFinite(pedido) && suyos.includes(pedido) ? pedido : (opcionesPlantel[0]?.id ?? -1);
+    if (opcionesPlantel.length <= 1) {
+      plantelFijoNombre = opcionesPlantel[0]?.nombre ?? "Sin plantel asignado";
+    }
   } else {
-    // Jefe de Planta: siempre su plantel asignado (si no tiene, no ve nada).
-    plantelId = alcance.plantelAsignadoId ?? -1;
-    plantelFijoNombre = planteles.find((p) => p.id === plantelId)?.nombre ?? "Sin plantel asignado";
+    plantelId = -1; // otros roles no acceden a /reportes (ACCESO_RUTAS)
   }
+  const puedeElegirPlantel = alcance.esAdmin || (esJefe && opcionesPlantel.length > 1);
 
   const resumen = await calcularReportes({ desde, hasta, plantelId });
 
-  const opcPlanteles = planteles
+  const opcPlanteles = opcionesPlantel
     .slice()
     .sort((a, b) => compararPlanteles(a.nombre, b.nombre))
     .map((p) => ({ id: p.id, nombre: p.nombre }));
@@ -88,6 +101,7 @@ export default async function ReportesPage({
         planteles={opcPlanteles}
         puedeElegirPlantel={puedeElegirPlantel}
         plantelFijo={plantelFijoNombre}
+        permitirTodos={permitirTodos}
       />
 
       <Tarjetas resumen={resumen} />

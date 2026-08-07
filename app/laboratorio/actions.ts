@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { alcanceActual } from "@/lib/auth/guard";
+import type { Alcance } from "@/lib/auth/acceso";
 import {
   ventanaDePedido,
   seTraslapan,
@@ -11,15 +12,28 @@ import {
   type ViajeVentana,
 } from "@/lib/laboratorio/ventana";
 
-/** Solo Admin o Jefe de Laboratorio gestionan las asignaciones. */
-async function autorizar(): Promise<{ ok: true; quien: string } | { ok: false; mensaje: string }> {
+/** Gestionan las asignaciones de laboratorio: Admin, Jefe de Laboratorio y Gerente
+ *  de Control de Calidad. Devuelve también el alcance (para el límite por zona). */
+async function autorizar(): Promise<
+  { ok: true; quien: string; alcance: Alcance } | { ok: false; mensaje: string }
+> {
   const alcance = await alcanceActual();
   if (!alcance) return { ok: false, mensaje: "Sesión no válida." };
-  if (!alcance.esAdmin && !alcance.esJefeLaboratorio) {
-    return { ok: false, mensaje: "Solo el Jefe de Laboratorio (o Admin) puede asignar proyectos." };
+  if (!alcance.esAdmin && !alcance.esJefeLaboratorio && !alcance.esGerenteControlCalidad) {
+    return {
+      ok: false,
+      mensaje: "Solo el Jefe de Laboratorio (o Control de Calidad / Admin) puede asignar.",
+    };
   }
   const sesion = await auth();
-  return { ok: true, quien: sesion?.user?.name ?? sesion?.user?.email ?? "sistema" };
+  return { ok: true, quien: sesion?.user?.name ?? sesion?.user?.email ?? "sistema", alcance };
+}
+
+/** Zona a la que está limitado el gestor (JefeLaboratorio → su zona; Admin y Gerente
+ *  de Control de Calidad → sin límite = null). */
+function zonaLimiteGestor(alcance: Alcance): string | null {
+  if (alcance.esAdmin || alcance.esGerenteControlCalidad) return null;
+  return alcance.zona;
 }
 
 // Campos de viaje que necesita el cálculo de ventana.
@@ -46,6 +60,19 @@ export async function asignarPedidoAction(
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const g = await autorizar();
   if (!g.ok) return g;
+
+  // Límite por zona (punto 12): un JefeLaboratorio solo gestiona programas de SU
+  // zona. Admin y Gerente de Control de Calidad: cualquier zona.
+  const zonaLimit = zonaLimiteGestor(g.alcance);
+  if (zonaLimit) {
+    const pz = await prisma.pedidos.findUnique({
+      where: { id: pedidoId },
+      select: { plantel: { select: { zona: true } } },
+    });
+    if (pz && pz.plantel.zona !== zonaLimit) {
+      return { ok: false, mensaje: "Ese programa es de otra zona; no puedes gestionarlo." };
+    }
+  }
 
   // "Ninguno": quitar la asignación de este pedido.
   if (!laboratoristaId) {
@@ -140,5 +167,91 @@ export async function asignarPedidoAction(
 
   revalidatePath("/laboratorio");
   revalidatePath("/despacho");
+  return { ok: true };
+}
+
+/**
+ * Asigna (o cambia) el Laboratorista que controla la calidad a la SALIDA de una
+ * PLANTA en un DÍA. Distinta de la asignación por proyecto: NO valida traslapes (es
+ * "quién está en esta planta ahora") y una nueva asignación REEMPLAZA la de esa
+ * planta/fecha. `laboratoristaId` vacío = quitar. Reglas:
+ *  · Solo la gestiona el Jefe de Laboratorio / Gerente de Control de Calidad / Admin.
+ *  · Un JefeLaboratorio solo puede asignar plantas de SU zona.
+ *  · La planta debe ser de la zona del laboratorista (control de calidad por zona).
+ */
+export async function asignarLaboratoristaPlantaAction(
+  plantaId: number,
+  fechaISO: string, // "YYYY-MM-DD"
+  laboratoristaId: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const g = await autorizar();
+  if (!g.ok) return g;
+
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaISO);
+  if (!m) return { ok: false, mensaje: "Fecha inválida." };
+  const fecha = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
+
+  const planta = await prisma.plantas.findUnique({
+    where: { id: plantaId },
+    select: { nombre: true, plantel: { select: { zona: true, nombre: true } } },
+  });
+  if (!planta) return { ok: false, mensaje: "Planta no encontrada." };
+
+  // Límite por zona del gestor (JefeLaboratorio → solo plantas de su zona).
+  const zonaLimit = zonaLimiteGestor(g.alcance);
+  if (zonaLimit && planta.plantel.zona !== zonaLimit) {
+    return { ok: false, mensaje: "Solo puedes asignar plantas de tu zona." };
+  }
+
+  // Quitar la asignación de esa planta/fecha.
+  if (!laboratoristaId) {
+    await prisma.asignaciones_laboratorista_planta.deleteMany({
+      where: { planta_id: plantaId, fecha },
+    });
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "asignaciones_laboratorista_planta",
+        registro_id: plantaId,
+        usuario: g.quien,
+        campo_modificado: "laboratorista",
+        valor_anterior: null,
+        valor_nuevo: null,
+        motivo: `Planta ${planta.nombre} sin laboratorista (${fechaISO})`,
+      },
+    });
+    revalidatePath("/laboratorio");
+    return { ok: true };
+  }
+
+  const lab = await prisma.user.findUnique({
+    where: { id: laboratoristaId },
+    select: { activo: true, zona: true, roles: { where: { rol: "Laboratorista" }, select: { id: true } } },
+  });
+  if (!lab || !lab.activo || lab.roles.length === 0) {
+    return { ok: false, mensaje: "El usuario seleccionado no es un Laboratorista activo." };
+  }
+  // La planta debe ser de la zona del laboratorista (si tiene zona asignada).
+  if (lab.zona && lab.zona !== planta.plantel.zona) {
+    return { ok: false, mensaje: "Ese laboratorista es de otra zona; no puede cubrir esta planta." };
+  }
+
+  await prisma.asignaciones_laboratorista_planta.upsert({
+    where: { planta_id_fecha: { planta_id: plantaId, fecha } },
+    update: { laboratorista_id: laboratoristaId, creado_por: g.quien },
+    create: { planta_id: plantaId, fecha, laboratorista_id: laboratoristaId, creado_por: g.quien },
+  });
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "asignaciones_laboratorista_planta",
+      registro_id: plantaId,
+      usuario: g.quien,
+      campo_modificado: "laboratorista",
+      valor_anterior: null,
+      valor_nuevo: `planta=${plantaId} laboratorista=${laboratoristaId} (${fechaISO})`,
+      motivo: `Laboratorista de salida en planta ${planta.nombre}`,
+    },
+  });
+
+  revalidatePath("/laboratorio");
   return { ok: true };
 }

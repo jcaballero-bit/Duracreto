@@ -34,8 +34,15 @@ const PALETA_BOMBA = ["#1F4E79", "#2F6F4E", "#B0730D", "#5B4B8A", "#1C6E7D", "#8
  *  · Programador / Despachador / Laboratorista / Jefe de Laboratorio: `User.zona`.
  */
 async function zonasParaPrograma(alcance: Alcance, userId: string | null): Promise<string[]> {
-  // Roles globales: siempre ambas zonas.
-  if (alcance.esAdmin || alcance.esGerenteComercial) return [...ZONAS];
+  // Roles globales (sin límite de zona): siempre ambas zonas. Almacen consulta el
+  // documento de ambas zonas; el Gerente de Control de Calidad también.
+  if (
+    alcance.esAdmin ||
+    alcance.esGerenteComercial ||
+    alcance.esGerenteControlCalidad ||
+    alcance.esAlmacen
+  )
+    return [...ZONAS];
 
   // Reunir la(s) zona(s) asignada(s) del usuario desde todas las fuentes posibles.
   const zonas = new Set<string>();
@@ -52,7 +59,14 @@ async function zonasParaPrograma(alcance: Alcance, userId: string | null): Promi
       where: { id: alcance.plantelAsignadoId },
       select: { zona: true },
     });
-    if (pl) zonas.add(pl.zona); // Dosificador / Jefe de Planta
+    if (pl) zonas.add(pl.zona); // Dosificador
+  }
+  if (alcance.plantelesAsignados.length > 0) {
+    const suyos = await prisma.planteles.findMany({
+      where: { id: { in: alcance.plantelesAsignados } },
+      select: { zona: true },
+    });
+    for (const p of suyos) zonas.add(p.zona); // Jefe de Planta (M2M)
   }
 
   // Con zona asignada → se FILTRA a esa(s); sin ninguna → ve AMBAS.

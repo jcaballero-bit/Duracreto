@@ -51,9 +51,10 @@ export default async function ProgramaSemanaPage({
   const roles = sesion?.user?.roles ?? [];
   const puedeEditarTodo = alcance.esAdmin || alcance.esProgramador;
   const puedeCrearCliente = alcance.esAdmin || alcance.esAsesor;
-  // GerenteComercial y JefePlanta: solo CONSULTA (sin editar celdas ni agregar
-  // clientes) — ven la carga proyectada en modo solo lectura.
-  const esSupervisor = alcance.esGerenteComercial || alcance.esJefePlanta;
+  // GerenteComercial, JefePlanta y Almacen: solo CONSULTA (sin editar celdas ni
+  // agregar clientes) — ven la carga proyectada en modo solo lectura.
+  const esSupervisor =
+    alcance.esGerenteComercial || alcance.esJefePlanta || alcance.esAlmacen;
 
   // Restricción por zona (enforcement server-side, no solo UI):
   //  · Asesor CON zona (punto 5): solo filas de asesores de SU MISMA zona.
@@ -75,12 +76,10 @@ export default async function ProgramaSemanaPage({
   if (!alcance.esAdmin && !alcance.esGerenteComercial) {
     if (alcance.esProgramador && alcance.zona) {
       zonaOperativa = alcance.zona;
-    } else if (alcance.esJefePlanta && alcance.plantelAsignadoId != null) {
-      const pl = await prisma.planteles.findUnique({
-        where: { id: alcance.plantelAsignadoId },
-        select: { zona: true },
-      });
-      zonaOperativa = pl?.zona ?? null;
+    } else if (alcance.esJefePlanta) {
+      // Jefe de Planta: la zona de sus planteles asignados (derivada por el guard).
+      // Vista de solo lectura; si supervisa varias zonas usa la principal.
+      zonaOperativa = alcance.zona;
     }
   }
   // Zona a la que se acota la vista (para el filtro/selector de plantas).

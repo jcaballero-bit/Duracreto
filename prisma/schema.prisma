@@ -57,6 +57,7 @@ model planteles {
   pedidos       pedidos[]
   solicitudes   solicitudes_anticipadas[]
   usuarios_asignados User[] @relation("PlantelAsignadoUsuario")
+  jefes         jefes_planta_planteles[] // Jefes de Planta asignados a este plantel (M2M)
 
   @@index([zona])
 }
@@ -83,6 +84,44 @@ model asignaciones_laboratorista {
   @@index([laboratorista_id])
 }
 
+// Planteles que un usuario Jefe de Planta tiene asignados (M2M). Un Jefe de Planta
+// puede supervisar VARIOS planteles; el Administrador arma el conjunto desde Admin >
+// Usuarios. Todo su acceso/edicion en Programacion/Despacho se filtra por CUALQUIERA
+// de estos planteles (reemplaza el antiguo `plantel_asignado_id` single para ese rol;
+// el Dosificador sigue usando plantel/planta asignados).
+model jefes_planta_planteles {
+  id         Int    @id @default(autoincrement())
+  usuario_id String
+  plantel_id Int
+
+  usuario  User      @relation("JefePlantaPlanteles", fields: [usuario_id], references: [id], onDelete: Cascade)
+  plantel  planteles @relation(fields: [plantel_id], references: [id], onDelete: Cascade)
+
+  @@unique([usuario_id, plantel_id])
+  @@index([usuario_id])
+}
+
+// Asignacion de un Laboratorista a la SALIDA de una PLANTA (control de calidad a la
+// salida de la planta), por DIA. Es DISTINTA de `asignaciones_laboratorista` (que es
+// por proyecto/pedido, control en obra). La gestiona el Jefe de Laboratorio (o el
+// Gerente de Control de Calidad / Admin) y puede cambiarse varias veces el mismo dia:
+// una nueva asignacion REEMPLAZA la de esa planta/fecha (unique planta_id+fecha), sin
+// validacion de traslape (es "quien esta en esta planta ahora").
+model asignaciones_laboratorista_planta {
+  id               Int      @id @default(autoincrement())
+  laboratorista_id String
+  planta_id        Int
+  fecha            DateTime // dia (medianoche local)
+  creado_por       String
+  creado_en        DateTime @default(now())
+
+  laboratorista User    @relation("LaboratoristaPlanta", fields: [laboratorista_id], references: [id], onDelete: Cascade)
+  planta        plantas @relation(fields: [planta_id], references: [id], onDelete: Cascade)
+
+  @@unique([planta_id, fecha])
+  @@index([laboratorista_id])
+}
+
 // ── Plantas dosificadoras ──────────────────────────────────────────────────
 // Un plantel puede tener 1 o 2 plantas simultáneas (Santa Marta y Tegucigalpa
 // tienen 2). El límite de m³/h de la cascada de horarios es POR PLANTA.
@@ -99,6 +138,7 @@ model plantas {
   pedidos pedidos[]
   viajes  viajes[] // viajes dosificados en esta planta (un pedido puede repartirse)
   dosificadores User[] @relation("PlantaAsignadaUsuario") // Dosificadores de esta planta
+  asignaciones_lab_planta asignaciones_laboratorista_planta[] // Laboratorista de control de salida
 
   @@index([plantel_id])
 }
@@ -564,6 +604,8 @@ model User {
   plantel_asignado planteles? @relation("PlantelAsignadoUsuario", fields: [plantel_asignado_id], references: [id])
   planta_asignada  plantas?   @relation("PlantaAsignadaUsuario", fields: [planta_asignada_id], references: [id])
   asignaciones_lab asignaciones_laboratorista[] // proyectos asignados si es Laboratorista
+  jefe_planteles   jefes_planta_planteles[] @relation("JefePlantaPlanteles") // planteles si es Jefe de Planta (M2M)
+  asignaciones_lab_planta asignaciones_laboratorista_planta[] @relation("LaboratoristaPlanta") // plantas asignadas (control de calidad de salida)
 }
 
 // Un usuario puede tener más de un rol activo a la vez.

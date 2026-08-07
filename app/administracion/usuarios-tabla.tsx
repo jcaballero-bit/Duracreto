@@ -11,7 +11,7 @@ import {
   crearUsuarioAction,
   eliminarUsuarioAction,
   fijarPlantaAsignadaAction,
-  fijarPlantelAsignadoAction,
+  fijarPlantelesJefeAction,
   fijarZonaAction,
   forzarCambioPasswordAction,
 } from "./actions";
@@ -23,6 +23,8 @@ export interface UsuarioAdmin {
   zona: string | null;
   plantelAsignadoId: number | null;
   plantaAsignadaId: number | null;
+  /** Planteles asignados si es Jefe de Planta (M2M). */
+  plantelesJefe: number[];
   roles: string[];
   activo: boolean;
 }
@@ -116,19 +118,15 @@ export function UsuariosTabla({
                   </select>
                 </td>
                 <td className="px-3 py-2">
-                  <select
-                    value={u.plantelAsignadoId != null ? String(u.plantelAsignadoId) : ""}
-                    disabled={pendiente}
-                    onChange={(e) => accion(() => fijarPlantelAsignadoAction(u.id, e.target.value))}
-                    className="rounded-md border border-border bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent"
-                  >
-                    <option value="">—</option>
-                    {planteles.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.nombre}
-                      </option>
-                    ))}
-                  </select>
+                  {u.roles.includes("JefePlanta") ? (
+                    <PlantelesJefeEditor
+                      userId={u.id}
+                      seleccionados={u.plantelesJefe}
+                      planteles={planteles}
+                    />
+                  ) : (
+                    <span className="text-xs text-muted">—</span>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   <select
@@ -326,6 +324,53 @@ function EditarUsuarioModal({
   );
 }
 
+/** Editor del CONJUNTO de planteles de un Jefe de Planta (M2M). Casillas por plantel;
+ *  cada cambio guarda el conjunto completo (fijarPlantelesJefeAction). */
+function PlantelesJefeEditor({
+  userId,
+  seleccionados,
+  planteles,
+}: {
+  userId: string;
+  seleccionados: number[];
+  planteles: PlantelOpc[];
+}) {
+  const router = useRouter();
+  const [pendiente, startTransition] = useTransition();
+  const [sel, setSel] = useState<number[]>(seleccionados);
+
+  const toggle = (id: number) => {
+    const anterior = sel;
+    const next = sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id];
+    setSel(next);
+    startTransition(async () => {
+      const res = await fijarPlantelesJefeAction(userId, next);
+      if (res.ok) router.refresh();
+      else {
+        alert(res.mensaje ?? "No se pudo guardar.");
+        setSel(anterior);
+      }
+    });
+  };
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {planteles.map((p) => (
+        <label key={p.id} className="flex items-center gap-1.5 text-xs text-ink">
+          <input
+            type="checkbox"
+            checked={sel.includes(p.id)}
+            disabled={pendiente}
+            onChange={() => toggle(p.id)}
+            className="h-3.5 w-3.5"
+          />
+          {p.nombre}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function NuevoUsuarioModal({
   planteles,
   onCerrar,
@@ -397,7 +442,10 @@ function NuevoUsuarioModal({
             </select>
           </label>
           <label className="block text-sm">
-            <span className="mb-1 block font-medium text-ink">Plantel asignado (Jefe de Planta / Dosificador)</span>
+            <span className="mb-1 block font-medium text-ink">Plantel asignado (Dosificador)</span>
+            <span className="mb-1 block text-xs text-muted">
+              El Jefe de Planta se asigna a uno o varios planteles desde su fila en la tabla.
+            </span>
             <select name="plantel_asignado" defaultValue="" className={inputCls}>
               <option value="">— (no aplica)</option>
               {planteles.map((p) => (

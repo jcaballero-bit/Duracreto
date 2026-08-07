@@ -52,20 +52,58 @@ export async function exigirGestionFlota(): Promise<
   return { ok: false, mensaje: "No tienes permiso para gestionar la flota." };
 }
 
+/**
+ * Construye el Alcance a partir del usuario de sesión, cargando de BD lo que no vive
+ * en el token: los planteles del Jefe de Planta (M2M) y la zona efectiva. Para el
+ * Jefe de Planta la zona se deriva de SUS planteles asignados; para el Dosificador,
+ * de su plantel asignado; para el resto, User.zona.
+ */
+async function construirAlcance(user: {
+  id: string;
+  roles?: string[];
+  zona?: string | null;
+  plantelAsignadoId?: number | null;
+  plantaAsignadaId?: number | null;
+}): Promise<Alcance> {
+  const roles = user.roles ?? [];
+  let plantelesAsignados: number[] = [];
+  let zona: string | null;
+
+  if (roles.includes("JefePlanta")) {
+    const filas = await prisma.jefes_planta_planteles.findMany({
+      where: { usuario_id: user.id },
+      select: { plantel: { select: { id: true, zona: true } } },
+    });
+    plantelesAsignados = filas.map((f) => f.plantel.id);
+    // Zona del Jefe de Planta = la de sus planteles (si es única). Alimenta /programa
+    // y la validación de mixer por zona; el filtro principal va por el conjunto de
+    // planteles. Si no tiene planteles aún, conserva su User.zona.
+    const zonas = [...new Set(filas.map((f) => f.plantel.zona))];
+    zona = zonas.length === 1 ? zonas[0] : (user.zona ?? zonas[0] ?? null);
+  } else {
+    zona = await zonaEfectiva(user.zona ?? null, user.plantelAsignadoId ?? null);
+  }
+
+  return calcularAlcance(
+    roles,
+    zona,
+    user.plantelAsignadoId ?? null,
+    user.plantaAsignadaId ?? null,
+    plantelesAsignados,
+  );
+}
+
 /** Alcance del usuario logueado, o null si no hay sesión. */
 export async function alcanceActual(): Promise<Alcance | null> {
   const sesion = await auth();
   if (!sesion?.user) return null;
-  const zona = await zonaEfectiva(
-    sesion.user.zona ?? null,
-    sesion.user.plantelAsignadoId ?? null,
-  );
-  return calcularAlcance(
-    sesion.user.roles ?? [],
-    zona,
-    sesion.user.plantelAsignadoId ?? null,
-    sesion.user.plantaAsignadaId ?? null,
-  );
+  return construirAlcance({
+    id: sesion.user.id,
+    roles: sesion.user.roles ?? [],
+    zona: sesion.user.zona ?? null,
+    plantelAsignadoId: sesion.user.plantelAsignadoId ?? null,
+    plantaAsignadaId: sesion.user.plantaAsignadaId ?? null,
+  });
 }
 
 /**
@@ -90,14 +128,11 @@ export async function requerirAcceso(ruta: string): Promise<Alcance> {
   if (sesion.user.debeCambiarPassword) redirect("/configuracion");
   const roles = sesion.user.roles ?? [];
   if (!puedeAccederRuta(roles, ruta)) redirect("/?denegado=1");
-  const zona = await zonaEfectiva(
-    sesion.user.zona ?? null,
-    sesion.user.plantelAsignadoId ?? null,
-  );
-  return calcularAlcance(
+  return construirAlcance({
+    id: sesion.user.id,
     roles,
-    zona,
-    sesion.user.plantelAsignadoId ?? null,
-    sesion.user.plantaAsignadaId ?? null,
-  );
+    zona: sesion.user.zona ?? null,
+    plantelAsignadoId: sesion.user.plantelAsignadoId ?? null,
+    plantaAsignadaId: sesion.user.plantaAsignadaId ?? null,
+  });
 }

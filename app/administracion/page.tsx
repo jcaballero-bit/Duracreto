@@ -39,7 +39,10 @@ export default async function AdministracionPage({
     prisma.planteles.findMany({ orderBy: { nombre: "asc" } }),
     prisma.plantas.findMany({ orderBy: { nombre: "asc" }, include: { plantel: { select: { nombre: true } } } }),
     prisma.asesores.findMany({ orderBy: { nombre: "asc" } }),
-    prisma.user.findMany({ orderBy: { creado_en: "asc" }, include: { roles: true } }),
+    prisma.user.findMany({
+      orderBy: { creado_en: "asc" },
+      include: { roles: true, jefe_planteles: { select: { plantel_id: true } } },
+    }),
   ]);
   const opcPlanteles = opc(planteles.map((p) => ({ value: String(p.id), label: `${p.nombre} (${p.zona})` })));
   // Solo tiene sentido asignar planta específica en planteles con 2+ plantas.
@@ -100,6 +103,7 @@ interface Ctx {
     planta_asignada_id: number | null;
     activo: boolean;
     roles: { rol: string }[];
+    jefe_planteles: { plantel_id: number }[];
   }[];
   opcPlanteles: { value: string; label: string }[];
   opcPlantas: { value: string; label: string }[];
@@ -341,6 +345,7 @@ async function renderTab(tab: string, ctx: Ctx) {
         zona: u.zona,
         plantelAsignadoId: u.plantel_asignado_id,
         plantaAsignadaId: u.planta_asignada_id,
+        plantelesJefe: u.jefe_planteles.map((j) => j.plantel_id),
         roles: u.roles.map((r) => r.rol),
         activo: u.activo,
       }));

@@ -20,12 +20,14 @@ export function FiltrosReportes({
   planteles,
   puedeElegirPlantel,
   plantelFijo,
+  permitirTodos = true,
 }: {
   rango: string; // "hoy" | "semana" | "mes"
   plantelId: string; // "" = todos
   planteles: PlantelOpc[];
   puedeElegirPlantel: boolean;
   plantelFijo?: string; // nombre del plantel cuando el usuario está fijado a uno
+  permitirTodos?: boolean; // false para el Jefe de Planta (solo SUS planteles)
 }) {
   const router = useRouter();
 
@@ -69,7 +71,7 @@ export function FiltrosReportes({
             onChange={(e) => navegar(rango, e.target.value)}
             className="rounded-lg border border-border bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent"
           >
-            <option value="">Todos los planteles</option>
+            {permitirTodos && <option value="">Todos los planteles</option>}
             {planteles.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.nombre}

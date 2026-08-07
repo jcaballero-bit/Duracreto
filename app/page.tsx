@@ -62,8 +62,11 @@ export default async function Panel() {
       alcance.esJefePlanta ||
       alcance.esDosificador ||
       alcance.esLaboratorista ||
-      alcance.esJefeLaboratorio);
-  const ocultarFlota = !!alcance && alcance.esAsesor && !puedeVerFlota;
+      alcance.esJefeLaboratorio ||
+      alcance.esGerenteControlCalidad);
+  // Asesor y Almacen NO ven disponibilidad de flota (roles no operativos).
+  const ocultarFlota =
+    !!alcance && (alcance.esAsesor || alcance.esAlmacen) && !puedeVerFlota;
 
   const r = await resumen(!ocultarFlota, alcance);
   const sesion = await auth();

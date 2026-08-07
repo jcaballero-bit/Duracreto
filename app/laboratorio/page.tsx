@@ -9,6 +9,7 @@ import {
 } from "@/lib/laboratorio/ventana";
 import { Card, PageHeader } from "../components/ui";
 import { GestionAsignaciones, type LaboratoristaOpc, type ProgramaDia } from "./gestion";
+import { AsignacionPlantas, type PlantaAsignable } from "./asignacion-plantas";
 
 export const dynamic = "force-dynamic";
 
@@ -36,10 +37,14 @@ export default async function LaboratorioPage({
   const alcance = await requerirAcceso("/laboratorio");
   const sesion = await auth();
   const userId = sesion?.user?.id ?? "";
-  // Admin y Jefe de Laboratorio gestionan (editan). El Laboratorista solo VE lo
-  // que tiene asignado (solo lectura), filtrado a sus propios programas.
-  const esGestor = alcance.esAdmin || alcance.esJefeLaboratorio;
+  // Admin, Jefe de Laboratorio y Gerente de Control de Calidad gestionan (editan).
+  // El Laboratorista solo VE lo que tiene asignado (solo lectura).
+  const esGestor = alcance.esAdmin || alcance.esJefeLaboratorio || alcance.esGerenteControlCalidad;
   const soloLectura = !esGestor;
+  // Un JefeLaboratorio está limitado a SU zona (punto 12). Admin y Gerente de Control
+  // de Calidad: sin límite (ambas zonas).
+  const zonaGestor =
+    esGestor && !alcance.esAdmin && !alcance.esGerenteControlCalidad ? alcance.zona : null;
 
   const sp = await searchParams;
   const fecha = sp.fecha ?? ymd(new Date());
@@ -47,9 +52,13 @@ export default async function LaboratorioPage({
   const ini = new Date(y, m - 1, d, 0, 0, 0, 0);
   const fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
 
-  const [laboratoristasRaw, pedidos] = await Promise.all([
+  const [laboratoristasRaw, pedidos, plantasRaw, asigsPlanta] = await Promise.all([
     prisma.user.findMany({
-      where: { activo: true, roles: { some: { rol: "Laboratorista" } } },
+      where: {
+        activo: true,
+        roles: { some: { rol: "Laboratorista" } },
+        ...(zonaGestor ? { zona: zonaGestor } : {}),
+      },
       orderBy: { name: "asc" },
       select: { id: true, name: true, email: true, zona: true },
     }),
@@ -59,6 +68,8 @@ export default async function LaboratorioPage({
         estado_pedido: "Activo",
         // El Laboratorista solo ve SUS programas asignados.
         ...(soloLectura ? { asignacion_lab: { is: { laboratorista_id: userId } } } : {}),
+        // El JefeLaboratorio solo ve programas de su zona.
+        ...(zonaGestor ? { plantel: { zona: zonaGestor } } : {}),
       },
       select: {
         id: true,
@@ -70,12 +81,35 @@ export default async function LaboratorioPage({
         viajes: { where: { mixer_id: { not: null } }, select: SELECT_VIAJE_VENTANA },
       },
     }),
+    // Plantas para el control de calidad de salida (solo las del alcance del gestor).
+    esGestor
+      ? prisma.plantas.findMany({
+          where: zonaGestor ? { plantel: { zona: zonaGestor } } : {},
+          orderBy: [{ plantel: { nombre: "asc" } }, { nombre: "asc" }],
+          select: { id: true, nombre: true, plantel: { select: { nombre: true, zona: true } } },
+        })
+      : Promise.resolve([]),
+    // Asignaciones de laboratorista de salida de ese día.
+    prisma.asignaciones_laboratorista_planta.findMany({
+      where: { fecha: { gte: ini, lt: fin } },
+      select: { planta_id: true, laboratorista_id: true },
+    }),
   ]);
 
   const laboratoristas: LaboratoristaOpc[] = laboratoristasRaw.map((u) => ({
     id: u.id,
     nombre: u.name ?? u.email ?? "Laboratorista",
     zona: u.zona,
+  }));
+
+  // Filas de plantas para el control de calidad de salida (con su asignación actual).
+  const labPorPlanta = new Map(asigsPlanta.map((a) => [a.planta_id, a.laboratorista_id]));
+  const plantasAsignables: PlantaAsignable[] = plantasRaw.map((p) => ({
+    id: p.id,
+    nombre: p.nombre,
+    plantelNombre: p.plantel.nombre,
+    zona: p.plantel.zona,
+    labId: labPorPlanta.get(p.id) ?? "",
   }));
 
   // Una fila por programa (pedido) con su ventana; orden = hora programada (llegada).
@@ -155,6 +189,15 @@ export default async function LaboratorioPage({
           soloLectura={soloLectura}
         />
       </Card>
+      {esGestor && (
+        <Card className="mt-5 p-5">
+          <AsignacionPlantas
+            fecha={fecha}
+            plantas={plantasAsignables}
+            laboratoristas={laboratoristas}
+          />
+        </Card>
+      )}
     </>
   );
 }
