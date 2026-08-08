@@ -344,6 +344,59 @@ async function aplicarHoraCargaManual(plantelId: number, dia: Date): Promise<voi
   }
 }
 
+/**
+ * PRIORIDAD NUEVA (planta siempre cargando > minimizar viajes): elige el mejor mixer
+ * para el siguiente viaje ENTRE LOS DISPONIBLES, evaluando la mejor combinación solo
+ * contra lo que hay AHORA — nunca esperando a que regrese una capacidad "ideal".
+ *
+ *  1. Se calcula, por candidato, el inicio posible = max(pisoBase, disponible del mixer).
+ *  2. Se toma el conjunto que ARRANCA MÁS TEMPRANO (mínimo inicio): si algún mixer está
+ *     libre AHORA, ese conjunto son los libres ahora (nunca se espera). Si NINGUNO está
+ *     libre, es el/los que regresan primero (se espera al primero, de cualquier capacidad).
+ *  3. Dentro de ese conjunto, se prefiere CARGA LLENA (capacidad ≤ restante, la mayor);
+ *     si ninguna cabe llena (restante < capacidad mínima), la menor (carga parcial).
+ *     Desempate: propio antes que hub, luego el más ocioso (reparto de desgaste), luego id.
+ *
+ * Devuelve el mixer, el instante de inicio y la carga (m³) del viaje, o null si no hay
+ * ningún candidato (pedido queda "Sin cubrir").
+ */
+function elegirMixerDisponible(
+  candidatos: MetaMixer[],
+  dispEnMs: Map<number, number>,
+  pisoBaseMs: number,
+  restante: number,
+  cargaReducida: boolean,
+  reducidas: Map<number, number>,
+  plantelId: number,
+): { mixer: MetaMixer; inicioMs: number; carga: number; capacidad: number } | null {
+  if (candidatos.length === 0) return null;
+  const ev = candidatos.map((m) => {
+    const capacidad = capacidadPlaneacion(m.capacidad_m3, cargaReducida, reducidas);
+    const dispMs = dispEnMs.get(m.id) ?? 0;
+    const inicioMs = Math.max(pisoBaseMs, dispMs);
+    return { m, capacidad, dispMs, inicioMs, propio: m.plantel_base_id === plantelId ? 0 : 1 };
+  });
+  const minInicio = Math.min(...ev.map((e) => e.inicioMs));
+  const enElMasTemprano = ev.filter((e) => e.inicioMs === minInicio);
+  // Capacidad objetivo = la que la MEJOR COMBINACIÓN elegiría para el volumen que
+  // falta, pero SOLO entre las capacidades disponibles AHORA (las del conjunto que
+  // arranca más temprano). Así se preserva "minimizar viajes / evitar carga parcial
+  // evitable" (requisito 1) sin esperar una capacidad que aún no está libre.
+  const capsAhora = [...new Set(enElMasTemprano.map((e) => e.capacidad))];
+  const plan = planificarCombinacion(restante, capsAhora);
+  const capObjetivo = plan.viajes[0]?.capacidad ?? Math.max(...capsAhora);
+  const pool = enElMasTemprano.filter((e) => e.capacidad === capObjetivo);
+  const elegido = (pool.length ? pool : enElMasTemprano).sort(
+    (a, b) => a.propio - b.propio || a.dispMs - b.dispMs || a.m.id - b.m.id,
+  )[0];
+  return {
+    mixer: elegido.m,
+    inicioMs: elegido.inicioMs,
+    carga: Math.min(restante, elegido.capacidad),
+    capacidad: elegido.capacidad,
+  };
+}
+
 /** Cascada de UNA planta (bahía única): agenda los viajes cuyo `planta_id` es esta
  *  planta, en orden de atención. La usa `recalcularCascadaPlanta` para cada planta. */
 async function cascadaDeUnaPlanta(
@@ -441,205 +494,242 @@ async function cascadaDeUnaPlanta(
     ? Math.min(...viajes.map((v) => v.pedido.hora_solicitada.getTime()))
     : 0;
 
-  for (const v of viajes) {
-    const esFijo =
-      v.estado === ESTADO_VIAJE_COMPLETADO || v.ts_inicio_carga_real != null;
+  type ViajeCola = (typeof viajes)[number];
 
-    if (esFijo) {
-      if (v.hora_inicio_carga) {
-        ultimoInicioPorPedidoMs.set(v.pedido_id, v.hora_inicio_carga.getTime());
-      }
-      const finCarga =
-        v.hora_fin_carga ??
-        (v.hora_inicio_carga
-          ? sumarMinutos(
-              v.hora_inicio_carga,
-              planta.tiempo_alistamiento_min +
-                minutosDeCarga(v.volumen_asignado_m3, planta.capacidad_m3h),
-            )
-          : null);
-      if (finCarga && (!plantaLibreEn || finCarga > plantaLibreEn)) {
-        plantaLibreEn = finCarga;
-      }
-      if (v.mixer_id != null) {
-        const fin = (v.hora_regreso_planta ?? finCarga)?.getTime();
-        if (fin != null) {
-          dispEnMs.set(v.mixer_id, Math.max(dispEnMs.get(v.mixer_id) ?? 0, fin));
-        }
-      }
-      continue;
-    }
-
-    // Tiempo de transporte (ida): el override del pedido manda; si no, el del
-    // cliente (fusionado desde la antigua tabla rutas_estandar). El regreso se
-    // asume IGUAL a la ida. Null en ambos → default marcado visualmente.
-    const cli = v.pedido.cliente;
-    const transporteOverride = v.pedido.tiempo_transporte_min;
-    const transporteCliente = cli.tiempo_viaje_referencia_min;
-    const rutaPorDefecto = transporteOverride == null && transporteCliente == null;
-    const tViaje =
-      transporteOverride ?? transporteCliente ?? DEFAULT_TIEMPO_VIAJE_MIN;
-    const tRegreso = tViaje; // ida = regreso
-    // Tiempo de carga de este viaje (alistamiento + dosificación).
-    const cargaMin =
-      planta.tiempo_alistamiento_min +
-      minutosDeCarga(v.volumen_asignado_m3, planta.capacidad_m3h);
-    // Piso de inicio:
-    //  · Solo el PRIMER viaje de la cola (planta aún libre) se ancla por la
-    //    LLEGADA de jornada: inicio_carga = llegada − carga − salida − transporte.
-    //    El resto NO se ancla a su hora solicitada: fluye tras el anterior según
-    //    planta + disponibilidad de mixer.
-    //  · Si el pedido tiene frecuencia entre camiones, respeta esa separación
-    //    respecto al viaje anterior del MISMO pedido.
-    const freq = v.pedido.frecuencia_entre_camiones_min;
-    const previoMs = ultimoInicioPorPedidoMs.get(v.pedido_id);
-    const pisoFrecuenciaMs =
-      freq != null && previoMs != null ? previoMs + freq * 60000 : 0;
-    const backwardMs = (cargaMin + MIN_SALIDA_TRAS_CARGA + tViaje) * 60000;
-    // Ancla del inicio de carga:
-    //  · Pedido con HORA FIJA (hora_bloqueada): su llegada = hora_solicitada
-    //    exacta (piso duro) → inicio = hora_solicitada − transporte − carga. No se
-    //    empaqueta junto al resto; puede dejar un hueco (p. ej. suministro de tarde).
-    //  · Si no, solo el PRIMER viaje de la jornada se ancla al inicio de jornada.
-    const anclaMs = v.pedido.hora_bloqueada
-      ? v.pedido.hora_solicitada.getTime() - backwardMs
-      : plantaLibreEn == null
-        ? jornadaLlegadaMs - backwardMs
-        : 0;
-    const pisoMs = Math.max(anclaMs, pisoFrecuenciaMs);
-    const plantaLibreMs = plantaLibreEn?.getTime() ?? 0;
-
-    // Elegibles: mixers de la capacidad requerida. Si el viaje fue ajustado
-    // manualmente, conserva su mixer (aunque no esté entre los candidatos).
-    let elegibles: MetaMixer[];
-    if (v.ajustado_manualmente && v.mixer_id != null) {
-      const meta = metaTodos.get(v.mixer_id);
-      elegibles = meta ? [meta] : [];
-    } else {
-      // Empareja por la CAPACIDAD DE PLANEACIÓN del mixer (carga segura normal, o
-      // carga efectiva reducida si el pedido tiene `carga_reducida`): el viaje se
-      // planificó con ese valor y el mixer que lo sirve es el de esa capacidad.
-      elegibles = candidatos.filter(
-        (m) =>
-          capacidadPlaneacion(m.capacidad_m3, v.pedido.carga_reducida, reducidas) ===
-          v.capacidad_asignada_m3,
-      );
-    }
-
-    if (elegibles.length === 0) {
-      // Ninguna unidad de esa capacidad: queda sin cubrir (sin horario).
-      if (v.mixer_id != null || v.motivo_asignacion !== "Sin cubrir") {
-        cambios.push(v.id);
-      }
-      await prisma.viajes.update({
-        where: { id: v.id },
-        data: {
-          mixer_id: null,
-          motivo_asignacion: "Sin cubrir",
-          hora_inicio_carga: null,
-          hora_fin_carga: null,
-          hora_salida_planta: null,
-          hora_llegada_proyecto: null,
-          hora_inicio_descarga: null,
-          hora_fin_descarga: null,
-          hora_regreso_planta: null,
-        },
-      });
-      continue;
-    }
-
-    // Escoger el mejor mixer: propio antes que hub, luego el que arranca más
-    // temprano, luego el más "ocioso" (reparto de desgaste), luego id.
-    const evaluado = elegibles
-      .map((m) => {
-        const dispMs = dispEnMs.get(m.id) ?? 0;
-        const inicioMs = Math.max(plantaLibreMs, dispMs, pisoMs);
-        const propio = m.plantel_base_id === plantel.id ? 0 : 1;
-        return { m, dispMs, inicioMs, propio };
-      })
-      .sort(
-        (a, b) =>
-          a.propio - b.propio ||
-          a.inicioMs - b.inicioMs ||
-          a.dispMs - b.dispMs || // menor dispMs = lleva más tiempo libre
-          a.m.id - b.m.id,
-      )[0];
-
-    const mixer = evaluado.m;
-    const inicioCarga = new Date(evaluado.inicioMs);
-    const finCarga = sumarMinutos(inicioCarga, cargaMin);
+  // Horarios de un viaje a partir de su inicio de carga, volumen y tiempos del pedido.
+  const tiemposDe = (
+    inicioMs: number,
+    vol: number,
+    tViaje: number,
+    tRegreso: number,
+    tipoDescarga: string,
+  ) => {
+    const inicioCarga = new Date(inicioMs);
+    const finCarga = sumarMinutos(
+      inicioCarga,
+      planta.tiempo_alistamiento_min + minutosDeCarga(vol, planta.capacidad_m3h),
+    );
     const salidaPlanta = sumarMinutos(finCarga, MIN_SALIDA_TRAS_CARGA);
     const llegadaProyecto = sumarMinutos(salidaPlanta, tViaje);
     const inicioDescarga = llegadaProyecto;
-    const finDescarga = sumarMinutos(
-      inicioDescarga,
-      minutosDeDescarga(v.volumen_asignado_m3, v.pedido.tipo_descarga),
-    );
+    const finDescarga = sumarMinutos(inicioDescarga, minutosDeDescarga(vol, tipoDescarga));
     const regresoPlanta = sumarMinutos(finDescarga, tRegreso);
-
-    // La planta queda libre al terminar de cargar; el mixer, al regresar.
-    plantaLibreEn = finCarga;
-    dispEnMs.set(mixer.id, regresoPlanta.getTime());
-    ultimoInicioPorPedidoMs.set(v.pedido_id, inicioCarga.getTime());
-
-    // Procedencia: los ajustados (refuerzo, reasignación manual) conservan su
-    // motivo; los automáticos se marcan propio/préstamo según el plantel base.
-    const motivo = v.ajustado_manualmente
-      ? (v.motivo_asignacion ?? "Flota propia")
-      : mixer.plantel_base_id === plantel.id
-        ? "Flota propia"
-        : "Préstamo de zona";
-
-    const cambio =
-      v.mixer_id !== mixer.id ||
-      !igualFecha(v.hora_inicio_carga, inicioCarga) ||
-      !igualFecha(v.hora_regreso_planta, regresoPlanta);
-    if (cambio) cambios.push(v.id);
-
+    return { inicioCarga, finCarga, salidaPlanta, llegadaProyecto, inicioDescarga, finDescarga, regresoPlanta };
+  };
+  const cargaMinDe = (vol: number) =>
+    planta.tiempo_alistamiento_min + minutosDeCarga(vol, planta.capacidad_m3h);
+  const marcarSinCubrir = async (v: ViajeCola) => {
+    if (v.mixer_id != null || v.motivo_asignacion !== "Sin cubrir") cambios.push(v.id);
     await prisma.viajes.update({
       where: { id: v.id },
       data: {
-        mixer_id: mixer.id,
-        // Capacidad de planeacion (carga segura, o efectiva reducida si el pedido
-        // tiene carga_reducida). El despacho puede subir el volumen hasta la fisica.
-        capacidad_asignada_m3: capacidadPlaneacion(
-          mixer.capacidad_m3,
-          v.pedido.carga_reducida,
-          reducidas,
-        ),
-        motivo_asignacion: motivo,
-        // El motorista sigue al mixer solo en asignaciones automáticas (una
-        // reasignación/refuerzo manual ya fijó su propio operador).
-        ...(v.ajustado_manualmente
-          ? {}
-          : { operador_id: mixer.operador_asignado_id }),
-        hora_inicio_carga: inicioCarga,
-        hora_fin_carga: finCarga,
-        hora_salida_planta: salidaPlanta,
-        hora_llegada_proyecto: llegadaProyecto,
-        hora_inicio_descarga: inicioDescarga,
-        hora_fin_descarga: finDescarga,
-        hora_regreso_planta: regresoPlanta,
-        ruta_por_defecto: rutaPorDefecto,
+        mixer_id: null,
+        motivo_asignacion: "Sin cubrir",
+        hora_inicio_carga: null,
+        hora_fin_carga: null,
+        hora_salida_planta: null,
+        hora_llegada_proyecto: null,
+        hora_inicio_descarga: null,
+        hora_fin_descarga: null,
+        hora_regreso_planta: null,
       },
     });
+  };
+
+  let idx = 0;
+  while (idx < viajes.length) {
+    const v = viajes[idx];
+    const esFijo = v.estado === ESTADO_VIAJE_COMPLETADO || v.ts_inicio_carga_real != null;
+
+    // ── Viaje FIJO (ya inició/completó): ancla, no se re-agenda. ──
+    if (esFijo) {
+      if (v.hora_inicio_carga) ultimoInicioPorPedidoMs.set(v.pedido_id, v.hora_inicio_carga.getTime());
+      const finCargaFijo =
+        v.hora_fin_carga ??
+        (v.hora_inicio_carga ? sumarMinutos(v.hora_inicio_carga, cargaMinDe(v.volumen_asignado_m3)) : null);
+      if (finCargaFijo && (!plantaLibreEn || finCargaFijo > plantaLibreEn)) plantaLibreEn = finCargaFijo;
+      if (v.mixer_id != null) {
+        const fin = (v.hora_regreso_planta ?? finCargaFijo)?.getTime();
+        if (fin != null) dispEnMs.set(v.mixer_id, Math.max(dispEnMs.get(v.mixer_id) ?? 0, fin));
+      }
+      idx++;
+      continue;
+    }
+
+    const pedido = v.pedido;
+    const cli = pedido.cliente;
+    const transporteOverride = pedido.tiempo_transporte_min;
+    const transporteCliente = cli.tiempo_viaje_referencia_min;
+    const rutaPorDefecto = transporteOverride == null && transporteCliente == null;
+    const tViaje = transporteOverride ?? transporteCliente ?? DEFAULT_TIEMPO_VIAJE_MIN;
+    const tRegreso = tViaje;
+    const freq = pedido.frecuencia_entre_camiones_min;
+    const anclaDe = (backwardMs: number) =>
+      pedido.hora_bloqueada
+        ? pedido.hora_solicitada.getTime() - backwardMs
+        : plantaLibreEn == null
+          ? jornadaLlegadaMs - backwardMs
+          : 0;
+
+    // ── Viaje MANUAL (refuerzo/reasignación): conserva su mixer; un solo viaje. ──
+    if (v.ajustado_manualmente && v.mixer_id != null) {
+      const meta = metaTodos.get(v.mixer_id);
+      if (!meta) {
+        await marcarSinCubrir(v);
+        idx++;
+        continue;
+      }
+      const vol = v.volumen_asignado_m3;
+      const previoMs = ultimoInicioPorPedidoMs.get(pedido.id);
+      const pisoFrecuenciaMs = freq != null && previoMs != null ? previoMs + freq * 60000 : 0;
+      const backwardMs = (cargaMinDe(vol) + MIN_SALIDA_TRAS_CARGA + tViaje) * 60000;
+      const inicioMs = Math.max(
+        plantaLibreEn?.getTime() ?? 0,
+        dispEnMs.get(meta.id) ?? 0,
+        anclaDe(backwardMs),
+        pisoFrecuenciaMs,
+      );
+      const t = tiemposDe(inicioMs, vol, tViaje, tRegreso, pedido.tipo_descarga);
+      plantaLibreEn = t.finCarga;
+      dispEnMs.set(meta.id, t.regresoPlanta.getTime());
+      ultimoInicioPorPedidoMs.set(pedido.id, t.inicioCarga.getTime());
+      const cambio =
+        v.mixer_id !== meta.id ||
+        !igualFecha(v.hora_inicio_carga, t.inicioCarga) ||
+        !igualFecha(v.hora_regreso_planta, t.regresoPlanta);
+      if (cambio) cambios.push(v.id);
+      await prisma.viajes.update({
+        where: { id: v.id },
+        data: {
+          mixer_id: meta.id,
+          capacidad_asignada_m3: capacidadPlaneacion(meta.capacidad_m3, pedido.carga_reducida, reducidas),
+          motivo_asignacion: v.motivo_asignacion ?? "Flota propia",
+          hora_inicio_carga: t.inicioCarga,
+          hora_fin_carga: t.finCarga,
+          hora_salida_planta: t.salidaPlanta,
+          hora_llegada_proyecto: t.llegadaProyecto,
+          hora_inicio_descarga: t.inicioDescarga,
+          hora_fin_descarga: t.finDescarga,
+          hora_regreso_planta: t.regresoPlanta,
+          ruta_por_defecto: rutaPorDefecto,
+        },
+      });
+      idx++;
+      continue;
+    }
+
+    // ── CORRIDA AUTO: viajes consecutivos del MISMO pedido y mismo `es_adicion`. Se
+    //    asigna INCREMENTALMENTE: viaje por viaje se toma el mejor mixer DISPONIBLE
+    //    ahora (nunca se espera una capacidad ideal si hay otra libre). El nº de
+    //    viajes es dinámico: puede diferir del plan inicial. ──
+    const esAdicionRun = v.es_adicion;
+    const run: ViajeCola[] = [];
+    while (idx < viajes.length) {
+      const w = viajes[idx];
+      const wFijo = w.estado === ESTADO_VIAJE_COMPLETADO || w.ts_inicio_carga_real != null;
+      const wManual = w.ajustado_manualmente && w.mixer_id != null;
+      if (w.pedido_id !== pedido.id || w.es_adicion !== esAdicionRun || wFijo || wManual) break;
+      run.push(w);
+      idx++;
+    }
+
+    let restante = run.reduce((s, w) => s + w.volumen_asignado_m3, 0);
+    if (candidatos.length === 0) {
+      for (const w of run) await marcarSinCubrir(w);
+      continue;
+    }
+
+    interface TripPlan {
+      mixer: MetaMixer;
+      vol: number;
+      capacidad: number;
+      motivo: string;
+      t: ReturnType<typeof tiemposDe>;
+    }
+    const trips: TripPlan[] = [];
+    while (restante > 1e-6) {
+      const plantaLibreMs = plantaLibreEn?.getTime() ?? 0;
+      const previoMs = ultimoInicioPorPedidoMs.get(pedido.id);
+      const pisoFrecuenciaMs = freq != null && previoMs != null ? previoMs + freq * 60000 : 0;
+      const pisoBaseMs = Math.max(plantaLibreMs, pisoFrecuenciaMs);
+      const elegido = elegirMixerDisponible(
+        candidatos,
+        dispEnMs,
+        pisoBaseMs,
+        restante,
+        pedido.carga_reducida,
+        reducidas,
+        plantel.id,
+      );
+      if (!elegido) break;
+      const vol = elegido.carga;
+      const backwardMs = (cargaMinDe(vol) + MIN_SALIDA_TRAS_CARGA + tViaje) * 60000;
+      const inicioMs = Math.max(elegido.inicioMs, anclaDe(backwardMs));
+      const t = tiemposDe(inicioMs, vol, tViaje, tRegreso, pedido.tipo_descarga);
+      trips.push({
+        mixer: elegido.mixer,
+        vol,
+        capacidad: elegido.capacidad,
+        motivo: elegido.mixer.plantel_base_id === plantel.id ? "Flota propia" : "Préstamo de zona",
+        t,
+      });
+      plantaLibreEn = t.finCarga;
+      dispEnMs.set(elegido.mixer.id, t.regresoPlanta.getTime());
+      ultimoInicioPorPedidoMs.set(pedido.id, t.inicioCarga.getTime());
+      restante -= vol;
+    }
+
+    // Reconciliar las filas de la corrida con los viajes generados (update / create /
+    // delete): puede haber más o menos viajes que el plan inicial.
+    for (let k = 0; k < trips.length; k++) {
+      const tp = trips[k];
+      const datos = {
+        mixer_id: tp.mixer.id,
+        capacidad_asignada_m3: tp.capacidad,
+        volumen_asignado_m3: tp.vol,
+        motivo_asignacion: tp.motivo,
+        operador_id: tp.mixer.operador_asignado_id,
+        hora_inicio_carga: tp.t.inicioCarga,
+        hora_fin_carga: tp.t.finCarga,
+        hora_salida_planta: tp.t.salidaPlanta,
+        hora_llegada_proyecto: tp.t.llegadaProyecto,
+        hora_inicio_descarga: tp.t.inicioDescarga,
+        hora_fin_descarga: tp.t.finDescarga,
+        hora_regreso_planta: tp.t.regresoPlanta,
+        ruta_por_defecto: rutaPorDefecto,
+      };
+      if (k < run.length) {
+        const w = run[k];
+        const cambio =
+          w.mixer_id !== tp.mixer.id ||
+          w.volumen_asignado_m3 !== tp.vol ||
+          !igualFecha(w.hora_inicio_carga, tp.t.inicioCarga) ||
+          !igualFecha(w.hora_regreso_planta, tp.t.regresoPlanta);
+        if (cambio) cambios.push(w.id);
+        await prisma.viajes.update({ where: { id: w.id }, data: datos });
+      } else {
+        const creado = await prisma.viajes.create({
+          data: {
+            pedido_id: pedido.id,
+            planta_id: plantaId,
+            hora_solicitada: pedido.hora_solicitada,
+            estado: "Programado",
+            estado_confirmacion: run[0]?.estado_confirmacion ?? "Pendiente",
+            es_adicion: esAdicionRun,
+            ajustado_manualmente: false,
+            ...datos,
+          },
+        });
+        cambios.push(creado.id);
+      }
+    }
+    // Filas sobrantes (el resultado usó menos viajes que el plan inicial): eliminar.
+    for (let k = trips.length; k < run.length; k++) {
+      await prisma.viajes.delete({ where: { id: run[k].id } });
+    }
   }
 
   return cambios;
-}
-
-/** Plan calculado (sin comprometer) de un viaje: mixer elegido + horarios. */
-interface PlanCascada {
-  mixer: MetaMixer;
-  inicioCarga: Date;
-  finCarga: Date;
-  salida: Date;
-  llegada: Date;
-  inicioDescarga: Date;
-  finDescarga: Date;
-  regreso: Date;
-  motivo: string;
-  rutaPorDefecto: boolean;
 }
 
 /**
@@ -752,108 +842,24 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
     }
   };
 
-  // Calcula el plan (mixer + horarios) de un viaje no-fijo SIN comprometerlo. Devuelve
-  // null si no hay mixer de esa capacidad (queda "Sin cubrir").
-  const calcularPlan = (v: ViajeCola, e: EstadoPlanta): PlanCascada | null => {
-    const cli = v.pedido.cliente;
-    const transporteOverride = v.pedido.tiempo_transporte_min;
-    const transporteCliente = cli.tiempo_viaje_referencia_min;
-    const rutaPorDefecto = transporteOverride == null && transporteCliente == null;
-    const tViaje = transporteOverride ?? transporteCliente ?? DEFAULT_TIEMPO_VIAJE_MIN;
-    const tRegreso = tViaje;
-    const cargaMin =
-      e.planta.tiempo_alistamiento_min +
-      minutosDeCarga(v.volumen_asignado_m3, e.planta.capacidad_m3h);
-    const freq = v.pedido.frecuencia_entre_camiones_min;
-    const previoMs = ultimoInicioPorPedidoMs.get(v.pedido_id);
-    const pisoFrecuenciaMs = freq != null && previoMs != null ? previoMs + freq * 60000 : 0;
-    const backwardMs = (cargaMin + MIN_SALIDA_TRAS_CARGA + tViaje) * 60000;
-    const anclaMs = v.pedido.hora_bloqueada
-      ? v.pedido.hora_solicitada.getTime() - backwardMs
-      : e.plantaLibreEn == null
-        ? e.jornadaLlegadaMs - backwardMs
-        : 0;
-    const pisoMs = Math.max(anclaMs, pisoFrecuenciaMs);
-    const plantaLibreMs = e.plantaLibreEn?.getTime() ?? 0;
-
-    let elegibles: MetaMixer[];
-    if (v.ajustado_manualmente && v.mixer_id != null) {
-      const meta = metaTodos.get(v.mixer_id);
-      elegibles = meta ? [meta] : [];
-    } else {
-      elegibles = candidatos.filter(
-        (m) =>
-          capacidadPlaneacion(m.capacidad_m3, v.pedido.carga_reducida, reducidas) ===
-          v.capacidad_asignada_m3,
-      );
-    }
-    if (elegibles.length === 0) return null;
-
-    const evaluado = elegibles
-      .map((m) => {
-        const dispMs = dispEnMs.get(m.id) ?? 0;
-        const inicioMs = Math.max(plantaLibreMs, dispMs, pisoMs);
-        const propio = m.plantel_base_id === plantel.id ? 0 : 1;
-        return { m, dispMs, inicioMs, propio };
-      })
-      .sort(
-        (a, b) =>
-          a.propio - b.propio ||
-          a.inicioMs - b.inicioMs ||
-          a.dispMs - b.dispMs ||
-          a.m.id - b.m.id,
-      )[0];
-
-    const mixer = evaluado.m;
-    const inicioCarga = new Date(evaluado.inicioMs);
-    const finCarga = sumarMinutos(inicioCarga, cargaMin);
-    const salida = sumarMinutos(finCarga, MIN_SALIDA_TRAS_CARGA);
-    const llegada = sumarMinutos(salida, tViaje);
-    const inicioDescarga = llegada;
-    const finDescarga = sumarMinutos(
-      inicioDescarga,
-      minutosDeDescarga(v.volumen_asignado_m3, v.pedido.tipo_descarga),
-    );
-    const regreso = sumarMinutos(finDescarga, tRegreso);
-    const motivo = v.ajustado_manualmente
-      ? (v.motivo_asignacion ?? "Flota propia")
-      : mixer.plantel_base_id === plantel.id
-        ? "Flota propia"
-        : "Préstamo de zona";
-    return { mixer, inicioCarga, finCarga, salida, llegada, inicioDescarga, finDescarga, regreso, motivo, rutaPorDefecto };
-  };
-
-  // Comprometer el plan: escribe el viaje y avanza el reloj de la planta y del mixer.
-  const comprometerPlan = async (v: ViajeCola, plan: PlanCascada, e: EstadoPlanta) => {
-    e.plantaLibreEn = plan.finCarga;
-    dispEnMs.set(plan.mixer.id, plan.regreso.getTime());
-    ultimoInicioPorPedidoMs.set(v.pedido_id, plan.inicioCarga.getTime());
-    const cambio =
-      v.mixer_id !== plan.mixer.id ||
-      !igualFecha(v.hora_inicio_carga, plan.inicioCarga) ||
-      !igualFecha(v.hora_regreso_planta, plan.regreso);
-    if (cambio) cambios.push(v.id);
-    await prisma.viajes.update({
-      where: { id: v.id },
-      data: {
-        mixer_id: plan.mixer.id,
-        capacidad_asignada_m3: capacidadPlaneacion(
-          plan.mixer.capacidad_m3,
-          v.pedido.carga_reducida,
-          reducidas,
-        ),
-        motivo_asignacion: plan.motivo,
-        ...(v.ajustado_manualmente ? {} : { operador_id: plan.mixer.operador_asignado_id }),
-        hora_inicio_carga: plan.inicioCarga,
-        hora_fin_carga: plan.finCarga,
-        hora_salida_planta: plan.salida,
-        hora_llegada_proyecto: plan.llegada,
-        hora_inicio_descarga: plan.inicioDescarga,
-        hora_fin_descarga: plan.finDescarga,
-        hora_regreso_planta: plan.regreso,
-        ruta_por_defecto: plan.rutaPorDefecto,
-      },
-    });
+  const cargaMinDe = (e: EstadoPlanta, vol: number) =>
+    e.planta.tiempo_alistamiento_min + minutosDeCarga(vol, e.planta.capacidad_m3h);
+  const tiemposDe = (
+    e: EstadoPlanta,
+    inicioMs: number,
+    vol: number,
+    tViaje: number,
+    tRegreso: number,
+    tipoDescarga: string,
+  ) => {
+    const inicioCarga = new Date(inicioMs);
+    const finCarga = sumarMinutos(inicioCarga, cargaMinDe(e, vol));
+    const salidaPlanta = sumarMinutos(finCarga, MIN_SALIDA_TRAS_CARGA);
+    const llegadaProyecto = sumarMinutos(salidaPlanta, tViaje);
+    const inicioDescarga = llegadaProyecto;
+    const finDescarga = sumarMinutos(inicioDescarga, minutosDeDescarga(vol, tipoDescarga));
+    const regresoPlanta = sumarMinutos(finDescarga, tRegreso);
+    return { inicioCarga, finCarga, salidaPlanta, llegadaProyecto, inicioDescarga, finDescarga, regresoPlanta };
   };
 
   const marcarSinCubrir = async (v: ViajeCola) => {
@@ -874,83 +880,251 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
     });
   };
 
-  // Re-ancla un plan a un nuevo inicio de carga, desplazando todos sus horarios (para
-  // sincronizar el arranque de dos plantas en carga simultánea).
-  const reanclarPlan = (plan: PlanCascada, nuevoInicioMs: number): PlanCascada => {
-    const delta = nuevoInicioMs - plan.inicioCarga.getTime();
-    if (delta === 0) return plan;
-    const s = (d: Date) => new Date(d.getTime() + delta);
-    return {
-      ...plan,
-      inicioCarga: s(plan.inicioCarga),
-      finCarga: s(plan.finCarga),
-      salida: s(plan.salida),
-      llegada: s(plan.llegada),
-      inicioDescarga: s(plan.inicioDescarga),
-      finDescarga: s(plan.finDescarga),
-      regreso: s(plan.regreso),
-    };
+  // Estado de la corrida (unidad de trabajo) activa por planta: la asignación es
+  // INCREMENTAL viaje por viaje (mejor mixer disponible AHORA), con nº de viajes
+  // dinámico → se reciclan/crean/borran filas al reconciliar.
+  interface RunState {
+    rows: ViajeCola[];
+    restante: number;
+    emitidos: number;
+    esAdicion: boolean;
+    pedido: ViajeCola["pedido"];
+    tViaje: number;
+    tRegreso: number;
+    rutaPorDefecto: boolean;
+    freq: number | null;
+    manualMixerId: number | null;
+  }
+  const runPorPlanta = new Map<number, RunState | null>();
+  for (const e of estados) runPorPlanta.set(e.planta.id, null);
+
+  const ctxPedido = (pedido: ViajeCola["pedido"]) => {
+    const transporteOverride = pedido.tiempo_transporte_min;
+    const transporteCliente = pedido.cliente.tiempo_viaje_referencia_min;
+    const rutaPorDefecto = transporteOverride == null && transporteCliente == null;
+    const tViaje = transporteOverride ?? transporteCliente ?? DEFAULT_TIEMPO_VIAJE_MIN;
+    return { tViaje, tRegreso: tViaje, rutaPorDefecto, freq: pedido.frecuencia_entre_camiones_min };
   };
 
-  // Pasada MERGED: en cada vuelta se descartan las cabezas fijas y sin-cubrir, y de las
-  // cabezas restantes se agenda la que puede arrancar más temprano (desempate por id de
-  // planta). Cada vuelta avanza al menos una cola → termina.
+  // Prepara la siguiente UNIDAD de una planta: descarta fijas (sembrando relojes) y
+  // arma la corrida auto (o de un viaje manual) que sigue en la cola.
+  const prepararUnidad = (e: EstadoPlanta) => {
+    while (e.ptr < e.viajes.length && esFijo(e.viajes[e.ptr])) {
+      procesarFijo(e.viajes[e.ptr], e);
+      e.ptr++;
+    }
+    if (e.ptr >= e.viajes.length) {
+      runPorPlanta.set(e.planta.id, null);
+      return;
+    }
+    const head = e.viajes[e.ptr];
+    const c = ctxPedido(head.pedido);
+    if (head.ajustado_manualmente && head.mixer_id != null) {
+      runPorPlanta.set(e.planta.id, {
+        rows: [head],
+        restante: head.volumen_asignado_m3,
+        emitidos: 0,
+        esAdicion: head.es_adicion,
+        pedido: head.pedido,
+        ...c,
+        manualMixerId: head.mixer_id,
+      });
+      e.ptr++;
+      return;
+    }
+    const esAd = head.es_adicion;
+    const rows: ViajeCola[] = [];
+    while (e.ptr < e.viajes.length) {
+      const w = e.viajes[e.ptr];
+      const wManual = w.ajustado_manualmente && w.mixer_id != null;
+      if (w.pedido_id !== head.pedido_id || w.es_adicion !== esAd || esFijo(w) || wManual) break;
+      rows.push(w);
+      e.ptr++;
+    }
+    runPorPlanta.set(e.planta.id, {
+      rows,
+      restante: rows.reduce((s, w) => s + w.volumen_asignado_m3, 0),
+      emitidos: 0,
+      esAdicion: esAd,
+      pedido: head.pedido,
+      ...c,
+      manualMixerId: null,
+    });
+  };
+
+  interface TripPlan {
+    e: EstadoPlanta;
+    run: RunState;
+    mixer: MetaMixer;
+    vol: number;
+    capacidad: number;
+    motivo: string;
+    t: ReturnType<typeof tiemposDe>;
+  }
+
+  // Siguiente viaje de una corrida SIN comprometer. null → sin cubrir (sin candidato).
+  const siguienteTrip = (e: EstadoPlanta, run: RunState): TripPlan | null => {
+    const plantaLibreMs = e.plantaLibreEn?.getTime() ?? 0;
+    const previoMs = ultimoInicioPorPedidoMs.get(run.pedido.id);
+    const pisoFrecuenciaMs = run.freq != null && previoMs != null ? previoMs + run.freq * 60000 : 0;
+    const pisoBaseMs = Math.max(plantaLibreMs, pisoFrecuenciaMs);
+    const anclaDe = (backwardMs: number) =>
+      run.pedido.hora_bloqueada
+        ? run.pedido.hora_solicitada.getTime() - backwardMs
+        : e.plantaLibreEn == null
+          ? e.jornadaLlegadaMs - backwardMs
+          : 0;
+
+    let mixer: MetaMixer;
+    let vol: number;
+    let capacidad: number;
+    let inicioMs: number;
+    if (run.manualMixerId != null) {
+      const meta = metaTodos.get(run.manualMixerId);
+      if (!meta) return null;
+      mixer = meta;
+      vol = run.restante;
+      capacidad = capacidadPlaneacion(meta.capacidad_m3, run.pedido.carga_reducida, reducidas);
+      const backwardMs = (cargaMinDe(e, vol) + MIN_SALIDA_TRAS_CARGA + run.tViaje) * 60000;
+      inicioMs = Math.max(pisoBaseMs, dispEnMs.get(meta.id) ?? 0, anclaDe(backwardMs));
+    } else {
+      const elegido = elegirMixerDisponible(
+        candidatos,
+        dispEnMs,
+        pisoBaseMs,
+        run.restante,
+        run.pedido.carga_reducida,
+        reducidas,
+        plantel.id,
+      );
+      if (!elegido) return null;
+      mixer = elegido.mixer;
+      vol = elegido.carga;
+      capacidad = elegido.capacidad;
+      const backwardMs = (cargaMinDe(e, vol) + MIN_SALIDA_TRAS_CARGA + run.tViaje) * 60000;
+      inicioMs = Math.max(elegido.inicioMs, anclaDe(backwardMs));
+    }
+    const t = tiemposDe(e, inicioMs, vol, run.tViaje, run.tRegreso, run.pedido.tipo_descarga);
+    const motivo =
+      run.manualMixerId != null
+        ? (run.rows[run.emitidos]?.motivo_asignacion ?? "Flota propia")
+        : mixer.plantel_base_id === plantel.id
+          ? "Flota propia"
+          : "Préstamo de zona";
+    return { e, run, mixer, vol, capacidad, motivo, t };
+  };
+
+  // Comprometer un viaje: reconcilia la fila (recicla / crea) y avanza los relojes.
+  const comprometer = async (tp: TripPlan) => {
+    const { e, run } = tp;
+    e.plantaLibreEn = tp.t.finCarga;
+    dispEnMs.set(tp.mixer.id, tp.t.regresoPlanta.getTime());
+    ultimoInicioPorPedidoMs.set(run.pedido.id, tp.t.inicioCarga.getTime());
+    const esManual = run.manualMixerId != null;
+    const datos = {
+      mixer_id: tp.mixer.id,
+      capacidad_asignada_m3: tp.capacidad,
+      volumen_asignado_m3: tp.vol,
+      motivo_asignacion: tp.motivo,
+      ...(esManual ? {} : { operador_id: tp.mixer.operador_asignado_id }),
+      hora_inicio_carga: tp.t.inicioCarga,
+      hora_fin_carga: tp.t.finCarga,
+      hora_salida_planta: tp.t.salidaPlanta,
+      hora_llegada_proyecto: tp.t.llegadaProyecto,
+      hora_inicio_descarga: tp.t.inicioDescarga,
+      hora_fin_descarga: tp.t.finDescarga,
+      hora_regreso_planta: tp.t.regresoPlanta,
+      ruta_por_defecto: run.rutaPorDefecto,
+    };
+    if (run.emitidos < run.rows.length) {
+      const w = run.rows[run.emitidos];
+      const cambio =
+        w.mixer_id !== tp.mixer.id ||
+        w.volumen_asignado_m3 !== tp.vol ||
+        !igualFecha(w.hora_inicio_carga, tp.t.inicioCarga) ||
+        !igualFecha(w.hora_regreso_planta, tp.t.regresoPlanta);
+      if (cambio) cambios.push(w.id);
+      await prisma.viajes.update({ where: { id: w.id }, data: datos });
+    } else {
+      const creado = await prisma.viajes.create({
+        data: {
+          pedido_id: run.pedido.id,
+          planta_id: e.planta.id,
+          hora_solicitada: run.pedido.hora_solicitada,
+          estado: "Programado",
+          estado_confirmacion: run.rows[0]?.estado_confirmacion ?? "Pendiente",
+          es_adicion: run.esAdicion,
+          ajustado_manualmente: false,
+          ...datos,
+        },
+      });
+      cambios.push(creado.id);
+    }
+    run.emitidos++;
+    run.restante -= tp.vol;
+  };
+
+  // Cierra una corrida: borra las filas sobrantes (menos viajes que el plan inicial).
+  const cerrarRun = async (e: EstadoPlanta, run: RunState) => {
+    for (let k = run.emitidos; k < run.rows.length; k++) {
+      await prisma.viajes.delete({ where: { id: run.rows[k].id } });
+    }
+    runPorPlanta.set(e.planta.id, null);
+  };
+
+  // Pasada MERGED trip-driven: en cada vuelta se calcula el siguiente viaje de la
+  // corrida activa de cada planta y se agenda el que arranca más temprano (así ambas
+  // plantas cargan en paralelo compartiendo la flota). Cada vuelta comete al menos un
+  // viaje o marca sin-cubrir → termina.
   for (;;) {
-    // Descargar cabezas fijas (no compiten; solo siembran relojes).
     for (const e of estados) {
-      while (e.ptr < e.viajes.length && esFijo(e.viajes[e.ptr])) {
-        procesarFijo(e.viajes[e.ptr], e);
-        e.ptr++;
-      }
+      if (runPorPlanta.get(e.planta.id) == null && e.ptr < e.viajes.length) prepararUnidad(e);
     }
-    // Calcular el plan de cada cabeza no-fija; comprometer las "Sin cubrir" al vuelo.
-    const candidatosPaso: { e: EstadoPlanta; v: ViajeCola; plan: PlanCascada }[] = [];
+    const pendientes: TripPlan[] = [];
     for (const e of estados) {
-      if (e.ptr >= e.viajes.length) continue;
-      const v = e.viajes[e.ptr];
-      const plan = calcularPlan(v, e);
-      if (!plan) {
-        await marcarSinCubrir(v);
-        e.ptr++;
+      const run = runPorPlanta.get(e.planta.id);
+      if (!run || run.restante <= 1e-6) continue;
+      const tp = siguienteTrip(e, run);
+      if (!tp) {
+        for (let k = run.emitidos; k < run.rows.length; k++) await marcarSinCubrir(run.rows[k]);
+        runPorPlanta.set(e.planta.id, null);
       } else {
-        candidatosPaso.push({ e, v, plan });
+        pendientes.push(tp);
       }
     }
-    if (candidatosPaso.length === 0) {
-      if (estados.every((e) => e.ptr >= e.viajes.length)) break;
-      continue; // solo hubo fijas/sin-cubrir este paso; re-descargar
+    if (pendientes.length === 0) {
+      if (estados.every((e) => e.ptr >= e.viajes.length && runPorPlanta.get(e.planta.id) == null)) break;
+      continue; // solo hubo fijas/sin-cubrir este paso
     }
-    candidatosPaso.sort(
-      (a, b) => a.plan.inicioCarga.getTime() - b.plan.inicioCarga.getTime() || a.e.planta.id - b.e.planta.id,
+    pendientes.sort(
+      (a, b) => a.t.inicioCarga.getTime() - b.t.inicioCarga.getTime() || a.e.planta.id - b.e.planta.id,
     );
-    const elegido = candidatosPaso[0];
+    const elegido = pendientes[0];
     // CARGA SIMULTÁNEA: si el pedido la pidió y hay un viaje del MISMO pedido listo en
-    // la OTRA planta, ambos arrancan a la MISMA hora (la más tardía de las dos, para
-    // que ninguno cargue antes de que el otro pueda). Se re-anclan a esa hora.
-    const hermano = elegido.v.pedido.carga_simultanea
-      ? candidatosPaso.find((c) => c !== elegido && c.v.pedido_id === elegido.v.pedido_id)
+    // la OTRA planta, ambos arrancan a la misma hora (la más tardía de las dos).
+    const hermano = elegido.run.pedido.carga_simultanea
+      ? pendientes.find((c) => c !== elegido && c.run.pedido.id === elegido.run.pedido.id)
       : undefined;
     if (hermano) {
-      const T = Math.max(
-        elegido.plan.inicioCarga.getTime(),
-        hermano.plan.inicioCarga.getTime(),
-      );
-      await comprometerPlan(elegido.v, reanclarPlan(elegido.plan, T), elegido.e);
-      elegido.e.ptr++;
-      // Recalcular el hermano con la flota ya actualizada (evita doble reserva del
-      // mismo mixer); arranca a T si su mixer lo permite, si no lo más pronto posible.
-      const planH = calcularPlan(hermano.v, hermano.e);
-      if (planH) {
-        const th = Math.max(T, planH.inicioCarga.getTime());
-        await comprometerPlan(hermano.v, reanclarPlan(planH, th), hermano.e);
+      const T = Math.max(elegido.t.inicioCarga.getTime(), hermano.t.inicioCarga.getTime());
+      elegido.t = tiemposDe(elegido.e, T, elegido.vol, elegido.run.tViaje, elegido.run.tRegreso, elegido.run.pedido.tipo_descarga);
+      await comprometer(elegido);
+      if (elegido.run.restante <= 1e-6) await cerrarRun(elegido.e, elegido.run);
+      // Recalcular el hermano con la flota ya actualizada (evita doble reserva).
+      const tp2 = siguienteTrip(hermano.e, hermano.run);
+      if (tp2) {
+        const th = Math.max(T, tp2.t.inicioCarga.getTime());
+        tp2.t = tiemposDe(tp2.e, th, tp2.vol, tp2.run.tViaje, tp2.run.tRegreso, tp2.run.pedido.tipo_descarga);
+        await comprometer(tp2);
+        if (tp2.run.restante <= 1e-6) await cerrarRun(tp2.e, tp2.run);
       } else {
-        await marcarSinCubrir(hermano.v);
+        for (let k = hermano.run.emitidos; k < hermano.run.rows.length; k++) await marcarSinCubrir(hermano.run.rows[k]);
+        runPorPlanta.set(hermano.e.planta.id, null);
       }
-      hermano.e.ptr++;
       continue;
     }
-    await comprometerPlan(elegido.v, elegido.plan, elegido.e);
-    elegido.e.ptr++;
+    await comprometer(elegido);
+    if (elegido.run.restante <= 1e-6) await cerrarRun(elegido.e, elegido.run);
   }
 
   return cambios;
