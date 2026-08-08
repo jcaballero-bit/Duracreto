@@ -10,6 +10,10 @@ import { AutoRefresh } from "../components/auto-refresh";
 import { Filtros } from "./filtros";
 import { GanttRecursos, type FilaGantt, type SeccionGantt } from "./gantt-recursos";
 import { NuevoPedidoModal } from "./nuevo-pedido-modal";
+import { VistaProgramacion } from "./vista-toggle";
+import type { ClienteCard, EstadoCliente, PlantaMedidor, PlantelSimple } from "./vista-simple";
+import { calcularHuecos } from "@/lib/motor/organizador";
+import { leerMargenHueco } from "@/lib/motor/config-runtime";
 import { PendientesDelDia, type PendienteVista } from "./pendientes-panel";
 import {
   TablaPedidos,
@@ -498,6 +502,121 @@ export default async function ProgramacionPage({
   ];
   const hayGantt = seccionesGantt.some((s) => s.filas.some((f) => f.barras.length > 0));
 
+  // ── Datos de la VISTA SIMPLE (medidores + tarjetas de cliente + sugerencia) ──
+  const JORNADA_MIN_SIMPLE = 10 * 60; // jornada operativa estándar (10 h) para el %
+  const aperturaMsSimple = new Date(y, m - 1, d, 7, 0, 0, 0).getTime();
+  const cierreMsSimple = aperturaMsSimple + 14 * 3_600_000;
+  const margenHuecoSimple = await leerMargenHueco();
+  const minEntre = (a: Date | null, b: Date | null) =>
+    a && b ? Math.max(0, (b.getTime() - a.getTime()) / 60000) : 0;
+
+  const rawPorPlantel = new Map<number, typeof pedidos>();
+  for (const p of pedidos) {
+    const arr = rawPorPlantel.get(p.plantel_id);
+    if (arr) arr.push(p);
+    else rawPorPlantel.set(p.plantel_id, [p]);
+  }
+
+  const plantelesSimple: PlantelSimple[] = planteles
+    .filter((pl) => rawPorPlantel.has(pl.id))
+    .sort((a, b) => compararPlanteles(a.nombre, b.nombre))
+    .map((pl) => {
+      const suyos = rawPorPlantel.get(pl.id)!;
+      const nombrePlanta = (id: number | null) =>
+        pl.plantas.find((x) => x.id === id)?.nombre ?? "—";
+
+      // Medidor de capacidad por planta (minutos de carga ocupados / jornada).
+      const plantas: (PlantaMedidor & { ocupados: { inicioMs: number; finMs: number }[] })[] =
+        pl.plantas.map((planta) => {
+          let busy = 0;
+          const ocupados: { inicioMs: number; finMs: number }[] = [];
+          for (const p of suyos) {
+            for (const v of p.viajes) {
+              if (v.planta_id !== planta.id || !v.hora_inicio_carga || !v.hora_fin_carga) continue;
+              busy += minEntre(v.hora_inicio_carga, v.hora_fin_carga);
+              ocupados.push({
+                inicioMs: v.hora_inicio_carga.getTime(),
+                finMs: v.hora_fin_carga.getTime(),
+              });
+            }
+          }
+          return {
+            nombre: planta.nombre,
+            ocupacionPct: (busy / JORNADA_MIN_SIMPLE) * 100,
+            ocupados,
+          };
+        });
+
+      // Tarjetas de cliente en lenguaje simple (ordenadas por orden_dia).
+      const clientes: ClienteCard[] = [...suyos]
+        .sort(
+          (a, b) =>
+            (a.orden_dia ?? 1e9) - (b.orden_dia ?? 1e9) ||
+            a.hora_solicitada.getTime() - b.hora_solicitada.getTime(),
+        )
+        .map((p) => {
+          const conMixer = p.viajes.filter((v) => v.mixer_id != null);
+          const sinCubrir =
+            p.viajes.some((v) => v.motivo_asignacion === "Sin cubrir") || conMixer.length === 0;
+          const confirmado =
+            conMixer.length > 0 && conMixer.every((v) => v.estado_confirmacion === "Confirmado");
+          const estado: EstadoCliente = sinCubrir ? "danger" : confirmado ? "ok" : "warn";
+          const frase = sinCubrir
+            ? "Esto necesita tu atención: falta flota para cubrir todo el volumen."
+            : confirmado
+              ? "Va a tiempo, ya confirmado por el asesor."
+              : "Programado; falta que el asesor lo confirme.";
+          return {
+            pedidoId: p.id,
+            orden: p.orden_dia ?? 0,
+            empresa: p.cliente.empresa,
+            proyecto: p.cliente.proyecto ?? "",
+            plantaNombre: nombrePlanta(p.viajes[0]?.planta_id ?? p.planta_id),
+            estado,
+            frase,
+            horaTxt: fmtHM(horaLlegadaMin(p.viajes)),
+          };
+        });
+
+      // Sugerencia: si hay proyecciones pendientes para este plantel y un hueco
+      // aprovechable entre entregas, se ofrece en lenguaje llano.
+      const pendientesPl = pendientes.filter(
+        (pe) => pe.plantelId === pl.id || pe.plantelId == null,
+      );
+      let sugerencia: string | null = null;
+      if (pendientesPl.length > 0) {
+        let mejor: { planta: string; ini: number; fin: number; dur: number } | null = null;
+        for (const planta of plantas) {
+          for (const h of calcularHuecos(
+            planta.ocupados,
+            aperturaMsSimple,
+            cierreMsSimple,
+            margenHuecoSimple,
+          )) {
+            if (h.finMs >= cierreMsSimple) continue; // la cola no es "hueco entre entregas"
+            if (!mejor || h.durMin > mejor.dur) {
+              mejor = { planta: planta.nombre, ini: h.inicioMs, fin: h.finMs, dur: h.durMin };
+            }
+          }
+        }
+        if (mejor) {
+          sugerencia =
+            `Podemos meter a ${pendientesPl[0].empresa} sin afectar a nadie más: ` +
+            `cabe en ${mejor.planta}, entre ${fmtHM(new Date(mejor.ini))} y ` +
+            `${fmtHM(new Date(mejor.fin))} (${mejor.dur} min libres).`;
+        }
+      }
+
+      return {
+        plantelId: pl.id,
+        nombre: pl.nombre,
+        zona: pl.zona,
+        plantas: plantas.map(({ nombre, ocupacionPct }) => ({ nombre, ocupacionPct })),
+        clientes,
+        sugerencia,
+      };
+    });
+
   return (
     <>
       <AutoRefresh />
@@ -526,69 +645,87 @@ export default async function ProgramacionPage({
       />
 
       {puedeEditar && (
-        <PendientesDelDia pendientes={pendientes} opciones={opciones} fecha={fecha} />
-      )}
-
-      <Card className="p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-ink">Programa del día por plantel</h2>
-          <span className="text-sm text-muted">
-            Total general:{" "}
-            <span className="font-bold text-ink">{totalGeneral.toFixed(1)} m³</span>
-          </span>
+        <div id="pendientes-por-programar">
+          <PendientesDelDia pendientes={pendientes} opciones={opciones} fecha={fecha} />
         </div>
-
-        {grupos.size === 0 ? (
-          <p className="py-8 text-center text-sm text-muted">
-            No hay pedidos para esta fecha.
-            {puedeEditar && (
-              <>
-                {" "}
-                Usa <strong>+ Nuevo pedido</strong> para crear uno.
-              </>
-            )}
-          </p>
-        ) : (
-          <div className="space-y-6">
-            {[...grupos.values()]
-              .sort((a, b) => compararPlanteles(a.nombre, b.nombre))
-              .map((g) => (
-              <div key={g.nombre}>
-                <div className="flex items-center justify-between rounded-t-lg bg-content px-3 py-2">
-                  <div className="font-semibold text-ink">
-                    {g.nombre}{" "}
-                    <span className="font-normal text-muted">({g.zona})</span>
-                  </div>
-                  <div className="text-sm text-ink">
-                    Total plantel:{" "}
-                    <span className="font-bold">{g.total.toFixed(1)} m³</span>{" "}
-                    <span className="text-muted">· {g.pedidos.length} pedido(s)</span>
-                  </div>
-                </div>
-                <TablaPedidos
-                  pedidos={g.pedidos}
-                  opciones={opciones}
-                  puedeEditar={puedeEditar}
-                  puedeAgregarQuitar={puedeAgregarQuitar}
-                  esAdmin={alcance.esAdmin}
-                  permitirHoraCargaManual={PERMITIR_HORA_CARGA_MANUAL}
-                />
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
-
-      {hayGantt && (
-        <Card className="mt-5 p-5">
-          <h2 className="mb-1 text-lg font-semibold text-ink">Línea de tiempo del día (recursos)</h2>
-          <p className="mb-4 text-sm text-muted">
-            Plantas, mixers y bombas en el mismo eje de horas. Las líneas verticales marcan
-            cada hora en punto para ver de un vistazo los tiempos muertos entre bloques.
-          </p>
-          <GanttRecursos secciones={seccionesGantt} />
-        </Card>
       )}
+
+      {/* Vista SIMPLE por defecto; el "Modo avanzado" (tablas + Gantt) va como
+          `avanzado` y su preferencia se recuerda en el navegador. */}
+      <VistaProgramacion
+        plantelesSimple={plantelesSimple}
+        fecha={fecha}
+        puedeOrganizar={puedeEditar}
+        puedeReordenar={puedeEditar}
+        puedeAvanzado
+        avanzado={
+          <>
+            <Card className="p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-ink">Programa del día por plantel</h2>
+                <span className="text-sm text-muted">
+                  Total general:{" "}
+                  <span className="font-bold text-ink">{totalGeneral.toFixed(1)} m³</span>
+                </span>
+              </div>
+
+              {grupos.size === 0 ? (
+                <p className="py-8 text-center text-sm text-muted">
+                  No hay pedidos para esta fecha.
+                  {puedeEditar && (
+                    <>
+                      {" "}
+                      Usa <strong>+ Nuevo pedido</strong> para crear uno.
+                    </>
+                  )}
+                </p>
+              ) : (
+                <div className="space-y-6">
+                  {[...grupos.values()]
+                    .sort((a, b) => compararPlanteles(a.nombre, b.nombre))
+                    .map((g) => (
+                      <div key={g.nombre}>
+                        <div className="flex items-center justify-between rounded-t-lg bg-content px-3 py-2">
+                          <div className="font-semibold text-ink">
+                            {g.nombre}{" "}
+                            <span className="font-normal text-muted">({g.zona})</span>
+                          </div>
+                          <div className="text-sm text-ink">
+                            Total plantel:{" "}
+                            <span className="font-bold">{g.total.toFixed(1)} m³</span>{" "}
+                            <span className="text-muted">· {g.pedidos.length} pedido(s)</span>
+                          </div>
+                        </div>
+                        <TablaPedidos
+                          pedidos={g.pedidos}
+                          opciones={opciones}
+                          puedeEditar={puedeEditar}
+                          puedeAgregarQuitar={puedeAgregarQuitar}
+                          esAdmin={alcance.esAdmin}
+                          permitirHoraCargaManual={PERMITIR_HORA_CARGA_MANUAL}
+                        />
+                      </div>
+                    ))}
+                </div>
+              )}
+            </Card>
+
+            {hayGantt && (
+              <Card className="mt-5 p-5">
+                <h2 className="mb-1 text-lg font-semibold text-ink">
+                  Línea de tiempo del día (recursos)
+                </h2>
+                <p className="mb-4 text-sm text-muted">
+                  Plantas, mixers y bombas en el mismo eje de horas. Las líneas verticales
+                  marcan cada hora en punto para ver de un vistazo los tiempos muertos entre
+                  bloques.
+                </p>
+                <GanttRecursos secciones={seccionesGantt} />
+              </Card>
+            )}
+          </>
+        }
+      />
     </>
   );
 }

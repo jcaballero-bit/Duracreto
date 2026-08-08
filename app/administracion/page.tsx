@@ -11,6 +11,8 @@ import {
 } from "./catalogo-admin";
 import type { Catalogo } from "./catalogos-actions";
 import { UsuariosTabla, type UsuarioAdmin } from "./usuarios-tabla";
+import { AjustesMotor } from "./ajustes-motor";
+import { leerMargenHueco } from "@/lib/motor/config-runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,7 @@ const TABS: { key: string; label: string }[] = [
   { key: "asesores", label: "Asesores" },
   { key: "disenos", label: "Diseños de mezcla" },
   { key: "capacidades", label: "Capacidades reducidas" },
+  { key: "ajustes", label: "Ajustes del motor" },
   { key: "usuarios", label: "Usuarios y roles" },
 ];
 
@@ -56,6 +59,7 @@ export default async function AdministracionPage({
     opcPlanteles,
     opcPlantas,
     opcUsuarios,
+    margenHueco: await leerMargenHueco(),
   });
 
   return (
@@ -108,6 +112,7 @@ interface Ctx {
   opcPlanteles: { value: string; label: string }[];
   opcPlantas: { value: string; label: string }[];
   opcUsuarios: { value: string; label: string }[];
+  margenHueco: number;
 }
 
 function bloque(
@@ -335,6 +340,19 @@ async function renderTab(tab: string, ctx: Ctx) {
         ],
         filas,
         true, // sin importación CSV
+      );
+    }
+    case "ajustes": {
+      return (
+        <>
+          <p className="mb-3 text-sm text-muted">
+            Ajustes del motor de programación. El <strong>margen mínimo de hueco</strong> es
+            el tiempo libre mínimo que debe quedar entre dos entregas para que el sistema
+            ofrezca ese espacio al organizar el día automáticamente (evita dejar la
+            programación tan apretada que un solo retraso genere una cascada de problemas).
+          </p>
+          <AjustesMotor margenHueco={ctx.margenHueco} />
+        </>
       );
     }
     case "usuarios": {

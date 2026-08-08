@@ -22,9 +22,11 @@ import {
   confirmarRefuerzo,
   corregirHoraReal,
   editarVolumenViaje,
+  huecosDePlanta,
   llegadasPorPlanta,
   mantenimientoDeUnidad,
   modificarPedido,
+  organizarDia,
   programarPedido,
   reasignarMixer,
   recalcularCascadaPlanta,
@@ -539,6 +541,57 @@ export async function reordenarPedidoAction(
   const res = await reordenarPedidoDia(pedidoId, nuevoOrden, quien);
   if (res.ok) revalidarPantallas();
   return { ok: res.ok, mensaje: res.mensaje };
+}
+
+/**
+ * Server action: "Organizar mi día" — corre el motor de 2 pasadas (anclas + relleno
+ * best-fit) sobre los pedidos del plantel+fecha y aplica el resultado (reordena +
+ * recalcula la cascada). Valida zona + regla de fecha del rol.
+ */
+export async function organizarDiaAction(
+  plantelId: number,
+  fechaISO: string, // "YYYY-MM-DD"
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido();
+  if (!op.ok) return op;
+  const zona = await autorizarZonaPlantel(plantelId);
+  if (!zona.ok) return zona;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaISO);
+  if (!m) return { ok: false, mensaje: "Fecha inválida." };
+  const dia = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const fechaOk = await autorizarFecha(dia);
+  if (!fechaOk.ok) return fechaOk;
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "programador";
+  try {
+    const res = await organizarDia(plantelId, dia, quien);
+    if (res.ok) revalidarPantallas();
+    return { ok: res.ok, mensaje: res.mensaje };
+  } catch (e) {
+    return { ok: false, mensaje: e instanceof Error ? e.message : "No se pudo organizar el día." };
+  }
+}
+
+/**
+ * Server action (solo lectura): huecos libres de carga de una planta ese día
+ * [{inicioMs, finMs, durMin}], para la tarjeta de sugerencia de la vista simple.
+ */
+export async function huecosDePlantaAction(
+  plantaId: number,
+  fechaISO: string,
+): Promise<{ ok: boolean; huecos?: { inicioMs: number; finMs: number; durMin: number }[]; mensaje?: string }> {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaISO);
+  if (!plantaId || !m) return { ok: false, mensaje: "Datos inválidos." };
+  const planta = await prisma.plantas.findUnique({
+    where: { id: plantaId },
+    select: { plantel_id: true },
+  });
+  if (!planta) return { ok: false, mensaje: "Planta no encontrada." };
+  const permiso = await autorizarZonaPlantel(planta.plantel_id);
+  if (!permiso.ok) return { ok: false, mensaje: permiso.mensaje };
+  const dia = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const huecos = await huecosDePlanta(plantaId, dia);
+  return { ok: true, huecos };
 }
 
 /**

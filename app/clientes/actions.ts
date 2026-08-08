@@ -5,6 +5,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { calcularAlcance } from "@/lib/auth/acceso";
 import { esEnlaceCorto, extraerCoordsDeUrl } from "@/lib/geo/maps-link";
+import { duracionRutaMin, distanciaKm } from "@/lib/geo/ors";
 
 export type Datos = Record<string, string>;
 type Res = { ok: boolean; mensaje?: string; id?: number };
@@ -148,6 +149,22 @@ export async function crearClienteAction(datos: Datos): Promise<Res> {
   if ("error" in ctx) return { ok: false, mensaje: ctx.error };
   if (!s(datos.empresa)) return { ok: false, mensaje: "El nombre del cliente es obligatorio." };
   if (!s(datos.ubicacion)) return { ok: false, mensaje: "La ubicación es obligatoria." };
+  // Cliente NUEVO: ubicación (lat/long) y tiempo de transporte son OBLIGATORIOS.
+  // (En edición NO se fuerza, para no obligar a completar clientes antiguos.)
+  if (!s(datos.latitud) || !s(datos.longitud)) {
+    return {
+      ok: false,
+      mensaje:
+        "La ubicación del proyecto es obligatoria para un cliente nuevo. Tómala con GPS en sitio o pega el enlace de Google Maps.",
+    };
+  }
+  if (!s(datos.tiempo_viaje_referencia_min)) {
+    return {
+      ok: false,
+      mensaje:
+        "El tiempo de transporte es obligatorio. Se calcula automáticamente al capturar la ubicación; si no fue posible, confírmalo o ingrésalo manualmente antes de guardar.",
+    };
+  }
 
   const data = construir(datos);
   // Asesor: se autoasigna (no puede regalar/robar clientes). Admin: elige.
@@ -195,6 +212,55 @@ export async function actualizarClienteAction(id: number, datos: Datos): Promise
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };
   }
+}
+
+/**
+ * Estima el tiempo de transporte (min, ida) de un cliente desde el plantel MÁS
+ * CERCANO con coordenadas, vía OpenRouteService. Se usa para autocompletar el campo
+ * al capturar la ubicación en el alta de cliente. Devuelve `ok:false` si no se pudo
+ * (sin clave ORS, sin planteles con coords, error de red) → el formulario cae a
+ * captura MANUAL (nunca a un valor por defecto silencioso).
+ */
+export async function estimarTiempoTransporteAction(
+  latStr: string,
+  lngStr: string,
+): Promise<{ ok: boolean; minutos?: number; plantel?: string; mensaje?: string }> {
+  const ctx = await contexto();
+  if ("error" in ctx) return { ok: false, mensaje: ctx.error };
+  const lat = floatNull(latStr);
+  const lng = floatNull(lngStr);
+  if (lat == null || lng == null) {
+    return { ok: false, mensaje: "Captura primero la ubicación (latitud/longitud)." };
+  }
+  const planteles = await prisma.planteles.findMany({
+    where: { latitud: { not: null }, longitud: { not: null } },
+    select: { nombre: true, latitud: true, longitud: true },
+  });
+  if (planteles.length === 0) {
+    return {
+      ok: false,
+      mensaje: "Ningún plantel tiene ubicación registrada; ingresa el tiempo manualmente.",
+    };
+  }
+  // Plantel más cercano (haversine) como origen del cálculo de ruta.
+  let mejor = planteles[0];
+  let mejorKm = Infinity;
+  for (const p of planteles) {
+    const d = distanciaKm(p.latitud!, p.longitud!, lat, lng);
+    if (d < mejorKm) {
+      mejorKm = d;
+      mejor = p;
+    }
+  }
+  const minutos = await duracionRutaMin(mejor.latitud!, mejor.longitud!, lat, lng);
+  if (minutos == null) {
+    return {
+      ok: false,
+      mensaje:
+        "No se pudo calcular el tiempo automáticamente. Confírmalo o ingrésalo manualmente.",
+    };
+  }
+  return { ok: true, minutos, plantel: mejor.nombre };
 }
 
 // User-Agent de navegador real: Google sirve a los bots una página distinta (a

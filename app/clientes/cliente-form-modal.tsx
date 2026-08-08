@@ -9,6 +9,7 @@ const GPS_TIEMPO_MAX_MS = 25000;
 import {
   actualizarClienteAction,
   crearClienteAction,
+  estimarTiempoTransporteAction,
   resolverEnlaceMapsAction,
 } from "./actions";
 
@@ -40,9 +41,8 @@ export const CAMPOS_CLIENTE: CampoDef[] = [
   { name: "ubicacion", label: "Ubicación", tipo: "text", requerido: true },
   { name: "contacto", label: "Contacto", tipo: "text" },
   { name: "telefono", label: "Teléfono", tipo: "text" },
-  // Tiempo de transporte SOLO IDA hacia la obra; el regreso se asume igual. Se
-  // guarda en tiempo_viaje_referencia_min (y se espeja a regreso en el servidor).
-  { name: "tiempo_viaje_referencia_min", label: "Tiempo de transporte (min)", tipo: "number", placeholder: "30" },
+  // NOTA: el "Tiempo de transporte" ya NO va aquí — es un campo CONTROLADO (se
+  // autocalcula por la ubicación) que se renderiza dentro del bloque de ubicación.
 ];
 
 /**
@@ -79,6 +79,36 @@ export function ClienteFormModal({
   const [gpsCargando, setGpsCargando] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [gpsEstado, setGpsEstado] = useState<string | null>(null); // texto en vivo mientras afina
+
+  // Tiempo de transporte (min, ida). CONTROLADO: se autocalcula por la ubicación
+  // (OpenRouteService) y el usuario puede ajustarlo. Obligatorio en cliente NUEVO.
+  const [transporte, setTransporte] = useState(editando?.valores.tiempo_viaje_referencia_min ?? "");
+  const [transporteAviso, setTransporteAviso] = useState<string | null>(null);
+  const [calcTransporte, setCalcTransporte] = useState(false);
+
+  /** Autocalcula el tiempo de transporte desde el plantel más cercano (ORS). Si no
+   *  se puede, pide captura manual (nunca deja un valor por defecto silencioso). */
+  const autocalcularTransporte = async (latV: string, lngV: string) => {
+    if (!latV.trim() || !lngV.trim()) return;
+    setCalcTransporte(true);
+    setTransporteAviso("Calculando tiempo de transporte por la ubicación…");
+    try {
+      const res = await estimarTiempoTransporteAction(latV, lngV);
+      if (res.ok && res.minutos != null) {
+        setTransporte(String(res.minutos));
+        setTransporteAviso(
+          `Tiempo estimado automáticamente: ${res.minutos} min desde ${res.plantel}. Ajústalo si lo conoces mejor.`,
+        );
+      } else {
+        setTransporteAviso(
+          (res.mensaje ?? "No se pudo calcular automáticamente.") +
+            " Ingresa el tiempo de transporte manualmente antes de guardar.",
+        );
+      }
+    } finally {
+      setCalcTransporte(false);
+    }
+  };
 
   // watchPosition entrega varias lecturas que van mejorando; guardamos la mejor.
   const watchRef = useRef<number | null>(null);
@@ -117,6 +147,8 @@ export function ClienteFormModal({
           `Muévete a un lugar más despejado y reintenta; si te sirve así, ya quedó guardada.`,
       );
     }
+    // Con la ubicación fijada, autocalcular el tiempo de transporte.
+    void autocalcularTransporte(p.lat.toFixed(6), p.lng.toFixed(6));
   };
 
   // Toma la ubicación ACTUAL del dispositivo (GPS del celular en sitio). Afina con
@@ -233,6 +265,8 @@ export function ClienteFormModal({
       setPrecision(""); // el enlace no reporta precisión
       setOrigen("Enlace de Maps");
       setAvisoEnlace(`Ubicación leída del enlace: ${res.lat}, ${res.lng}`);
+      // Con la ubicación fijada, autocalcular el tiempo de transporte.
+      void autocalcularTransporte(String(res.lat), String(res.lng));
     } finally {
       setProcesando(false);
     }
@@ -243,23 +277,31 @@ export function ClienteFormModal({
     const fd = new FormData(e.currentTarget);
     const datos: Record<string, string> = {};
     for (const c of CAMPOS_CLIENTE) datos[c.name] = String(fd.get(c.name) ?? "");
-    // Advertencia: cliente NUEVO sin tiempo de transporte. No es obligatorio (el
-    // sistema usa un valor por defecto y luego lo ajusta al promedio real de los
-    // suministros), pero se avisa para que el usuario lo agregue si lo conoce.
-    if (!editando && !datos.tiempo_viaje_referencia_min.trim()) {
-      const ok = confirm(
-        "No agregaste el Tiempo de transporte (min). El sistema usará un valor por " +
-          "defecto y lo ajustará al promedio real después de los primeros suministros. " +
-          "¿Guardar de todos modos?",
-      );
-      if (!ok) return;
-    }
-    // Ubicación desde el estado controlado.
+    // Ubicación y tiempo de transporte (estado controlado).
     datos.google_maps_url = googleUrl.trim();
     datos.latitud = lat.trim();
     datos.longitud = lng.trim();
     datos.ubicacion_origen = origen;
     datos.ubicacion_precision_m = precision;
+    datos.tiempo_viaje_referencia_min = transporte.trim();
+    // Cliente NUEVO: ubicación y tiempo de transporte son OBLIGATORIOS (no se
+    // permite guardar sin ubicación ni con un tiempo sin validar). En EDICIÓN no se
+    // fuerza (para no obligar a completar clientes antiguos).
+    if (!editando) {
+      if (!datos.latitud || !datos.longitud) {
+        alert(
+          "Falta la ubicación del proyecto. Tómala con GPS en sitio o pega el enlace de Google Maps antes de guardar.",
+        );
+        return;
+      }
+      if (!datos.tiempo_viaje_referencia_min) {
+        alert(
+          "Falta el tiempo de transporte. Se calcula automáticamente al capturar la ubicación; " +
+            "si no fue posible, confírmalo o ingrésalo manualmente antes de guardar.",
+        );
+        return;
+      }
+    }
     if (esAdmin) datos.asesor_id = String(fd.get("asesor_id") ?? "");
     startTransition(async () => {
       const res = editando
@@ -430,6 +472,42 @@ export function ClienteFormModal({
                 {origen === "GPS en sitio" && precision ? ` · ±${precision} m` : ""}
               </p>
             )}
+
+            {/* Tiempo de transporte (obligatorio en cliente nuevo). Se autocalcula al
+                capturar la ubicación; el usuario puede confirmarlo o ajustarlo. */}
+            <div className="mt-3 border-t border-border pt-3">
+              <label className="block text-sm">
+                <span className="mb-1 block font-medium text-ink">
+                  Tiempo de transporte (min){!editando && " *"}
+                </span>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={transporte}
+                    onChange={(e) => {
+                      setTransporte(e.target.value);
+                      setTransporteAviso(null);
+                    }}
+                    placeholder="Se calcula por la ubicación"
+                    className={inputCls}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => autocalcularTransporte(lat, lng)}
+                    disabled={calcTransporte || !lat.trim() || !lng.trim()}
+                    title="Calcular el tiempo de transporte desde el plantel más cercano"
+                    className="shrink-0 rounded-lg border border-accent px-3 py-2 text-sm font-medium text-accent hover:bg-accent/5 disabled:opacity-50"
+                  >
+                    {calcTransporte ? "Calculando…" : "Calcular"}
+                  </button>
+                </div>
+              </label>
+              {transporteAviso && (
+                <p className="mt-1 text-xs text-muted">{transporteAviso}</p>
+              )}
+            </div>
           </div>
 
           {esAdmin && (

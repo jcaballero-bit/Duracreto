@@ -164,6 +164,15 @@ model plantas {
   @@index([plantel_id])
 }
 
+// ── Configuración global (clave-valor) editable desde Administración ─────────
+// Ajustes del sistema que no ameritan tabla propia. Hoy: `margen_minimo_hueco_min`
+// (minutos mínimos de un hueco para ofrecerlo al relleno automático del motor de
+// 2 pasadas). Se lee con fallback a un default en código si la clave no existe.
+model configuracion {
+  clave     String @id
+  valor_int Int?
+}
+
 // ── Operadores (motoristas) ────────────────────────────────────────────────
 model operadores {
   id     Int    @id @default(autoincrement())

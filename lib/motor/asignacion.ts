@@ -29,6 +29,8 @@ import {
 } from "./config";
 import { planificarCombinacion, unidadLibreEnVentana } from "./planificador";
 import type { VentanaViaje } from "./planificador";
+import { leerMargenHueco } from "./config-runtime";
+import { calcularHuecos, planificarDosPasadas, type Hueco, type PedidoOrg } from "./organizador";
 import {
   diferenciaMinutos,
   finDelDia,
@@ -1033,6 +1035,146 @@ export async function reordenarPedidoDia(
   const viajesRecalculados: number[] = [];
   for (const plantaId of plantas) {
     const ids = await recalcularCascadaPlanta(plantaId, pedido.hora_solicitada);
+    viajesRecalculados.push(...ids);
+  }
+  return { ok: true, viajesRecalculados };
+}
+
+/** Hora de apertura del día (medianoche local + HORA_APERTURA_POR_DEFECTO). */
+function aperturaDelDiaMs(dia: Date): number {
+  return new Date(
+    dia.getFullYear(),
+    dia.getMonth(),
+    dia.getDate(),
+    HORA_APERTURA_POR_DEFECTO,
+    0,
+    0,
+    0,
+  ).getTime();
+}
+const VENTANA_DIA_HORAS = 14; // ventana amplia del día para acotar la cola de huecos
+
+/**
+ * Huecos libres de CARGA en la bahía de una planta ese día (a partir de los viajes
+ * ya programados: [hora_inicio_carga, hora_fin_carga]). Devuelve intervalos
+ * {inicioMs, finMs, durMin} de duración >= margen configurable. Solo lectura — lo
+ * usa la vista simplificada (tarjeta de sugerencia) y el endpoint de huecos.
+ */
+export async function huecosDePlanta(plantaId: number, dia: Date): Promise<Hueco[]> {
+  const ini = inicioDelDia(dia);
+  const fin = finDelDia(dia);
+  const viajes = await prisma.viajes.findMany({
+    where: {
+      planta_id: plantaId,
+      estado: { not: "Cancelado" },
+      hora_inicio_carga: { not: null },
+      hora_fin_carga: { not: null },
+      pedido: { hora_solicitada: { gte: ini, lt: fin }, estado_pedido: "Activo" },
+    },
+    select: { hora_inicio_carga: true, hora_fin_carga: true },
+  });
+  const ocupados = viajes.map((v) => ({
+    inicioMs: v.hora_inicio_carga!.getTime(),
+    finMs: v.hora_fin_carga!.getTime(),
+  }));
+  const aperturaMs = aperturaDelDiaMs(ini);
+  const cierreMs = aperturaMs + VENTANA_DIA_HORAS * 3_600_000;
+  const margenMin = await leerMargenHueco();
+  return calcularHuecos(ocupados, aperturaMs, cierreMs, margenMin);
+}
+
+/**
+ * Motor de 2 PASADAS: recalcula el `orden_dia` de TODOS los pedidos activos de un
+ * plantel+fecha con la heurística de anclas + relleno best-fit (`planificarDosPasadas`)
+ * y RECALCULA la cascada de horarios. Es el "Organizar mi día" de la vista simple.
+ * Reversible/atómico como `reordenarPedidoDia` (solo toca `orden_dia` + recálculo).
+ */
+export async function organizarDia(
+  plantelId: number,
+  dia: Date,
+  usuario: string,
+): Promise<{ ok: boolean; mensaje?: string; viajesRecalculados: number[] }> {
+  const ini = inicioDelDia(dia);
+  const fin = finDelDia(dia);
+
+  const pedidos = await prisma.pedidos.findMany({
+    where: {
+      plantel_id: plantelId,
+      hora_solicitada: { gte: ini, lt: fin },
+      estado_pedido: "Activo",
+    },
+    select: {
+      id: true,
+      hora_solicitada: true,
+      hora_bloqueada: true,
+      planta_id: true,
+      tiempo_transporte_min: true,
+      cliente: { select: { tiempo_viaje_referencia_min: true } },
+      viajes: {
+        where: { estado: { not: "Cancelado" } },
+        select: { planta_id: true, volumen_asignado_m3: true },
+      },
+    },
+    orderBy: [{ orden_dia: "asc" }, { id: "asc" }],
+  });
+  if (pedidos.length === 0) return { ok: true, viajesRecalculados: [] };
+
+  // Capacidad/alistamiento por planta (para medir minutos de carga de cada viaje).
+  const plantas = await prisma.plantas.findMany({
+    where: { plantel_id: plantelId },
+    select: { id: true, capacidad_m3h: true, tiempo_alistamiento_min: true },
+  });
+  const capDe = new Map(plantas.map((p) => [p.id, p]));
+
+  const margenMin = await leerMargenHueco();
+  const aperturaMs = aperturaDelDiaMs(ini);
+  const cierreMs = aperturaMs + VENTANA_DIA_HORAS * 3_600_000;
+
+  const entrada: PedidoOrg[] = pedidos.map((p) => {
+    const plantaPrim = p.viajes[0]?.planta_id ?? p.planta_id;
+    const cap = capDe.get(plantaPrim);
+    const cargaViaje = (vol: number) =>
+      cap ? cap.tiempo_alistamiento_min + minutosDeCarga(vol, cap.capacidad_m3h) : 30;
+    const duracionMin = p.viajes.length
+      ? p.viajes.reduce((s, v) => s + cargaViaje(v.volumen_asignado_m3), 0)
+      : 30;
+    const transporteMin =
+      p.tiempo_transporte_min ?? p.cliente?.tiempo_viaje_referencia_min ?? DEFAULT_TIEMPO_VIAJE_MIN;
+    const primerCarga = p.viajes.length ? cargaViaje(p.viajes[0].volumen_asignado_m3) : 30;
+    return {
+      id: p.id,
+      plantaId: plantaPrim,
+      esAncla: p.viajes.length > 1 || p.hora_bloqueada,
+      horaFija: p.hora_bloqueada,
+      llegadaMs: p.hora_solicitada.getTime(),
+      inicioFijoMs: p.hora_bloqueada
+        ? p.hora_solicitada.getTime() - (transporteMin + primerCarga) * 60_000
+        : null,
+      duracionMin,
+    };
+  });
+
+  const orden = planificarDosPasadas(entrada, { aperturaMs, cierreMs, margenMin });
+
+  await prisma.$transaction(
+    orden.map((o) => prisma.pedidos.update({ where: { id: o.id }, data: { orden_dia: o.orden } })),
+  );
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "pedidos",
+      registro_id: plantelId,
+      usuario,
+      campo_modificado: "orden_dia",
+      valor_anterior: null,
+      valor_nuevo: `Organizar dia: ${orden.length} pedidos (2 pasadas)`,
+      motivo: "Organizacion automatica del dia (anclas + relleno de huecos)",
+    },
+  });
+
+  const plantasIds = [...new Set(pedidos.map((p) => p.planta_id))];
+  const viajesRecalculados: number[] = [];
+  for (const plantaId of plantasIds) {
+    const ids = await recalcularCascadaPlanta(plantaId, dia);
     viajesRecalculados.push(...ids);
   }
   return { ok: true, viajesRecalculados };

@@ -101,6 +101,24 @@ export async function fijarZonaAction(
   return { ok: true };
 }
 
+/** Guarda el margen mínimo de hueco (min) del motor de 2 pasadas (Ajustes del motor). */
+export async function guardarMargenHuecoAction(
+  valor: number,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const guard = await exigirAdmin();
+  if (!guard.ok) return guard;
+  if (!Number.isInteger(valor) || valor < 0) {
+    return { ok: false, mensaje: "El margen debe ser un entero de minutos (0 o más)." };
+  }
+  await prisma.configuracion.upsert({
+    where: { clave: "margen_minimo_hueco_min" },
+    update: { valor_int: valor },
+    create: { clave: "margen_minimo_hueco_min", valor_int: valor },
+  });
+  revalidatePath("/administracion");
+  return { ok: true };
+}
+
 /** Fija (o limpia) el plantel asignado de un usuario (JefePlanta/Dosificador). */
 export async function fijarPlantelAsignadoAction(
   userId: string,
