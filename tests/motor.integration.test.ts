@@ -1278,6 +1278,54 @@ describe("planta por viaje (planteles de 2 plantas)", () => {
     expect(arranques[0]).toBe(arranques[1]); // misma hora_inicio_carga
   });
 
+  // Regresión (bug real ago-2026): con OTRO pedido ocupando una de las plantas ese
+  // día, la carga_simultanea repartía TODOS los viajes a la otra planta (0 en una) por
+  // un error de escala en `repartirPlantas` (planta vacía comparada contra epoch 0 vs
+  // el timestamp real de la ocupada) → simultaneidad imposible. Ahora el reparto de un
+  // pedido con carga_simultanea es BALANCEADO: ambas plantas reciben viajes sí o sí.
+  it("carga_simultanea reparte en AMBAS plantas aunque otro pedido ocupe una", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "SimOcup", zona: "Norte", esHub: true });
+    const sany = await prisma.plantas.create({
+      data: { plantel_id: plantelId, nombre: "SANY", capacidad_m3h: 45 },
+    });
+    await crearMixers(plantelId, [[11, 6], [9, 4]]);
+    const clienteId = await crearCliente(true, 30, 30);
+    const disenoId = await crearDiseno();
+
+    // Pedido simultáneo (grande, mañana) PRIMERO → es la ancla del día.
+    const rSim = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 120,
+      hora_solicitada: new Date("2026-08-01T08:00:00"),
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+      usar_ambas_plantas: true, carga_simultanea: true, hora_bloqueada: true,
+    });
+    // Otro pedido DESPUÉS que ocupa SANY por la tarde (antes tiraba todo a la otra planta).
+    await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 18,
+      hora_solicitada: new Date("2026-08-01T13:00:00"),
+      plantel_id: plantelId, planta_id: sany.id, tipo_descarga: "Directo", creado_por: "test",
+      hora_bloqueada: true,
+    });
+
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: rSim.pedidoId, mixer_id: { not: null }, hora_inicio_carga: { not: null } },
+      select: { planta_id: true, hora_inicio_carga: true },
+    });
+    // El pedido simultáneo quedó repartido en las DOS plantas (ninguna en 0).
+    const porPlanta = new Map<number, number>();
+    for (const v of viajes) porPlanta.set(v.planta_id!, (porPlanta.get(v.planta_id!) ?? 0) + 1);
+    expect(porPlanta.size).toBe(2);
+    expect([...porPlanta.values()].every((n) => n > 0)).toBe(true);
+    // Y como es la ancla (creado primero), ambas plantas arrancan a la misma hora.
+    const primera = new Map<number, number>();
+    for (const v of viajes) {
+      const t = v.hora_inicio_carga!.getTime();
+      primera.set(v.planta_id!, Math.min(primera.get(v.planta_id!) ?? Infinity, t));
+    }
+    const arranques = [...primera.values()];
+    expect(arranques[0]).toBe(arranques[1]); // simultáneo pese al otro pedido
+  });
+
   it("carga_reducida usa la capacidad EFECTIVA (config) en vez de la nominal", async () => {
     const { plantelId, plantaId } = await crearPlantel({ nombre: "Red", zona: "Norte", esHub: true });
     // Físico 12 (crearMixers suma el margen). Config: 12 → efectiva 10.

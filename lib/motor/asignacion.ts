@@ -1777,6 +1777,7 @@ export async function agregarVolumenAlPedido(
       hora_solicitada: true,
       volumen_total_m3: true,
       usar_ambas_plantas: true,
+      carga_simultanea: true,
       carga_reducida: true,
       estado_pedido: true,
     },
@@ -1811,6 +1812,7 @@ export async function agregarVolumenAlPedido(
     plan.viajes.length,
     pedido.hora_solicitada,
     pedido.usar_ambas_plantas,
+    pedido.carga_simultanea,
   );
 
   let idxPlanta = 0;
@@ -1941,6 +1943,7 @@ async function repartirPlantas(
   cantidad: number,
   dia: Date,
   usarAmbas: boolean,
+  simultanea = false,
 ): Promise<number[]> {
   // Decisión del usuario: una sola planta salvo que se marque "ambas plantas".
   if (!usarAmbas) {
@@ -1954,6 +1957,19 @@ async function repartirPlantas(
   if (plantas.length <= 1) {
     return Array(cantidad).fill(plantas[0]?.id ?? plantaPreferida);
   }
+
+  // CARGA SIMULTÁNEA: reparto BALANCEADO (round-robin), sin mirar la ocupación de
+  // OTROS pedidos del día. La carga simultánea exige que ambas plantas carguen a la
+  // par, así que cada una recibe ~mitad de los viajes. Empezar por la planta preferida
+  // (la elegida en el pedido) para que el primer viaje salga de ella. Antes se usaba la
+  // heurística de "planta más libre", que con otro pedido tardío en una planta tiraba
+  // TODOS los viajes a la otra (ninguno con quien sincronizar) y la simultaneidad
+  // quedaba imposible.
+  if (simultanea) {
+    const orden = [plantaPreferida, ...plantas.map((p) => p.id).filter((id) => id !== plantaPreferida)];
+    return Array.from({ length: cantidad }, (_, i) => orden[i % orden.length]);
+  }
+
   // "Libre en" por planta = fin de carga comprometido más tardío ese día (ms).
   const libreEn = new Map<number, number>(plantas.map((p) => [p.id, 0]));
   const comprometidos = await prisma.viajes.groupBy({
@@ -2026,6 +2042,7 @@ async function asignarViajesDePedido(
     plan.viajes.length,
     entrada.hora_solicitada,
     entrada.usar_ambas_plantas ?? false,
+    entrada.carga_simultanea ?? false,
   );
 
   // Un viaje por cada carga del plan. El mixer lo asigna la cascada (mixer null).
