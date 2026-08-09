@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import {
   agregarVolumenAlPedido,
+  analizarFrecuenciaPedido,
   avanzarEstadoViaje,
   cambiarPlantaViaje,
   cancelarPedido,
@@ -1596,5 +1597,78 @@ describe("adiciones/cancelaciones comerciales = diferencia suministrado vs progr
     const cli = await prisma.clientes.findUniqueOrThrow({ where: { id: clienteId } });
     expect(cli.tiempo_viaje_referencia_min).toBe(40);
     expect(cli.tiempo_regreso_referencia_min).toBe(40); // espejo ida = regreso
+  });
+});
+
+describe("frecuencia entre camiones — reclutar flota + cadencia constante", () => {
+  // Caso REAL que motivó el arreglo: 200 m³, frecuencia 15 min, 2 plantas (Santa
+  // Marta), 6 mixers de 11 + 6 de 9. Antes solo usaba los 6 de 11 y daba 15/18
+  // (promedio 16.5). Ahora recluta mixers de otra capacidad y sostiene 15 constante.
+  it("200 m³ / freq 15 / 2 plantas: recluta ≥7 mixers y las llegadas quedan a 15 min constantes", async () => {
+    const plantel = await prisma.planteles.create({
+      data: {
+        nombre: "SM-Frec", zona: "Norte", capacidad_dosificacion_m3h: 45,
+        plantas: { create: [{ nombre: "STALO", capacidad_m3h: 45 }, { nombre: "SANY", capacidad_m3h: 45 }] },
+      },
+      include: { plantas: true },
+    });
+    await prisma.planteles.update({ where: { id: plantel.id }, data: { hub_id: plantel.id } });
+    const stalo = plantel.plantas.find((p) => p.nombre === "STALO")!;
+    await crearMixers(plantel.id, [[11, 6], [9, 6]]);
+    const clienteId = await crearCliente(true, 30, 30);
+    const disenoId = await crearDiseno();
+
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 200, hora_solicitada: DIA,
+      plantel_id: plantel.id, planta_id: stalo.id, tipo_descarga: "Directo", creado_por: "test",
+      frecuencia_entre_camiones_min: 15, usar_ambas_plantas: true,
+    });
+
+    expect(r.volumenSinCubrir).toBe(0);
+    const viajes = await prisma.viajes.findMany({
+      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
+      select: { mixer_id: true, hora_llegada_proyecto: true },
+    });
+    // Recluta mixers más allá de los 6 de 11 m³ (usa también los de 9).
+    const distintos = new Set(viajes.map((v) => v.mixer_id)).size;
+    expect(distintos).toBeGreaterThanOrEqual(7);
+    // Cadencia de LLEGADAS constante a 15 min (no 15/18).
+    const llegadas = viajes
+      .map((v) => v.hora_llegada_proyecto!.getTime())
+      .sort((a, b) => a - b);
+    for (let i = 1; i < llegadas.length; i++) {
+      const gap = Math.round((llegadas[i] - llegadas[i - 1]) / 60000);
+      expect(gap).toBe(15);
+    }
+  });
+
+  // Cuando la frecuencia pedida NO es alcanzable ni con toda la flota, el análisis
+  // lo detecta con números correctos y el pedido IGUAL se programa (no bloquea).
+  it("freq inalcanzable: el análisis avisa (alcanzable=false) y el pedido igual se programa", async () => {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "Escaso", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[11, 6]]);
+    const clienteId = await crearCliente(true, 30, 30);
+    const disenoId = await crearDiseno();
+
+    // Frecuencia agresiva de 5 min con una sola planta: imposible (la carga en planta
+    // ya tarda ~20 min por viaje). El análisis debe decir alcanzable=false.
+    const analisis = await analizarFrecuenciaPedido({
+      plantelId, plantaId, volumenTotal: 120, frecuenciaMin: 5,
+      tipoDescarga: "Directo", clienteId, usarAmbasPlantas: false, dia: DIA,
+    });
+    expect(analisis.alcanzable).toBe(false);
+    expect(analisis.mixersDisponibles).toBe(6);
+    expect(analisis.frecuenciaAlcanzableMin).toBeGreaterThan(5);
+    expect(analisis.ciclo.cicloMin).toBeGreaterThan(0);
+
+    // Pese al aviso, programar NO se bloquea: se cubre el volumen a la cadencia real.
+    const r = await programarPedido({
+      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 120, hora_solicitada: DIA,
+      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
+      frecuencia_entre_camiones_min: 5,
+    });
+    expect(r.volumenSinCubrir).toBe(0);
+    const n = await prisma.viajes.count({ where: { pedido_id: r.pedidoId, mixer_id: { not: null } } });
+    expect(n).toBeGreaterThan(0);
   });
 });

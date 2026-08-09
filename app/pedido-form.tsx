@@ -2,6 +2,7 @@
 
 import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 import {
+  analizarFrecuenciaAction,
   crearPedidoAction,
   modificarPedidoAction,
   sugerirHoraSolicitadaAction,
@@ -206,6 +207,18 @@ export function PedidoForm({
   const [simultanea, setSimultanea] = useState<boolean>(valores?.carga_simultanea ?? false);
   // Carga REDUCIDA: acceso difícil / pendiente (usa capacidad efectiva).
   const [reducida, setReducida] = useState<boolean>(valores?.carga_reducida ?? false);
+  // Frecuencia entre camiones (min): controlada para poder analizar si es alcanzable
+  // con la flota real antes de confirmar (advertencia NO bloqueante).
+  const [frecuencia, setFrecuencia] = useState<string>(() => {
+    const inicial =
+      valores?.frecuencia_entre_camiones_min ??
+      preset?.frecuencia_entre_camiones_min ??
+      null;
+    return inicial != null ? String(inicial) : "";
+  });
+  const [analisisFreq, setAnalisisFreq] = useState<
+    Awaited<ReturnType<typeof analizarFrecuenciaAction>> | null
+  >(null);
   const fechaBase = horaLocal.slice(0, 10);
 
   // Tipo de servicio (Normal / Servicio de Construcción): lo precarga la solicitud
@@ -279,6 +292,50 @@ export function PedidoForm({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plantaId, fechaBase, esEdicion, volumen, clienteId, bloqueada]);
+
+  // Analizar si la frecuencia entre camiones es alcanzable con la flota REAL del
+  // día (advertencia NO bloqueante). Solo cuando hay volumen + planta + frecuencia.
+  // Se hace con un pequeño retraso (debounce) para no llamar en cada tecla.
+  useEffect(() => {
+    const freqNum = Number(frecuencia);
+    const volNum = Number(volumen);
+    if (!plantelId || !plantaId || !(volNum > 0) || !(freqNum > 0)) {
+      setAnalisisFreq(null);
+      return;
+    }
+    let cancelado = false;
+    const t = setTimeout(async () => {
+      const res = await analizarFrecuenciaAction({
+        plantelId,
+        plantaId,
+        volumenTotal: volNum,
+        frecuenciaMin: freqNum,
+        tipoDescarga,
+        transporteMin: transporte !== "" ? Number(transporte) : null,
+        clienteId: clienteId || null,
+        usarAmbasPlantas: usarAmbas,
+        cargaReducida: reducida,
+        fechaISO: fechaBase || undefined,
+      });
+      if (!cancelado) setAnalisisFreq(res.ok ? res : null);
+    }, 450);
+    return () => {
+      cancelado = true;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    frecuencia,
+    volumen,
+    plantelId,
+    plantaId,
+    tipoDescarga,
+    transporte,
+    clienteId,
+    usarAmbas,
+    reducida,
+    fechaBase,
+  ]);
 
   // Al programar con éxito, avisar al contenedor (refrescar la tabla).
   useEffect(() => {
@@ -612,11 +669,8 @@ export function PedidoForm({
             min="0"
             step="1"
             placeholder="Opcional (según acceso del sitio)"
-            defaultValue={
-              valores?.frecuencia_entre_camiones_min ??
-              preset?.frecuencia_entre_camiones_min ??
-              ""
-            }
+            value={frecuencia}
+            onChange={(e) => setFrecuencia(e.target.value)}
             className={inputCls}
           />
         </Campo>
@@ -671,6 +725,8 @@ export function PedidoForm({
           </PrimaryButton>
         </div>
       </form>
+
+      {analisisFreq && analisisFreq.ok && <AvisoFrecuencia a={analisisFreq} />}
 
       {estado.requiereConfirmacion ? (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
@@ -798,6 +854,45 @@ function ResultadoPanel({
             </p>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Advertencia NO bloqueante sobre la frecuencia entre camiones: dice si la
+ * frecuencia pedida es alcanzable con la flota real del día y, si no, muestra el
+ * desglose del ciclo (carga/ida/descarga/regreso) para que el Programador detecte
+ * un tiempo mal configurado, además de cuántos mixers harían falta. Nunca impide
+ * guardar: el pedido se programa a la frecuencia realmente alcanzable.
+ */
+function AvisoFrecuencia({
+  a,
+}: {
+  a: Awaited<ReturnType<typeof analizarFrecuenciaAction>>;
+}) {
+  const alcanzable = a.alcanzable === true;
+  const cls = alcanzable
+    ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+    : "border-amber-300 bg-amber-50 text-amber-900";
+  return (
+    <div className={`rounded-lg border px-3 py-3 text-sm ${cls}`}>
+      <p className="mb-2 font-medium">
+        {alcanzable ? "✓" : "⚠️"} {a.mensaje}
+      </p>
+      {a.lineas && a.lineas.length > 0 && (
+        <div className="rounded-md bg-white/60 px-3 py-2 font-mono text-xs leading-5">
+          {a.lineas.map((l, i) => (
+            <div key={i}>{l}</div>
+          ))}
+        </div>
+      )}
+      {!alcanzable && a.frecuenciaAlcanzableMin != null && (
+        <p className="mt-2 text-xs">
+          Si continúas, el pedido se programará a la cadencia real de{" "}
+          <strong>{a.frecuenciaAlcanzableMin} min</strong> entre llegadas (no a los{" "}
+          {a.frecuenciaSolicitadaMin} min pedidos).
+        </p>
       )}
     </div>
   );

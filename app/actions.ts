@@ -14,6 +14,7 @@ import {
 } from "@/lib/motor/config";
 import {
   agregarVolumenAlPedido,
+  analizarFrecuenciaPedido,
   avanzarEstadoViaje,
   cambiarOperadorViaje,
   cambiarPlantaViaje,
@@ -619,6 +620,116 @@ export async function sugerirHoraSolicitadaAction(
   const p = (n: number) => String(n).padStart(2, "0");
   const horaLocal = `${fecha.getFullYear()}-${p(fecha.getMonth() + 1)}-${p(fecha.getDate())}T${p(fecha.getHours())}:${p(fecha.getMinutes())}`;
   return { ok: true, horaLocal };
+}
+
+/**
+ * Server action: analiza si la frecuencia entre camiones pedida es alcanzable con
+ * la flota REAL disponible. Solo lectura (no asigna). Alimenta la advertencia NO
+ * bloqueante del formulario de pedido. Devuelve el desglose del ciclo (para que el
+ * Programador detecte un tiempo mal configurado) y la frecuencia realmente
+ * alcanzable, además de una lista de líneas de texto listas para mostrar.
+ */
+export async function analizarFrecuenciaAction(entrada: {
+  plantelId: number;
+  plantaId: number;
+  volumenTotal: number;
+  frecuenciaMin: number;
+  tipoDescarga: string;
+  transporteMin?: number | null;
+  clienteId?: number | null;
+  usarAmbasPlantas?: boolean;
+  cargaReducida?: boolean;
+  fechaISO?: string; // "YYYY-MM-DD"
+}): Promise<{
+  ok: boolean;
+  mensaje?: string;
+  alcanzable?: boolean;
+  frecuenciaSolicitadaMin?: number;
+  frecuenciaAlcanzableMin?: number | null; // null = no alcanzable con nada (sin flota)
+  mixersMinimos?: number;
+  mixersDisponibles?: number;
+  limitadoPor?: "ok" | "mixers" | "bahias";
+  ciclo?: {
+    cargaMin: number;
+    idaMin: number;
+    descargaMin: number;
+    regresoMin: number;
+    cicloMin: number;
+  };
+  lineas?: string[]; // desglose legible para el panel de advertencia
+}> {
+  if (!entrada.plantelId || !entrada.plantaId) {
+    return { ok: false, mensaje: "Faltan datos de plantel/planta." };
+  }
+  if (!(entrada.volumenTotal > 0) || !(entrada.frecuenciaMin > 0)) {
+    return { ok: false, mensaje: "Sin volumen o frecuencia: no aplica." };
+  }
+  const permiso = await autorizarZonaPlantel(entrada.plantelId);
+  if (!permiso.ok) return { ok: false, mensaje: permiso.mensaje };
+
+  let dia: Date | undefined;
+  const fm = entrada.fechaISO ? /^(\d{4})-(\d{2})-(\d{2})/.exec(entrada.fechaISO) : null;
+  if (fm) dia = new Date(Number(fm[1]), Number(fm[2]) - 1, Number(fm[3]));
+
+  const r = await analizarFrecuenciaPedido({
+    plantelId: entrada.plantelId,
+    plantaId: entrada.plantaId,
+    volumenTotal: entrada.volumenTotal,
+    frecuenciaMin: entrada.frecuenciaMin,
+    tipoDescarga: entrada.tipoDescarga,
+    transporteMin: entrada.transporteMin ?? null,
+    clienteId: entrada.clienteId ?? null,
+    usarAmbasPlantas: entrada.usarAmbasPlantas ?? false,
+    cargaReducida: entrada.cargaReducida ?? false,
+    dia,
+  });
+
+  const round = (n: number) => Math.round(n);
+  const finito = Number.isFinite(r.frecuenciaAlcanzableMin);
+  const lineas = [
+    `Ciclo por viaje: ${round(r.ciclo.cicloMin)} min`,
+    `  · Carga en planta: ${round(r.ciclo.cargaMin)} min`,
+    `  · Transporte (ida): ${round(r.ciclo.idaMin)} min`,
+    `  · Descarga en obra: ${round(r.ciclo.descargaMin)} min`,
+    `  · Regreso a planta: ${round(r.ciclo.regresoMin)} min`,
+  ];
+
+  let mensaje: string;
+  if (finito && r.alcanzable) {
+    mensaje = `La frecuencia de ${r.frecuenciaSolicitadaMin} min es alcanzable con ${r.mixersDisponibles} mixer(es) disponibles (mínima posible: ${r.frecuenciaAlcanzableMin} min).`;
+  } else if (!finito) {
+    mensaje = `No hay mixers disponibles para este plantel en la fecha elegida, así que no se puede sostener ninguna frecuencia. Revisa la flota o el mantenimiento del día.`;
+  } else if (r.limitadoPor === "bahias") {
+    mensaje =
+      `El cuello de botella es la CARGA en planta: una sola bahía tarda ~${round(r.ciclo.cargaMin)} min por viaje, así que aunque agregues más mixers no puedes llegar más seguido que cada ${r.frecuenciaAlcanzableMin} min. ` +
+      `Pediste ${r.frecuenciaSolicitadaMin} min. Opciones: usar las 2 plantas del plantel (si aplica), reducir volumen por viaje o ajustar la frecuencia. ` +
+      `Puedes continuar (se programará a ~${r.frecuenciaAlcanzableMin} min).`;
+  } else {
+    const faltan = Math.max(0, r.mixersMinimos - r.mixersDisponibles);
+    mensaje =
+      `Con ${r.mixersDisponibles} mixer(es) disponibles y un ciclo de ${round(r.ciclo.cicloMin)} minutos, la frecuencia mínima alcanzable es ${r.frecuenciaAlcanzableMin} min. ` +
+      `Pediste ${r.frecuenciaSolicitadaMin} min — harían falta ${r.mixersMinimos} mixers (${faltan} más). ` +
+      `Puedes continuar (se programará a ~${r.frecuenciaAlcanzableMin} min) o ajustar la frecuencia / conseguir más flota.`;
+  }
+
+  return {
+    ok: true,
+    mensaje,
+    alcanzable: r.alcanzable,
+    frecuenciaSolicitadaMin: r.frecuenciaSolicitadaMin,
+    frecuenciaAlcanzableMin: finito ? r.frecuenciaAlcanzableMin : null,
+    mixersMinimos: r.mixersMinimos,
+    mixersDisponibles: r.mixersDisponibles,
+    limitadoPor: r.limitadoPor,
+    ciclo: {
+      cargaMin: r.ciclo.cargaMin,
+      idaMin: r.ciclo.idaMin,
+      descargaMin: r.ciclo.descargaMin,
+      regresoMin: r.ciclo.regresoMin,
+      cicloMin: r.ciclo.cicloMin,
+    },
+    lineas,
+  };
 }
 
 /** Server action: reasignación manual de mixer. */

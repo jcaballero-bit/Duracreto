@@ -90,6 +90,11 @@ export interface PedidoVista {
   confirmado: boolean;
   sinCubrir: boolean;
   sinCubrirVol: number;
+  // Frecuencia entre camiones: la SOLICITADA (lo que pidió el asesor/programador) y
+  // la REAL programada (cadencia media entre llegadas de los viajes). Si difieren,
+  // la flota no alcanzó la frecuencia pedida y se avisa en el detalle.
+  frecuenciaSolicitadaMin: number | null;
+  frecuenciaRealMin: number | null;
   sugerencias: SugerenciaVista[];
   viajes: ViajeVista[];
   ubicacion: UbicacionCliente;
@@ -394,6 +399,10 @@ function FragmentoPedido({
               <span className="font-medium text-ink">Ubicación:</span>
               <BotonesMapa ubicacion={p.ubicacion} />
             </div>
+            <FrecuenciaResumen
+              solicitada={p.frecuenciaSolicitadaMin}
+              real={p.frecuenciaRealMin}
+            />
             <DetalleViajes viajes={p.viajes} />
             {horaCargaManualHabilitada && (
               <HoraCargaManualAdmin
@@ -542,6 +551,49 @@ function HoraCargaManualAdmin({
           ? "Fijada manualmente — puede chocar con otros pedidos."
           : "Automático (la programación manda)."}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Resumen de la frecuencia entre camiones del pedido: la SOLICITADA vs la REAL
+ * programada (cadencia media entre llegadas). Si la real es más lenta que la
+ * solicitada (la flota no alcanzó), se muestra en ámbar. Sin frecuencia solicitada
+ * no se muestra nada.
+ */
+function FrecuenciaResumen({
+  solicitada,
+  real,
+}: {
+  solicitada: number | null;
+  real: number | null;
+}) {
+  if (solicitada == null || solicitada <= 0) return null;
+  // Se considera "no alcanzada" si la cadencia real supera la pedida por > 1 min.
+  const noAlcanzada = real != null && real > solicitada + 1;
+  return (
+    <div
+      className={
+        "mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md px-3 py-1.5 text-xs " +
+        (noAlcanzada ? "bg-amber-50 text-amber-900" : "text-muted")
+      }
+    >
+      <span>
+        Frecuencia entre camiones — solicitada:{" "}
+        <strong className="text-ink">{solicitada} min</strong>
+      </span>
+      <span>
+        real programada:{" "}
+        <strong className={noAlcanzada ? "text-amber-900" : "text-ink"}>
+          {real != null ? `${real} min` : "—"}
+        </strong>
+      </span>
+      {noAlcanzada && (
+        <span className="w-full sm:w-auto">
+          ⚠️ La flota disponible no alcanzó la frecuencia pedida; se programó a la
+          cadencia real posible.
+        </span>
+      )}
     </div>
   );
 }

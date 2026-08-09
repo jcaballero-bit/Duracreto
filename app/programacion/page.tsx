@@ -60,6 +60,30 @@ function horaLlegadaMin(
   return horas.length ? new Date(Math.min(...horas)) : null;
 }
 
+/**
+ * Cadencia REAL entre llegadas (min): mediana del hueco entre llegadas consecutivas
+ * de los viajes CON mixer del pedido. Null si hay menos de 2 llegadas. La mediana
+ * (no el promedio) evita que un hueco atípico distorsione el número que ve el
+ * Programador. Sirve para comparar contra la frecuencia solicitada.
+ */
+function frecuenciaRealMin(
+  viajes: { mixer_id: number | null; hora_llegada_proyecto: Date | null }[],
+): number | null {
+  const llegadas = viajes
+    .filter((v) => v.mixer_id != null && v.hora_llegada_proyecto != null)
+    .map((v) => v.hora_llegada_proyecto!.getTime())
+    .sort((a, b) => a - b);
+  if (llegadas.length < 2) return null;
+  const gaps: number[] = [];
+  for (let i = 1; i < llegadas.length; i++) {
+    gaps.push((llegadas[i] - llegadas[i - 1]) / 60000);
+  }
+  gaps.sort((a, b) => a - b);
+  const mid = Math.floor(gaps.length / 2);
+  const mediana = gaps.length % 2 ? gaps[mid] : (gaps[mid - 1] + gaps[mid]) / 2;
+  return Math.round(mediana);
+}
+
 /** "YYYY-MM-DDTHH:mm" local, para el input datetime-local del formulario. */
 function toLocalInput(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -281,6 +305,8 @@ export default async function ProgramacionPage({
       confirmado,
       sinCubrir,
       sinCubrirVol,
+      frecuenciaSolicitadaMin: p.frecuencia_entre_camiones_min,
+      frecuenciaRealMin: frecuenciaRealMin(p.viajes),
       sugerencias,
       viajes: p.viajes
         .filter((v) => v.motivo_asignacion !== "Sin cubrir" || v.mixer_id == null)

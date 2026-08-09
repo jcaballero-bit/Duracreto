@@ -29,6 +29,7 @@ import {
 } from "./config";
 import { planificarCombinacion, unidadLibreEnVentana } from "./planificador";
 import type { VentanaViaje } from "./planificador";
+import { analizarFrecuencia, type ResultadoFrecuencia } from "./frecuencia";
 import { leerMargenHueco } from "./config-runtime";
 import { calcularHuecos, planificarDosPasadas, type Hueco, type PedidoOrg } from "./organizador";
 import {
@@ -481,9 +482,12 @@ async function cascadaDeUnaPlanta(
 
   const cambios: number[] = [];
   let plantaLibreEn: Date | null = null;
-  // Inicio de carga del último viaje colocado de cada pedido, para escalonar los
-  // camiones según frecuencia_entre_camiones_min (restricción del sitio).
-  const ultimoInicioPorPedidoMs = new Map<number, number>();
+  // LLEGADA a obra del último viaje colocado de cada pedido. La frecuencia entre
+  // camiones (frecuencia_entre_camiones_min) es una CADENCIA DE LLEGADAS: la llegada
+  // del viaje N debe ser >= llegada del N-1 + frecuencia. Se ancla sobre la LLEGADA
+  // (no sobre el inicio de carga) para que la cadencia sea constante aunque se mezclen
+  // mixers de distinta capacidad (que cargan en tiempos distintos).
+  const ultimaLlegadaPorPedidoMs = new Map<number, number>();
 
   // `hora_solicitada` es la LLEGADA deseada al proyecto (no la hora de carga).
   // Inicio de jornada = la LLEGADA más temprana pedida en la cola. El PRIMER
@@ -543,7 +547,7 @@ async function cascadaDeUnaPlanta(
 
     // ── Viaje FIJO (ya inició/completó): ancla, no se re-agenda. ──
     if (esFijo) {
-      if (v.hora_inicio_carga) ultimoInicioPorPedidoMs.set(v.pedido_id, v.hora_inicio_carga.getTime());
+      if (v.hora_llegada_proyecto) ultimaLlegadaPorPedidoMs.set(v.pedido_id, v.hora_llegada_proyecto.getTime());
       const finCargaFijo =
         v.hora_fin_carga ??
         (v.hora_inicio_carga ? sumarMinutos(v.hora_inicio_carga, cargaMinDe(v.volumen_asignado_m3)) : null);
@@ -570,6 +574,25 @@ async function cascadaDeUnaPlanta(
         : plantaLibreEn == null
           ? jornadaLlegadaMs - backwardMs
           : 0;
+    // Cadencia de frecuencia SOBRE LA LLEGADA: retrasa el inicio (nunca lo adelanta)
+    // para que la llegada de este viaje sea >= llegada previa del pedido + frecuencia.
+    const conFrecuencia = (
+      inicioMs: number,
+      vol: number,
+    ): { inicioMs: number; t: ReturnType<typeof tiemposDe> } => {
+      let t = tiemposDe(inicioMs, vol, tViaje, tRegreso, pedido.tipo_descarga);
+      if (freq != null) {
+        const prev = ultimaLlegadaPorPedidoMs.get(pedido.id);
+        if (prev != null) {
+          const target = prev + freq * 60000;
+          if (t.llegadaProyecto.getTime() < target) {
+            inicioMs += target - t.llegadaProyecto.getTime();
+            t = tiemposDe(inicioMs, vol, tViaje, tRegreso, pedido.tipo_descarga);
+          }
+        }
+      }
+      return { inicioMs, t };
+    };
 
     // ── Viaje MANUAL (refuerzo/reasignación): conserva su mixer; un solo viaje. ──
     if (v.ajustado_manualmente && v.mixer_id != null) {
@@ -580,19 +603,16 @@ async function cascadaDeUnaPlanta(
         continue;
       }
       const vol = v.volumen_asignado_m3;
-      const previoMs = ultimoInicioPorPedidoMs.get(pedido.id);
-      const pisoFrecuenciaMs = freq != null && previoMs != null ? previoMs + freq * 60000 : 0;
       const backwardMs = (cargaMinDe(vol) + MIN_SALIDA_TRAS_CARGA + tViaje) * 60000;
-      const inicioMs = Math.max(
+      const inicioNaturalMs = Math.max(
         plantaLibreEn?.getTime() ?? 0,
         dispEnMs.get(meta.id) ?? 0,
         anclaDe(backwardMs),
-        pisoFrecuenciaMs,
       );
-      const t = tiemposDe(inicioMs, vol, tViaje, tRegreso, pedido.tipo_descarga);
+      const { t } = conFrecuencia(inicioNaturalMs, vol);
       plantaLibreEn = t.finCarga;
       dispEnMs.set(meta.id, t.regresoPlanta.getTime());
-      ultimoInicioPorPedidoMs.set(pedido.id, t.inicioCarga.getTime());
+      ultimaLlegadaPorPedidoMs.set(pedido.id, t.llegadaProyecto.getTime());
       const cambio =
         v.mixer_id !== meta.id ||
         !igualFecha(v.hora_inicio_carga, t.inicioCarga) ||
@@ -649,13 +669,13 @@ async function cascadaDeUnaPlanta(
     const trips: TripPlan[] = [];
     while (restante > 1e-6) {
       const plantaLibreMs = plantaLibreEn?.getTime() ?? 0;
-      const previoMs = ultimoInicioPorPedidoMs.get(pedido.id);
-      const pisoFrecuenciaMs = freq != null && previoMs != null ? previoMs + freq * 60000 : 0;
-      const pisoBaseMs = Math.max(plantaLibreMs, pisoFrecuenciaMs);
+      // La frecuencia ya NO entra en el piso de selección del mixer (se aplica sobre
+      // la llegada, abajo): así se elige el mixer que arranca más temprano y luego se
+      // retrasa la carga lo justo para cumplir la cadencia de llegadas.
       const elegido = elegirMixerDisponible(
         candidatos,
         dispEnMs,
-        pisoBaseMs,
+        plantaLibreMs,
         restante,
         pedido.carga_reducida,
         reducidas,
@@ -664,8 +684,8 @@ async function cascadaDeUnaPlanta(
       if (!elegido) break;
       const vol = elegido.carga;
       const backwardMs = (cargaMinDe(vol) + MIN_SALIDA_TRAS_CARGA + tViaje) * 60000;
-      const inicioMs = Math.max(elegido.inicioMs, anclaDe(backwardMs));
-      const t = tiemposDe(inicioMs, vol, tViaje, tRegreso, pedido.tipo_descarga);
+      const inicioNaturalMs = Math.max(elegido.inicioMs, anclaDe(backwardMs));
+      const { t } = conFrecuencia(inicioNaturalMs, vol);
       trips.push({
         mixer: elegido.mixer,
         vol,
@@ -675,7 +695,7 @@ async function cascadaDeUnaPlanta(
       });
       plantaLibreEn = t.finCarga;
       dispEnMs.set(elegido.mixer.id, t.regresoPlanta.getTime());
-      ultimoInicioPorPedidoMs.set(pedido.id, t.inicioCarga.getTime());
+      ultimaLlegadaPorPedidoMs.set(pedido.id, t.llegadaProyecto.getTime());
       restante -= vol;
     }
 
@@ -817,7 +837,8 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
   type ViajeCola = EstadoPlanta["viajes"][number];
 
   const cambios: number[] = [];
-  const ultimoInicioPorPedidoMs = new Map<number, number>();
+  // LLEGADA del último viaje por pedido (cadencia de frecuencia sobre la llegada).
+  const ultimaLlegadaPorPedidoMs = new Map<number, number>();
 
   const esFijo = (v: ViajeCola) =>
     v.estado === ESTADO_VIAJE_COMPLETADO || v.ts_inicio_carga_real != null;
@@ -825,7 +846,7 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
   // Viaje FIJO (ya inició/completó): no se re-agenda; solo siembra el reloj de la
   // planta y del mixer (idéntico a la rama fija de cascadaDeUnaPlanta).
   const procesarFijo = (v: ViajeCola, e: EstadoPlanta) => {
-    if (v.hora_inicio_carga) ultimoInicioPorPedidoMs.set(v.pedido_id, v.hora_inicio_carga.getTime());
+    if (v.hora_llegada_proyecto) ultimaLlegadaPorPedidoMs.set(v.pedido_id, v.hora_llegada_proyecto.getTime());
     const finCarga =
       v.hora_fin_carga ??
       (v.hora_inicio_carga
@@ -963,11 +984,9 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
   }
 
   // Siguiente viaje de una corrida SIN comprometer. null → sin cubrir (sin candidato).
+  // La frecuencia se aplica sobre la LLEGADA (cadencia constante), no sobre el inicio.
   const siguienteTrip = (e: EstadoPlanta, run: RunState): TripPlan | null => {
     const plantaLibreMs = e.plantaLibreEn?.getTime() ?? 0;
-    const previoMs = ultimoInicioPorPedidoMs.get(run.pedido.id);
-    const pisoFrecuenciaMs = run.freq != null && previoMs != null ? previoMs + run.freq * 60000 : 0;
-    const pisoBaseMs = Math.max(plantaLibreMs, pisoFrecuenciaMs);
     const anclaDe = (backwardMs: number) =>
       run.pedido.hora_bloqueada
         ? run.pedido.hora_solicitada.getTime() - backwardMs
@@ -986,12 +1005,12 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
       vol = run.restante;
       capacidad = capacidadPlaneacion(meta.capacidad_m3, run.pedido.carga_reducida, reducidas);
       const backwardMs = (cargaMinDe(e, vol) + MIN_SALIDA_TRAS_CARGA + run.tViaje) * 60000;
-      inicioMs = Math.max(pisoBaseMs, dispEnMs.get(meta.id) ?? 0, anclaDe(backwardMs));
+      inicioMs = Math.max(plantaLibreMs, dispEnMs.get(meta.id) ?? 0, anclaDe(backwardMs));
     } else {
       const elegido = elegirMixerDisponible(
         candidatos,
         dispEnMs,
-        pisoBaseMs,
+        plantaLibreMs,
         run.restante,
         run.pedido.carga_reducida,
         reducidas,
@@ -1004,7 +1023,19 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
       const backwardMs = (cargaMinDe(e, vol) + MIN_SALIDA_TRAS_CARGA + run.tViaje) * 60000;
       inicioMs = Math.max(elegido.inicioMs, anclaDe(backwardMs));
     }
-    const t = tiemposDe(e, inicioMs, vol, run.tViaje, run.tRegreso, run.pedido.tipo_descarga);
+    // Cadencia de frecuencia sobre la LLEGADA: retrasar (nunca adelantar) para que la
+    // llegada del viaje sea >= llegada previa del pedido + frecuencia.
+    let t = tiemposDe(e, inicioMs, vol, run.tViaje, run.tRegreso, run.pedido.tipo_descarga);
+    if (run.freq != null) {
+      const prev = ultimaLlegadaPorPedidoMs.get(run.pedido.id);
+      if (prev != null) {
+        const target = prev + run.freq * 60000;
+        if (t.llegadaProyecto.getTime() < target) {
+          inicioMs += target - t.llegadaProyecto.getTime();
+          t = tiemposDe(e, inicioMs, vol, run.tViaje, run.tRegreso, run.pedido.tipo_descarga);
+        }
+      }
+    }
     const motivo =
       run.manualMixerId != null
         ? (run.rows[run.emitidos]?.motivo_asignacion ?? "Flota propia")
@@ -1019,7 +1050,7 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
     const { e, run } = tp;
     e.plantaLibreEn = tp.t.finCarga;
     dispEnMs.set(tp.mixer.id, tp.t.regresoPlanta.getTime());
-    ultimoInicioPorPedidoMs.set(run.pedido.id, tp.t.inicioCarga.getTime());
+    ultimaLlegadaPorPedidoMs.set(run.pedido.id, tp.t.llegadaProyecto.getTime());
     const esManual = run.manualMixerId != null;
     const datos = {
       mixer_id: tp.mixer.id,
@@ -1410,6 +1441,84 @@ export async function sugerirHoraDisponible(
   return new Date(
     libreLoadMs + (cargaMin + MIN_SALIDA_TRAS_CARGA + tViaje) * 60000,
   );
+}
+
+// ── Frecuencia entre camiones: análisis con flota real (Solución 2) ──────────
+
+export interface EntradaAnalisisFrecuencia {
+  plantelId: number;
+  plantaId: number;
+  volumenTotal: number;
+  frecuenciaMin: number;
+  tipoDescarga: string;
+  /** Transporte ida (min) del pedido; null → usa el del cliente / default. */
+  transporteMin?: number | null;
+  clienteId?: number | null;
+  usarAmbasPlantas?: boolean;
+  cargaReducida?: boolean;
+  /** Día del pedido (para excluir mixers en mantenimiento); default hoy. */
+  dia?: Date;
+}
+
+/**
+ * Analiza si la frecuencia pedida es alcanzable con la flota REAL disponible ese
+ * día, usando los mismos candidatos que la cascada (`candidatosDePlanta`) y los
+ * mismos tiempos (planta, transporte del pedido/cliente). Es de solo lectura: NO
+ * asigna nada; alimenta la advertencia no bloqueante del formulario.
+ *
+ * `volumenPorViaje` = carga de planeación del mixer MÁS GRANDE disponible (el que
+ * el motor prefiere): el ciclo representativo se calcula con ese viaje típico.
+ * `numeroBahias` = 2 solo si el plantel tiene 2 plantas Y el pedido usa ambas.
+ */
+export async function analizarFrecuenciaPedido(
+  entrada: EntradaAnalisisFrecuencia,
+): Promise<ResultadoFrecuencia> {
+  const dia = entrada.dia ?? new Date();
+  const plantel = await prisma.planteles.findUniqueOrThrow({
+    where: { id: entrada.plantelId },
+    select: { id: true, hub_id: true, plantas: { select: { id: true } } },
+  });
+  const planta = await prisma.plantas.findUniqueOrThrow({
+    where: { id: entrada.plantaId },
+    select: { capacidad_m3h: true, tiempo_alistamiento_min: true },
+  });
+
+  const [candidatos, reducidas] = await Promise.all([
+    candidatosDePlanta(plantel.id, plantel.hub_id, dia),
+    cargarCapacidadesReducidas(),
+  ]);
+
+  // Capacidad de planeación del mixer más grande disponible = viaje representativo.
+  const cargaReducida = entrada.cargaReducida ?? false;
+  const capsPlaneacion = candidatos.map((m) =>
+    capacidadPlaneacion(m.capacidad_m3, cargaReducida, reducidas),
+  );
+  const volumenPorViaje = capsPlaneacion.length > 0 ? Math.max(...capsPlaneacion) : 10;
+
+  // Transporte: override del pedido → del cliente → default (igual que la cascada).
+  let transporte = entrada.transporteMin ?? null;
+  if (transporte == null && entrada.clienteId != null) {
+    const cli = await prisma.clientes.findUnique({
+      where: { id: entrada.clienteId },
+      select: { tiempo_viaje_referencia_min: true },
+    });
+    transporte = cli?.tiempo_viaje_referencia_min ?? null;
+  }
+  const tViaje = transporte ?? DEFAULT_TIEMPO_VIAJE_MIN;
+
+  const dosPlantas = plantel.plantas.length >= 2 && (entrada.usarAmbasPlantas ?? false);
+
+  return analizarFrecuencia({
+    volumenPorViaje,
+    capacidadPlantaM3h: planta.capacidad_m3h,
+    alistamientoMin: planta.tiempo_alistamiento_min,
+    tiempoIdaMin: tViaje,
+    tiempoRegresoMin: tViaje,
+    tipoDescarga: entrada.tipoDescarga,
+    mixersDisponibles: candidatos.length,
+    numeroBahias: dosPlantas ? 2 : 1,
+    frecuenciaSolicitadaMin: entrada.frecuenciaMin,
+  });
 }
 
 // ── Bombas: préstamo por hub (mismo Paso 1/2/3 que los mixers, mapa propio) ──
