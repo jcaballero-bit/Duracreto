@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState, useTransition, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { ClipboardCheck, FlaskConical, Save, X } from "lucide-react";
 import {
@@ -169,6 +169,32 @@ export function FinalizarCalidadBoton({
   );
 }
 
+/** Casilla de una pregunta sí/no del control general. A nivel de módulo (no dentro
+ *  del render de GeneralModal) para no recrear el componente en cada render. */
+function CheckCalidad({
+  k,
+  label,
+  d,
+  setD,
+}: {
+  k: keyof GeneralCalidad;
+  label: string;
+  d: GeneralCalidad;
+  setD: Dispatch<SetStateAction<GeneralCalidad>>;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm text-ink">
+      <input
+        type="checkbox"
+        checked={!!d[k]}
+        onChange={(e) => setD((prev) => ({ ...prev, [k]: e.target.checked }) as GeneralCalidad)}
+        className="h-4 w-4"
+      />
+      {label}
+    </label>
+  );
+}
+
 function GeneralModal({
   pedidoId,
   cliente,
@@ -209,18 +235,6 @@ function GeneralModal({
     });
   };
 
-  const Check = ({ k, label }: { k: keyof GeneralCalidad; label: string }) => (
-    <label className="flex items-center gap-2 text-sm text-ink">
-      <input
-        type="checkbox"
-        checked={!!d[k]}
-        onChange={(e) => setD((prev) => ({ ...prev, [k]: e.target.checked }) as GeneralCalidad)}
-        className="h-4 w-4"
-      />
-      {label}
-    </label>
-  );
-
   return (
     <div
       className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-8"
@@ -242,10 +256,10 @@ function GeneralModal({
         </div>
         <div className="space-y-3 p-5">
           <div className="grid gap-3 sm:grid-cols-2">
-            <Check k="humedecio_area" label="¿Se humedeció el área?" />
-            <Check k="vibro_concreto" label="¿Se vibró el concreto?" />
-            <Check k="uso_curador" label="¿Se usó curador?" />
-            <Check k="aplico_aditivo" label="¿Se aplicó aditivo?" />
+            <CheckCalidad k="humedecio_area" label="¿Se humedeció el área?" d={d} setD={setD} />
+            <CheckCalidad k="vibro_concreto" label="¿Se vibró el concreto?" d={d} setD={setD} />
+            <CheckCalidad k="uso_curador" label="¿Se usó curador?" d={d} setD={setD} />
+            <CheckCalidad k="aplico_aditivo" label="¿Se aplicó aditivo?" d={d} setD={setD} />
             {d.aplico_aditivo && (
               <label className="text-sm sm:col-span-2">
                 <span className="mb-1 block font-medium text-ink">Aditivo (unidades / detalle)</span>
@@ -270,7 +284,7 @@ function GeneralModal({
               />
               <span className="mt-0.5 block text-[11px] text-muted">Sugerido: {m3Sugerido} m³ (despachado)</span>
             </label>
-            <Check k="existe_reclamo" label="¿Existe algún reclamo?" />
+            <CheckCalidad k="existe_reclamo" label="¿Existe algún reclamo?" d={d} setD={setD} />
             {d.existe_reclamo && (
               <label className="text-sm sm:col-span-2">
                 <span className="mb-1 block font-medium text-ink">Detalle del reclamo</span>
