@@ -109,8 +109,12 @@ const PRINT_CSS = `
   /* En vertical las tablas deben ajustarse al ancho de la página (no forzar min-width). */
   .programa-doc table { min-width: 0 !important; width: 100% !important; }
   .programa-doc .overflow-x-auto { overflow: visible !important; }
+  /* Documento CORRIDO: la tabla única fluye entre páginas y solo corta ENTRE filas
+     (viajes), nunca dentro de una. El encabezado de columnas se repite en cada hoja. */
   .plantel-tabla { break-inside: auto; }
-  tr { break-inside: avoid; }
+  .programa-doc thead { display: table-header-group; }
+  .programa-doc tr { break-inside: avoid; }
+  .programa-doc tfoot { break-inside: avoid; }
 }
 .programa-doc { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 `;
@@ -277,73 +281,89 @@ export default async function ProgramaPage({
           </div>
         )}
 
-        {/* ── Una tabla por plantel de la zona ───────────────────────────── */}
-        <div className="mt-3 space-y-5 overflow-x-auto">
-          {plantelesOrd.map((pl) => {
-            const suyos = pedidos.filter((p) => p.plantel_id === pl.id);
-            const totalPl = suyos.reduce((s, p) => s + (p.volumen_programado ?? p.volumen_total_m3), 0);
-            // La planta solo se indica en planteles con 2+ plantas (para saber
-            // dónde cargar); en los de una sola planta no aporta.
-            const mostrarPlanta = pl.plantas.length >= 2;
-            return (
-              <div key={pl.id} className="plantel-tabla">
-                <div className="rounded-t-sm bg-slate-100 px-3 py-1.5 text-sm font-bold text-slate-800">
-                  {pl.nombre}
-                </div>
-                <table className="w-full min-w-[1000px] border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50">
-                      <th className={`${th} text-left`}>Cliente</th>
-                      <th className={th}>Viaje</th>
-                      <th className={`${th} text-left`}>Motorista</th>
-                      <th className={th}>Mixer</th>
-                      <th className={th}>Carga</th>
-                      <th className={th}>Llegada</th>
-                      <th className={th}>Finaliza</th>
-                      <th className={th}>Regreso</th>
-                      <th className={`${th} text-left`}>Tipo de concreto</th>
-                      <th className={th}>Vol. m³</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {suyos.length === 0 ? (
-                      <tr>
-                        <td className={`${td} text-center text-slate-400`} colSpan={10}>
-                          Sin pedidos programados.
-                        </td>
-                      </tr>
-                    ) : (
-                      // Orden ASCENDENTE por hora de llegada a obra del primer viaje
-                      // (sin agrupar por planta). Línea en blanco entre cliente y cliente.
-                      [...suyos]
-                        .sort((a, b) => primeraLlegadaMs(a) - primeraLlegadaMs(b))
-                        .flatMap((p, idx, arr) => {
-                          const filas = renderPedido(p, colorBomba, td, mostrarPlanta);
-                          if (idx < arr.length - 1) {
-                            filas.push(
-                              <tr key={`sep-${p.id}`}>
-                                <td colSpan={10} className="h-3" />
-                              </tr>,
-                            );
-                          }
-                          return filas;
-                        })
-                    )}
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-slate-100 font-bold text-slate-800">
-                      <td className="border border-slate-400 px-2 py-1 text-right text-[11px]" colSpan={9}>
-                        Total {pl.nombre}
+        {/* ── UNA sola tabla continua para toda la zona ──────────────────────
+            Documento "corrido": el nombre del plantel y su total van como FILAS de
+            esta única tabla (antes cada plantel era una tabla aparte, y al imprimir el
+            navegador saltaba una tabla completa a la hoja siguiente dejando huecos en
+            blanco). Con una sola tabla, el corte de página ocurre solo ENTRE filas
+            (viajes) y el encabezado de columnas se repite en cada hoja. */}
+        <div className="mt-3 overflow-x-auto">
+          <table className="plantel-tabla w-full min-w-[1000px] border-collapse">
+            <thead>
+              <tr className="bg-slate-50">
+                <th className={`${th} text-left`}>Cliente</th>
+                <th className={th}>Viaje</th>
+                <th className={`${th} text-left`}>Motorista</th>
+                <th className={th}>Mixer</th>
+                <th className={th}>Carga</th>
+                <th className={th}>Llegada</th>
+                <th className={th}>Finaliza</th>
+                <th className={th}>Regreso</th>
+                <th className={`${th} text-left`}>Tipo de concreto</th>
+                <th className={th}>Vol. m³</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plantelesOrd.flatMap((pl, plIdx) => {
+                const suyos = pedidos.filter((p) => p.plantel_id === pl.id);
+                const totalPl = suyos.reduce((s, p) => s + (p.volumen_programado ?? p.volumen_total_m3), 0);
+                // La planta solo se indica en planteles con 2+ plantas.
+                const mostrarPlanta = pl.plantas.length >= 2;
+                const filas: ReactElement[] = [];
+                // Fila de nombre del plantel (encabezado de sección).
+                filas.push(
+                  <tr key={`pl-${pl.id}`} className="bg-slate-100">
+                    <td colSpan={10} className="border border-slate-300 px-3 py-1.5 text-sm font-bold text-slate-800">
+                      {pl.nombre}
+                    </td>
+                  </tr>,
+                );
+                if (suyos.length === 0) {
+                  filas.push(
+                    <tr key={`empty-${pl.id}`}>
+                      <td className={`${td} text-center text-slate-400`} colSpan={10}>
+                        Sin pedidos programados.
                       </td>
-                      <td className="border border-slate-400 px-2 py-1 text-center text-[11px]">
-                        {totalPl.toFixed(2)} m³
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            );
-          })}
+                    </tr>,
+                  );
+                } else {
+                  // Orden ASCENDENTE por hora de llegada del primer viaje. Línea en
+                  // blanco entre cliente y cliente.
+                  const ordenados = [...suyos].sort((a, b) => primeraLlegadaMs(a) - primeraLlegadaMs(b));
+                  ordenados.forEach((p, idx) => {
+                    for (const f of renderPedido(p, colorBomba, td, mostrarPlanta)) filas.push(f);
+                    if (idx < ordenados.length - 1) {
+                      filas.push(
+                        <tr key={`sep-${p.id}`}>
+                          <td colSpan={10} className="h-3" />
+                        </tr>,
+                      );
+                    }
+                  });
+                }
+                // Total del plantel.
+                filas.push(
+                  <tr key={`tot-${pl.id}`} className="bg-slate-100 font-bold text-slate-800">
+                    <td className="border border-slate-400 px-2 py-1 text-right text-[11px]" colSpan={9}>
+                      Total {pl.nombre}
+                    </td>
+                    <td className="border border-slate-400 px-2 py-1 text-center text-[11px]">
+                      {totalPl.toFixed(2)} m³
+                    </td>
+                  </tr>,
+                );
+                // Separación entre plantel y plantel (no tras el último).
+                if (plIdx < plantelesOrd.length - 1) {
+                  filas.push(
+                    <tr key={`plsep-${pl.id}`}>
+                      <td colSpan={10} className="h-5" />
+                    </tr>,
+                  );
+                }
+                return filas;
+              })}
+            </tbody>
+          </table>
         </div>
 
         {/* ── Total de la zona ───────────────────────────────────────────── */}
