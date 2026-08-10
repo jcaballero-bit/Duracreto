@@ -1,7 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import { especDiseno, textoHielo } from "@/lib/formato";
-import { sugerirRefuerzo } from "@/lib/motor/asignacion";
-import { PERMITIR_HORA_CARGA_MANUAL, cierreProgramaDe } from "@/lib/motor/config";
+import { sugerirRefuerzo, unidadesEnMantenimiento } from "@/lib/motor/asignacion";
+import {
+  DEFAULT_TIEMPO_VIAJE_MIN,
+  MARGEN_MINIMO_MIN,
+  PERMITIR_HORA_CARGA_MANUAL,
+  cierreProgramaDe,
+} from "@/lib/motor/config";
 import { filtroPedidoPorZona, filtroPlantelPorZona } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { compararPlanteles } from "@/lib/planteles-orden";
@@ -11,6 +16,13 @@ import { Filtros } from "./filtros";
 import { GanttRecursos, type FilaGantt, type SeccionGantt } from "./gantt-recursos";
 import { NuevoPedidoModal } from "./nuevo-pedido-modal";
 import { VistaProgramacion } from "./vista-toggle";
+import { ModoProgramacion } from "./modo-programacion";
+import {
+  ManualView,
+  type PlantelManual,
+  type ClienteOpcionManual,
+  type DisenoOpcionManual,
+} from "./manual-view";
 import type { ClienteCard, EstadoCliente, PlantaMedidor, PlantelSimple } from "./vista-simple";
 import { calcularHuecos } from "@/lib/motor/organizador";
 import { leerMargenHueco } from "@/lib/motor/config-runtime";
@@ -643,6 +655,79 @@ export default async function ProgramacionPage({
       };
     });
 
+  // ── Datos para el MODO MANUAL (solo si el rol puede programar a mano) ──
+  const puedeManual = rolEditaProg;
+  let plantelesManual: PlantelManual[] = [];
+  let clientesManual: ClienteOpcionManual[] = [];
+  let disenosManual: DisenoOpcionManual[] = [];
+  if (puedeManual) {
+    const [mixersDisp, mantMixers] = await Promise.all([
+      prisma.mixers.findMany({
+        where: { estado: "Disponible" },
+        select: { id: true, identificador: true, capacidad_m3: true, plantel_base_id: true },
+      }),
+      unidadesEnMantenimiento("Mixer", ini),
+    ]);
+    const filasPorPlantel = new Map<number, PlantelManual["filas"]>();
+    for (const p of pedidos) {
+      for (const v of p.viajes) {
+        // Solo viajes con horario y con planta: los "Sin cubrir" no se colocan en la tabla.
+        if (!v.hora_inicio_carga || v.planta_id == null || v.motivo_asignacion === "Sin cubrir") continue;
+        const transporteMin =
+          p.tiempo_transporte_min ?? p.cliente.tiempo_viaje_referencia_min ?? DEFAULT_TIEMPO_VIAJE_MIN;
+        const arr = filasPorPlantel.get(p.plantel_id) ?? [];
+        arr.push({
+          id: v.id,
+          plantaId: v.planta_id,
+          clienteId: p.cliente_id,
+          empresa: p.cliente.empresa,
+          proyecto: p.cliente.proyecto ?? "",
+          mixerId: v.mixer_id,
+          volumen: v.volumen_asignado_m3,
+          inicioCargaMs: v.hora_inicio_carga.getTime(),
+          tipoDescarga: p.tipo_descarga,
+          disenoId: p.diseno_id,
+          transporteMin,
+        });
+        filasPorPlantel.set(p.plantel_id, arr);
+      }
+    }
+    plantelesManual = planteles
+      .filter((pl) => plantelFiltro === "todos" || pl.id === Number(plantelFiltro))
+      .sort((a, b) => compararPlanteles(a.nombre, b.nombre))
+      .map((pl) => {
+        const hubIds = new Set<number>([pl.id, ...(pl.hub_id != null ? [pl.hub_id] : [])]);
+        const mixers = mixersDisp
+          .filter((m) => hubIds.has(m.plantel_base_id) && !mantMixers.has(m.id))
+          .map((m) => ({
+            id: m.id,
+            label: m.identificador ?? `#${m.id}`,
+            capacidad: m.capacidad_m3,
+            plantelBaseId: m.plantel_base_id,
+          }));
+        return {
+          plantelId: pl.id,
+          nombre: pl.nombre,
+          zona: pl.zona,
+          plantas: pl.plantas.map((pt) => ({
+            id: pt.id,
+            nombre: pt.nombre,
+            capacidadM3h: pt.capacidad_m3h,
+            alistamientoMin: pt.tiempo_alistamiento_min,
+          })),
+          mixers,
+          filas: filasPorPlantel.get(pl.id) ?? [],
+        };
+      });
+    clientesManual = clientes.map((c) => ({
+      id: c.id,
+      empresa: c.empresa,
+      proyecto: c.proyecto ?? "",
+      transporteMin: c.tiempo_viaje_referencia_min ?? DEFAULT_TIEMPO_VIAJE_MIN,
+    }));
+    disenosManual = disenos.map((d) => ({ id: d.id, etiqueta: `${d.codigo} — ${especDiseno(d)}` }));
+  }
+
   return (
     <>
       <AutoRefresh />
@@ -676,8 +761,22 @@ export default async function ProgramacionPage({
         </div>
       )}
 
-      {/* Vista SIMPLE por defecto; el "Modo avanzado" (tablas + Gantt) va como
-          `avanzado` y su preferencia se recuerda en el navegador. */}
+      {/* Selector de nivel superior: AUTOMÁTICO (el motor arma el día) vs MANUAL
+          (el usuario arma todo a mano y el motor solo valida/avisa). El modo Auto
+          conserva su sub-toggle Vista simple / Modo avanzado. */}
+      <ModoProgramacion
+        puedeManual={puedeManual}
+        manual={
+          <ManualView
+            planteles={plantelesManual}
+            clientes={clientesManual}
+            disenos={disenosManual}
+            fecha={fecha}
+            margenMin={MARGEN_MINIMO_MIN}
+            puedeEditar={puedeEditar}
+          />
+        }
+        auto={
       <VistaProgramacion
         plantelesSimple={plantelesSimple}
         fecha={fecha}
@@ -750,6 +849,8 @@ export default async function ProgramacionPage({
               </Card>
             )}
           </>
+        }
+      />
         }
       />
     </>

@@ -40,6 +40,7 @@ import {
   minutosDeDescarga,
   mismoDia,
   sumarMinutos,
+  tiemposDeViaje,
 } from "./tiempos";
 import type { AlertaMargen, Origen, SugerenciaRefuerzo } from "./tipos";
 
@@ -1752,6 +1753,285 @@ export async function modificarPedido(
   }
 
   return asignarViajesDePedido(pedidoId, entrada);
+}
+
+// ── MODO MANUAL: escritura directa de viajes SIN cascada ─────────────────────
+// El Programador/Jefe de Planta arma el día a mano. Estas funciones escriben los
+// tiempos de UN viaje exactamente como el usuario los fijó (inicio de carga tecleado
+// + hitos derivados con la misma matemática del motor) y NUNCA llaman a la cascada:
+// no reordenan, no mueven, no reasignan a nadie más. La única "corrección" del
+// sistema son las validaciones (lib/motor/validacion-manual.ts), que solo avisan.
+
+/** Entrada para agregar/mover un viaje en modo manual. */
+export interface EntradaViajeManual {
+  cliente_id: number;
+  diseno_id: number;
+  plantel_id: number;
+  planta_id: number;
+  mixer_id: number;
+  volumen: number;
+  inicio_carga: Date; // hora de carga EXACTA que fijó el usuario (piso duro)
+  tipo_descarga: string;
+  creado_por: string;
+}
+
+/** Transporte (ida = regreso) de un pedido: override del pedido → del cliente →
+ *  default. Devuelve `[min, rutaPorDefecto]`. */
+function transporteDePedido(
+  override: number | null,
+  cliente: number | null,
+): [number, boolean] {
+  const rutaPorDefecto = override == null && cliente == null;
+  return [override ?? cliente ?? DEFAULT_TIEMPO_VIAJE_MIN, rutaPorDefecto];
+}
+
+/** Recalcula `volumen_total_m3` (= Σ viajes) de un pedido; antes del cierre del
+ *  DPCR-08 también mueve la línea base `volumen_programado` (salvo adiciones). Si el
+ *  pedido quedó sin viajes, lo ELIMINA (deja de existir en el programa). No cascada. */
+async function reconciliarPedidoManual(pedidoId: number): Promise<void> {
+  const pedido = await prisma.pedidos.findUnique({
+    where: { id: pedidoId },
+    select: { id: true, es_adicion: true, hora_solicitada: true, viajes: { select: { volumen_asignado_m3: true } } },
+  });
+  if (!pedido) return;
+  if (pedido.viajes.length === 0) {
+    await prisma.pedidos.delete({ where: { id: pedidoId } });
+    return;
+  }
+  const total = pedido.viajes.reduce((s, v) => s + v.volumen_asignado_m3, 0);
+  const antesDelCierre = new Date() < cierreProgramaDe(pedido.hora_solicitada);
+  await prisma.pedidos.update({
+    where: { id: pedidoId },
+    data: {
+      volumen_total_m3: total,
+      ...(!pedido.es_adicion && antesDelCierre ? { volumen_programado: total } : {}),
+    },
+  });
+}
+
+/** Pedido de programa destino para un viaje manual: reutiliza el pedido Activo del
+ *  cliente ese día en el plantel con el MISMO diseño (para no fragmentar); si no hay,
+ *  crea uno nuevo. El día se toma de la hora de carga tecleada. */
+async function pedidoManualDestino(e: EntradaViajeManual, llegada: Date): Promise<number> {
+  const ini = inicioDelDia(e.inicio_carga);
+  const fin = finDelDia(e.inicio_carga);
+  const existente = await prisma.pedidos.findFirst({
+    where: {
+      cliente_id: e.cliente_id,
+      plantel_id: e.plantel_id,
+      diseno_id: e.diseno_id,
+      estado_pedido: "Activo",
+      hora_solicitada: { gte: ini, lt: fin },
+    },
+    orderBy: { id: "asc" },
+    select: { id: true },
+  });
+  if (existente) return existente.id;
+  const ordenDia = await siguienteOrdenDia(e.plantel_id, e.inicio_carga);
+  const creado = await prisma.pedidos.create({
+    data: {
+      cliente_id: e.cliente_id,
+      diseno_id: e.diseno_id,
+      volumen_total_m3: e.volumen,
+      volumen_programado: e.volumen,
+      es_adicion: false, // programación manual = parte del programa/DPCR-08
+      hora_solicitada: llegada, // la llegada del primer viaje representa la del pedido
+      plantel_id: e.plantel_id,
+      planta_id: e.planta_id,
+      tipo_descarga: e.tipo_descarga,
+      orden_dia: ordenDia,
+      creado_por: e.creado_por,
+    },
+    select: { id: true },
+  });
+  return creado.id;
+}
+
+/** Agrega UN viaje a mano: escribe inicio de carga + hitos derivados y el mixer
+ *  elegido, tal cual. NO recalcula ni mueve ningún otro viaje. Devuelve el viaje. */
+export async function agregarViajeManual(e: EntradaViajeManual): Promise<{ viajeId: number; pedidoId: number }> {
+  const [planta, mixer, cliente] = await Promise.all([
+    prisma.plantas.findUniqueOrThrow({
+      where: { id: e.planta_id },
+      select: { capacidad_m3h: true, tiempo_alistamiento_min: true },
+    }),
+    prisma.mixers.findUniqueOrThrow({
+      where: { id: e.mixer_id },
+      select: { id: true, capacidad_m3: true, plantel_base_id: true, operador_asignado_id: true },
+    }),
+    prisma.clientes.findUniqueOrThrow({
+      where: { id: e.cliente_id },
+      select: { tiempo_viaje_referencia_min: true },
+    }),
+  ]);
+  const [tMin, rutaPorDefecto] = transporteDePedido(null, cliente.tiempo_viaje_referencia_min);
+  const t = tiemposDeViaje(e.inicio_carga.getTime(), {
+    alistamientoMin: planta.tiempo_alistamiento_min,
+    capacidadPlantaM3h: planta.capacidad_m3h,
+    volumen: e.volumen,
+    tViajeMin: tMin,
+    tRegresoMin: tMin,
+    tipoDescarga: e.tipo_descarga,
+  });
+  const pedidoId = await pedidoManualDestino(e, new Date(t.llegadaMs));
+  const viaje = await prisma.viajes.create({
+    data: {
+      pedido_id: pedidoId,
+      planta_id: e.planta_id,
+      mixer_id: mixer.id,
+      operador_id: mixer.operador_asignado_id,
+      capacidad_asignada_m3: mixer.capacidad_m3,
+      volumen_asignado_m3: e.volumen,
+      hora_solicitada: new Date(t.llegadaMs),
+      motivo_asignacion: mixer.plantel_base_id === e.plantel_id ? "Flota propia" : "Préstamo de zona",
+      estado: "Programado",
+      estado_confirmacion: "Pendiente",
+      es_adicion: false,
+      ajustado_manualmente: true, // colocado a mano: la cascada (si se corre) lo respeta
+      ruta_por_defecto: rutaPorDefecto,
+      hora_inicio_carga: new Date(t.inicioCargaMs),
+      hora_fin_carga: new Date(t.finCargaMs),
+      hora_salida_planta: new Date(t.salidaMs),
+      hora_llegada_proyecto: new Date(t.llegadaMs),
+      hora_inicio_descarga: new Date(t.inicioDescargaMs),
+      hora_fin_descarga: new Date(t.finDescargaMs),
+      hora_regreso_planta: new Date(t.regresoMs),
+    },
+    select: { id: true },
+  });
+  await reconciliarPedidoManual(pedidoId);
+  return { viajeId: viaje.id, pedidoId };
+}
+
+/** Cambios permitidos al editar un viaje a mano. */
+export interface PatchViajeManual {
+  mixer_id?: number;
+  volumen?: number;
+  inicio_carga?: Date;
+  cliente_id?: number; // reasigna el viaje al pedido de otro cliente (crea si hace falta)
+  diseno_id?: number; // requerido si cambia el cliente (para ubicar/crear su pedido)
+  creado_por: string;
+}
+
+/** Edita UN viaje a mano: recalcula SOLO sus propios hitos con los tiempos ya
+ *  configurados. NO toca ningún otro viaje. Si cambia el cliente, reasigna el viaje
+ *  al pedido de ese cliente (creándolo si hace falta) y reconcilia ambos pedidos. */
+export async function editarViajeManual(viajeId: number, patch: PatchViajeManual): Promise<{ ok: boolean; mensaje?: string }> {
+  const viaje = await prisma.viajes.findUnique({
+    where: { id: viajeId },
+    include: {
+      pedido: { select: { id: true, plantel_id: true, planta_id: true, tipo_descarga: true, tiempo_transporte_min: true, cliente: { select: { tiempo_viaje_referencia_min: true } } } },
+      planta: { select: { id: true, capacidad_m3h: true, tiempo_alistamiento_min: true } },
+    },
+  });
+  if (!viaje || !viaje.planta) return { ok: false, mensaje: "Viaje no encontrado." };
+  if (viaje.estado === ESTADO_VIAJE_COMPLETADO || viaje.ts_inicio_carga_real != null) {
+    return { ok: false, mensaje: "Ese viaje ya inició o se completó: no se puede editar a mano." };
+  }
+
+  const nuevoMixerId = patch.mixer_id ?? viaje.mixer_id;
+  const volumen = patch.volumen ?? viaje.volumen_asignado_m3;
+  const inicioMs = (patch.inicio_carga ?? viaje.hora_inicio_carga ?? new Date()).getTime();
+
+  const mixer =
+    nuevoMixerId != null
+      ? await prisma.mixers.findUnique({
+          where: { id: nuevoMixerId },
+          select: { id: true, capacidad_m3: true, plantel_base_id: true, operador_asignado_id: true },
+        })
+      : null;
+
+  // ¿Cambia de cliente? Entonces se reasigna a otro pedido (mismo plantel/planta/día).
+  const pedidoAnteriorId = viaje.pedido.id;
+  let pedidoDestinoId = pedidoAnteriorId;
+  const plantelId = viaje.pedido.plantel_id;
+  let transporteOverride = viaje.pedido.tiempo_transporte_min;
+  let transporteCliente = viaje.pedido.cliente.tiempo_viaje_referencia_min;
+
+  if (patch.cliente_id != null) {
+    const disenoId = patch.diseno_id;
+    if (disenoId == null) return { ok: false, mensaje: "Falta el diseño para reasignar el cliente." };
+    const cli = await prisma.clientes.findUniqueOrThrow({
+      where: { id: patch.cliente_id },
+      select: { tiempo_viaje_referencia_min: true },
+    });
+    transporteOverride = null;
+    transporteCliente = cli.tiempo_viaje_referencia_min;
+    const [tMinPrev] = transporteDePedido(transporteOverride, transporteCliente);
+    const tPrev = tiemposDeViaje(inicioMs, {
+      alistamientoMin: viaje.planta.tiempo_alistamiento_min,
+      capacidadPlantaM3h: viaje.planta.capacidad_m3h,
+      volumen,
+      tViajeMin: tMinPrev,
+      tRegresoMin: tMinPrev,
+      tipoDescarga: viaje.pedido.tipo_descarga,
+    });
+    pedidoDestinoId = await pedidoManualDestino(
+      {
+        cliente_id: patch.cliente_id,
+        diseno_id: disenoId,
+        plantel_id: plantelId,
+        planta_id: viaje.planta.id,
+        mixer_id: nuevoMixerId ?? 0,
+        volumen,
+        inicio_carga: new Date(inicioMs),
+        tipo_descarga: viaje.pedido.tipo_descarga,
+        creado_por: patch.creado_por,
+      },
+      new Date(tPrev.llegadaMs),
+    );
+  }
+
+  const [tMin, rutaPorDefecto] = transporteDePedido(transporteOverride, transporteCliente);
+  const t = tiemposDeViaje(inicioMs, {
+    alistamientoMin: viaje.planta.tiempo_alistamiento_min,
+    capacidadPlantaM3h: viaje.planta.capacidad_m3h,
+    volumen,
+    tViajeMin: tMin,
+    tRegresoMin: tMin,
+    tipoDescarga: viaje.pedido.tipo_descarga,
+  });
+
+  await prisma.viajes.update({
+    where: { id: viajeId },
+    data: {
+      pedido_id: pedidoDestinoId,
+      mixer_id: mixer?.id ?? null,
+      operador_id: mixer?.operador_asignado_id ?? null,
+      capacidad_asignada_m3: mixer?.capacidad_m3 ?? viaje.capacidad_asignada_m3,
+      volumen_asignado_m3: volumen,
+      motivo_asignacion: mixer ? (mixer.plantel_base_id === plantelId ? "Flota propia" : "Préstamo de zona") : viaje.motivo_asignacion,
+      ajustado_manualmente: true,
+      ruta_por_defecto: rutaPorDefecto,
+      hora_solicitada: new Date(t.llegadaMs),
+      hora_inicio_carga: new Date(t.inicioCargaMs),
+      hora_fin_carga: new Date(t.finCargaMs),
+      hora_salida_planta: new Date(t.salidaMs),
+      hora_llegada_proyecto: new Date(t.llegadaMs),
+      hora_inicio_descarga: new Date(t.inicioDescargaMs),
+      hora_fin_descarga: new Date(t.finDescargaMs),
+      hora_regreso_planta: new Date(t.regresoMs),
+    },
+  });
+
+  await reconciliarPedidoManual(pedidoDestinoId);
+  if (pedidoDestinoId !== pedidoAnteriorId) await reconciliarPedidoManual(pedidoAnteriorId);
+  return { ok: true };
+}
+
+/** Elimina UN viaje a mano (y su pedido si queda vacío). NO recalcula a nadie. */
+export async function eliminarViajeManual(viajeId: number): Promise<{ ok: boolean; mensaje?: string }> {
+  const viaje = await prisma.viajes.findUnique({
+    where: { id: viajeId },
+    select: { id: true, pedido_id: true, estado: true, ts_inicio_carga_real: true },
+  });
+  if (!viaje) return { ok: false, mensaje: "Viaje no encontrado." };
+  if (viaje.estado === ESTADO_VIAJE_COMPLETADO || viaje.ts_inicio_carga_real != null) {
+    return { ok: false, mensaje: "Ese viaje ya inició o se completó: no se puede eliminar a mano." };
+  }
+  await prisma.viajes.delete({ where: { id: viajeId } });
+  await reconciliarPedidoManual(viaje.pedido_id);
+  return { ok: true };
 }
 
 /**

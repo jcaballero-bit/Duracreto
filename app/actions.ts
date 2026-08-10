@@ -13,11 +13,14 @@ import {
   cierreProgramaDe,
 } from "@/lib/motor/config";
 import {
+  agregarViajeManual,
   agregarVolumenAlPedido,
   analizarFrecuenciaPedido,
   avanzarEstadoViaje,
   cambiarOperadorViaje,
   cambiarPlantaViaje,
+  editarViajeManual,
+  eliminarViajeManual,
   cancelarPedido,
   cancelarPedidoConMotivo,
   confirmarRefuerzo,
@@ -730,6 +733,120 @@ export async function analizarFrecuenciaAction(entrada: {
     },
     lineas,
   };
+}
+
+// ── MODO MANUAL (server actions): escriben el viaje tal cual y NO corren cascada ──
+
+/** Parsea "YYYY-MM-DDTHH:mm" (datetime-local) a Date local. */
+function parseDateTimeLocal(s: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(s);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), 0, 0);
+}
+
+/** Agrega un viaje a mano (modo manual). No reprograma nada más. */
+export async function agregarViajeManualAction(input: {
+  clienteId: number;
+  disenoId: number;
+  plantelId: number;
+  plantaId: number;
+  mixerId: number;
+  volumen: number;
+  horaCargaLocal: string; // "YYYY-MM-DDTHH:mm"
+  tipoDescarga: string;
+}): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido();
+  if (!op.ok) return op;
+  const inicio = parseDateTimeLocal(input.horaCargaLocal);
+  if (!inicio) return { ok: false, mensaje: "Hora de carga inválida." };
+  if (!(input.volumen > 0)) return { ok: false, mensaje: "El volumen debe ser mayor que 0." };
+  if (!input.mixerId || !input.clienteId || !input.disenoId) {
+    return { ok: false, mensaje: "Faltan datos: cliente, diseño o mixer." };
+  }
+  const permiso = await autorizarNuevoPedido(input.plantelId, inicio);
+  if (!permiso.ok) return permiso;
+  const vol = await autorizarVolumen(input.volumen);
+  if (!vol.ok) return vol;
+  const mant = await mantenimientoDeUnidad("Mixer", input.mixerId, inicio);
+  if (mant) {
+    return { ok: false, mensaje: "El mixer elegido tiene mantenimiento/baja esa fecha — elige otro." };
+  }
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "manual";
+  try {
+    await agregarViajeManual({
+      cliente_id: input.clienteId,
+      diseno_id: input.disenoId,
+      plantel_id: input.plantelId,
+      planta_id: input.plantaId,
+      mixer_id: input.mixerId,
+      volumen: input.volumen,
+      inicio_carga: inicio,
+      tipo_descarga: input.tipoDescarga,
+      creado_por: quien,
+    });
+  } catch (e) {
+    return { ok: false, mensaje: (e as Error).message };
+  }
+  revalidarPantallas();
+  return { ok: true };
+}
+
+/** Edita un viaje a mano (mixer/volumen/hora de carga/cliente). No reprograma a nadie. */
+export async function editarViajeManualAction(
+  viajeId: number,
+  patch: {
+    mixerId?: number;
+    volumen?: number;
+    horaCargaLocal?: string;
+    clienteId?: number;
+    disenoId?: number;
+  },
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido();
+  if (!op.ok) return op;
+  const permiso = await autorizarPorViaje(viajeId);
+  if (!permiso.ok) return permiso;
+  let inicio: Date | undefined;
+  if (patch.horaCargaLocal != null) {
+    const p = parseDateTimeLocal(patch.horaCargaLocal);
+    if (!p) return { ok: false, mensaje: "Hora de carga inválida." };
+    inicio = p;
+  }
+  if (patch.volumen != null) {
+    if (!(patch.volumen > 0)) return { ok: false, mensaje: "El volumen debe ser mayor que 0." };
+    const vol = await autorizarVolumen(patch.volumen);
+    if (!vol.ok) return vol;
+  }
+  if (patch.mixerId != null && inicio != null) {
+    const mant = await mantenimientoDeUnidad("Mixer", patch.mixerId, inicio);
+    if (mant) return { ok: false, mensaje: "El mixer elegido tiene mantenimiento/baja esa fecha — elige otro." };
+  }
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "manual";
+  const res = await editarViajeManual(viajeId, {
+    mixer_id: patch.mixerId,
+    volumen: patch.volumen,
+    inicio_carga: inicio,
+    cliente_id: patch.clienteId,
+    diseno_id: patch.disenoId,
+    creado_por: quien,
+  });
+  if (res.ok) revalidarPantallas();
+  return res;
+}
+
+/** Elimina un viaje a mano. No reprograma a nadie. */
+export async function eliminarViajeManualAction(
+  viajeId: number,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido();
+  if (!op.ok) return op;
+  const permiso = await autorizarPorViaje(viajeId);
+  if (!permiso.ok) return permiso;
+  const res = await eliminarViajeManual(viajeId);
+  if (res.ok) revalidarPantallas();
+  return res;
 }
 
 /** Server action: reasignación manual de mixer. */

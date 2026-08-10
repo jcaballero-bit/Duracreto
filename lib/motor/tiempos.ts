@@ -4,6 +4,7 @@
 import {
   MIN_DESCARGA_POR_M3,
   MIN_DESCARGA_POR_M3_DEFAULT,
+  MIN_SALIDA_TRAS_CARGA,
 } from "./config";
 
 /** Suma `minutos` a una fecha y devuelve una nueva fecha. */
@@ -31,6 +32,44 @@ export function minutosDeCarga(volumen: number, capacidadPlantaM3h: number): num
 export function minutosDeDescarga(volumen: number, tipoDescarga: string): number {
   const ritmo = MIN_DESCARGA_POR_M3[tipoDescarga] ?? MIN_DESCARGA_POR_M3_DEFAULT;
   return volumen * ritmo;
+}
+
+/** Parámetros para derivar los tiempos de un viaje a partir del inicio de carga. */
+export interface ParamsTiempoViaje {
+  alistamientoMin: number; // plantas.tiempo_alistamiento_min
+  capacidadPlantaM3h: number; // plantas.capacidad_m3h (ritmo de dosificación)
+  volumen: number; // m³ del viaje
+  tViajeMin: number; // transporte ida (planta → obra)
+  tRegresoMin: number; // transporte regreso (obra → planta)
+  tipoDescarga: string; // define el ritmo de descarga
+}
+
+/** Todos los hitos de un viaje, en ms epoch, derivados del inicio de carga. */
+export interface TiemposViaje {
+  inicioCargaMs: number;
+  finCargaMs: number;
+  salidaMs: number;
+  llegadaMs: number;
+  inicioDescargaMs: number;
+  finDescargaMs: number;
+  regresoMs: number;
+}
+
+/**
+ * Deriva TODOS los hitos de un viaje a partir de su inicio de carga (PURO, sin BD).
+ * Es exactamente la misma matemática que usa la cascada del motor, extraída para que
+ * el modo MANUAL la reutilice — el usuario teclea el inicio de carga y las columnas
+ * calculadas (salida/llegada/descarga/regreso) se actualizan al instante, idénticas a
+ * lo que persiste el servidor. NO reprograma nada: solo calcula un viaje aislado.
+ */
+export function tiemposDeViaje(inicioCargaMs: number, p: ParamsTiempoViaje): TiemposViaje {
+  const finCargaMs = inicioCargaMs + (p.alistamientoMin + minutosDeCarga(p.volumen, p.capacidadPlantaM3h)) * 60_000;
+  const salidaMs = finCargaMs + MIN_SALIDA_TRAS_CARGA * 60_000;
+  const llegadaMs = salidaMs + p.tViajeMin * 60_000;
+  const inicioDescargaMs = llegadaMs;
+  const finDescargaMs = inicioDescargaMs + minutosDeDescarga(p.volumen, p.tipoDescarga) * 60_000;
+  const regresoMs = finDescargaMs + p.tRegresoMin * 60_000;
+  return { inicioCargaMs, finCargaMs, salidaMs, llegadaMs, inicioDescargaMs, finDescargaMs, regresoMs };
 }
 
 /** ¿Dos rangos de tiempo [aIni,aFin) y [bIni,bFin) se traslapan? */

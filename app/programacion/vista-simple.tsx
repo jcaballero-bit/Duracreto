@@ -65,6 +65,17 @@ export function VistaSimple({
   const [descartadas, setDescartadas] = useState<Set<number>>(new Set());
 
   const organizarTodo = () => {
+    // El motor va a REPROGRAMAR (reordenar + recalcular) todo el día. Si el día se
+    // armó a mano (modo manual), esto sobrescribe ese trabajo. Se pide confirmación
+    // explícita antes de proceder (convivencia manual ↔ automático).
+    if (
+      !confirm(
+        "Organizar mi día deja que el motor reacomode y recalcule TODO el día automáticamente.\n\n" +
+          "Si programaste algo a mano (modo manual), esto lo va a reprogramar.\n\n¿Continuar?",
+      )
+    ) {
+      return;
+    }
     setAviso(null);
     startOrganizar(async () => {
       let ok = 0;
