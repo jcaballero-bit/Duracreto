@@ -7,6 +7,7 @@ import { registroAdicionesCancelaciones, type RegistroAsesor } from "@/lib/comer
 import { Badge, Card, PageHeader } from "../../../components/ui";
 import { SelectorMesRegistro } from "./selector-mes";
 import { BorrarCancelacion } from "./borrar-cancelacion";
+import { EditarEvento } from "./editar-evento";
 import {
   GridSemana,
   type Celda,
@@ -334,9 +335,18 @@ function RegistroMensual({
                               {c.detalle && <span className="block text-xs text-muted">{c.detalle}</span>}
                             </td>
                             {esAdmin && (
-                              <td className="px-2 py-1.5 text-right">
+                              <td className="px-2 py-1.5">
                                 {c.pedidoId != null && (
-                                  <BorrarCancelacion pedidoId={c.pedidoId} cliente={c.cliente} />
+                                  <span className="flex items-center justify-end gap-1">
+                                    <EditarEvento
+                                      pedidoId={c.pedidoId}
+                                      tipo="cancelacion"
+                                      fechaMs={c.fechaMs}
+                                      m3={c.m3}
+                                      cliente={c.cliente}
+                                    />
+                                    <BorrarCancelacion pedidoId={c.pedidoId} cliente={c.cliente} />
+                                  </span>
                                 )}
                               </td>
                             )}
@@ -362,6 +372,7 @@ function RegistroMensual({
                           <th className="px-2 py-1.5">Cliente</th>
                           <th className="px-2 py-1.5 text-right">m³</th>
                           <th className="px-2 py-1.5">Tipo</th>
+                          {esAdmin && <th className="px-2 py-1.5 text-right">Acción</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -371,6 +382,19 @@ function RegistroMensual({
                             <td className="px-2 py-1.5 text-ink">{a.cliente}</td>
                             <td className="px-2 py-1.5 text-right font-medium text-amber-600">+{a.m3.toFixed(1)}</td>
                             <td className="px-2 py-1.5 text-muted">{a.tipo}</td>
+                            {esAdmin && (
+                              <td className="px-2 py-1.5 text-right">
+                                {a.pedidoId != null && (
+                                  <EditarEvento
+                                    pedidoId={a.pedidoId}
+                                    tipo="adicion"
+                                    fechaMs={a.fechaMs}
+                                    m3={a.m3}
+                                    cliente={a.cliente}
+                                  />
+                                )}
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>

@@ -465,7 +465,7 @@ export interface EventoRegistro {
   motivo?: string | null; // solo cancelaciones
   detalle?: string | null; // solo cancelaciones
   tipo?: "Nuevo (100%)" | "Volumen"; // solo adiciones
-  pedidoId?: number; // solo cancelaciones: para que el Admin pueda eliminarlas
+  pedidoId?: number; // adiciones y cancelaciones: para que el Admin pueda editar/eliminar
 }
 export interface MesRegistro {
   clave: string; // "2026-07"
@@ -558,6 +558,7 @@ export async function registroAdicionesCancelaciones(
         cliente: p.cliente.empresa,
         m3: redondear(diff),
         tipo: programado <= 0.01 ? "Nuevo (100%)" : "Volumen",
+        pedidoId: p.id,
       });
       b.totalAdicionadoM3 += diff;
     } else if (diff < -0.01 && cerrado) {
