@@ -21,6 +21,8 @@ import {
   cambiarPlantaViaje,
   editarViajeManual,
   eliminarViajeManual,
+  eliminarViajesManual,
+  generarViajesEnSerie,
   cancelarPedido,
   cancelarPedidoConMotivo,
   confirmarRefuerzo,
@@ -754,7 +756,7 @@ export async function agregarViajeManualAction(input: {
   volumen: number;
   horaCargaLocal: string; // "YYYY-MM-DDTHH:mm"
   tipoDescarga: string;
-}): Promise<{ ok: boolean; mensaje?: string }> {
+}): Promise<{ ok: boolean; mensaje?: string; viajeId?: number }> {
   const op = await autorizarOperacionPedido();
   if (!op.ok) return op;
   const inicio = parseDateTimeLocal(input.horaCargaLocal);
@@ -774,7 +776,7 @@ export async function agregarViajeManualAction(input: {
   const sesion = await auth();
   const quien = sesion?.user?.name ?? sesion?.user?.email ?? "manual";
   try {
-    await agregarViajeManual({
+    const r = await agregarViajeManual({
       cliente_id: input.clienteId,
       diseno_id: input.disenoId,
       plantel_id: input.plantelId,
@@ -785,11 +787,11 @@ export async function agregarViajeManualAction(input: {
       tipo_descarga: input.tipoDescarga,
       creado_por: quien,
     });
+    revalidarPantallas();
+    return { ok: true, viajeId: r.viajeId };
   } catch (e) {
     return { ok: false, mensaje: (e as Error).message };
   }
-  revalidarPantallas();
-  return { ok: true };
 }
 
 /** Edita un viaje a mano (mixer/volumen/hora de carga/cliente). No reprograma a nadie. */
@@ -847,6 +849,79 @@ export async function eliminarViajeManualAction(
   const res = await eliminarViajeManual(viajeId);
   if (res.ok) revalidarPantallas();
   return res;
+}
+
+/** Elimina VARIOS viajes a mano (deshacer una generación en serie). No reprograma. */
+export async function eliminarViajesManualAction(
+  ids: number[],
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido();
+  if (!op.ok) return op;
+  for (const id of ids) {
+    const permiso = await autorizarPorViaje(id);
+    if (!permiso.ok) return permiso;
+  }
+  await eliminarViajesManual(ids);
+  revalidarPantallas();
+  return { ok: true };
+}
+
+/** Genera N viajes a mano (serie), alternando plantas y rotando mixers. No cascada.
+ *  Devuelve los ids creados para poder DESHACER la serie como una sola acción. */
+export async function generarViajesEnSerieAction(input: {
+  clienteId: number;
+  disenoId: number;
+  plantelId: number;
+  plantaIds: number[];
+  mixerIds: number[];
+  volumen: number;
+  cantidad: number;
+  frecuenciaMin: number;
+  horaCargaLocal: string; // "YYYY-MM-DDTHH:mm" del primer viaje
+  tipoDescarga: string;
+}): Promise<{ ok: boolean; mensaje?: string; viajeIds?: number[] }> {
+  const op = await autorizarOperacionPedido();
+  if (!op.ok) return op;
+  const inicio = parseDateTimeLocal(input.horaCargaLocal);
+  if (!inicio) return { ok: false, mensaje: "Hora de carga inválida." };
+  if (!(input.cantidad > 0) || input.cantidad > 200) {
+    return { ok: false, mensaje: "La cantidad debe estar entre 1 y 200." };
+  }
+  if (!(input.frecuenciaMin > 0)) return { ok: false, mensaje: "La frecuencia debe ser mayor que 0." };
+  if (!(input.volumen > 0)) return { ok: false, mensaje: "El volumen debe ser mayor que 0." };
+  if (input.plantaIds.length === 0 || input.mixerIds.length === 0) {
+    return { ok: false, mensaje: "Elige al menos una planta y un mixer." };
+  }
+  const permiso = await autorizarNuevoPedido(input.plantelId, inicio);
+  if (!permiso.ok) return permiso;
+  const vol = await autorizarVolumen(input.volumen);
+  if (!vol.ok) return vol;
+  // Ningún mixer de la rotación puede estar en mantenimiento la fecha.
+  for (const mid of input.mixerIds) {
+    const mant = await mantenimientoDeUnidad("Mixer", mid, inicio);
+    if (mant) return { ok: false, mensaje: "Un mixer de la rotación tiene mantenimiento esa fecha — quítalo." };
+  }
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "manual";
+  try {
+    const { viajeIds } = await generarViajesEnSerie({
+      cliente_id: input.clienteId,
+      diseno_id: input.disenoId,
+      plantel_id: input.plantelId,
+      plantaIds: input.plantaIds,
+      mixerIds: input.mixerIds,
+      volumen: input.volumen,
+      cantidad: input.cantidad,
+      frecuenciaMin: input.frecuenciaMin,
+      inicio_carga: inicio,
+      tipo_descarga: input.tipoDescarga,
+      creado_por: quien,
+    });
+    revalidarPantallas();
+    return { ok: true, viajeIds };
+  } catch (e) {
+    return { ok: false, mensaje: (e as Error).message };
+  }
 }
 
 /** Server action: reasignación manual de mixer. */

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   capacidadExcedida,
+  detectarTraslapesCarga,
   detectarTraslapesMixer,
   frecuenciaRealPorCliente,
   idsEnTraslape,
+  idsEnTraslapeCarga,
   margenApretado,
   type ViajeManual,
 } from "@/lib/motor/validacion-manual";
@@ -54,6 +56,47 @@ describe("detectarTraslapesMixer", () => {
       v({ id: "b", mixerId: null, inicioCargaMs: 10 * MIN, regresoMs: 90 * MIN }),
     ];
     expect(detectarTraslapesMixer(viajes).length).toBe(0);
+  });
+});
+
+describe("detectarTraslapesCarga (boca de carga de la planta)", () => {
+  it("marca 2 viajes de la MISMA planta cuyas ventanas de carga se encimen", () => {
+    // Planta 1: uno carga 07:41–08:01 (20 min), otro arranca 07:50 → encima 11 min.
+    const c0741 = new Date("2026-08-10T07:41:00").getTime();
+    const c0801 = new Date("2026-08-10T08:01:00").getTime();
+    const c0750 = new Date("2026-08-10T07:50:00").getTime();
+    const c0810 = new Date("2026-08-10T08:10:00").getTime();
+    const viajes = [
+      v({ id: "a", plantaId: 1, inicioCargaMs: c0741, finCargaMs: c0801 }),
+      v({ id: "b", plantaId: 1, inicioCargaMs: c0750, finCargaMs: c0810 }),
+    ];
+    const conf = detectarTraslapesCarga(viajes);
+    expect(conf.length).toBe(1);
+    expect(conf[0].solapeMin).toBe(11); // 08:01 - 07:50 = 11 min
+    const ids = idsEnTraslapeCarga(conf);
+    expect(ids.has("a") && ids.has("b")).toBe(true);
+  });
+
+  it("cargas consecutivas que NO se enciman en la misma planta no avisan", () => {
+    const c0700 = new Date("2026-08-10T07:00:00").getTime();
+    const c0720 = new Date("2026-08-10T07:20:00").getTime();
+    const c0730 = new Date("2026-08-10T07:30:00").getTime();
+    const c0750 = new Date("2026-08-10T07:50:00").getTime();
+    const viajes = [
+      v({ id: "a", plantaId: 1, inicioCargaMs: c0700, finCargaMs: c0720 }),
+      v({ id: "b", plantaId: 1, inicioCargaMs: c0730, finCargaMs: c0750 }),
+    ];
+    expect(detectarTraslapesCarga(viajes).length).toBe(0);
+  });
+
+  it("cargas simultáneas pero en PLANTAS distintas no chocan (carga simultánea válida)", () => {
+    const c0700 = new Date("2026-08-10T07:00:00").getTime();
+    const c0720 = new Date("2026-08-10T07:20:00").getTime();
+    const viajes = [
+      v({ id: "a", plantaId: 1, inicioCargaMs: c0700, finCargaMs: c0720 }),
+      v({ id: "b", plantaId: 2, inicioCargaMs: c0700, finCargaMs: c0720 }),
+    ];
+    expect(detectarTraslapesCarga(viajes).length).toBe(0);
   });
 });
 

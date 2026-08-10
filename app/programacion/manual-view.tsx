@@ -4,26 +4,33 @@
 // tabla editable POR PLANTA (todos los clientes mezclados, ordenados por hora de
 // carga), Gantt espejo en vivo con color por cliente, y validaciones que solo AVISAN.
 // El sistema NUNCA reprograma: cada edición escribe ese viaje tal cual (server action
-// sin cascada) y las columnas calculadas se derivan al instante con la misma
-// matemática del motor.
-import { useMemo, useState, useTransition } from "react";
+// sin cascada) y las columnas calculadas se derivan al instante.
+//
+// Productividad (mejoras): Deshacer/Rehacer de la sesión (Ctrl+Z / Ctrl+Shift+Z),
+// navegación tipo hoja de cálculo (Enter/flechas/Escape) + pegar desde Excel/Sheets,
+// generar N viajes en serie, y validación de traslape de CARGA en planta.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2, X } from "lucide-react";
+import { Plus, Redo2, Trash2, Undo2, Wand2, X } from "lucide-react";
 import {
   agregarViajeManualAction,
   editarViajeManualAction,
-  eliminarViajeManualAction,
+  eliminarViajesManualAction,
+  generarViajesEnSerieAction,
 } from "../actions";
 import { tiemposDeViaje } from "@/lib/motor/tiempos";
 import {
   capacidadExcedida,
+  detectarTraslapesCarga,
   detectarTraslapesMixer,
   frecuenciaRealPorCliente,
   idsEnTraslape,
+  idsEnTraslapeCarga,
   margenApretado,
   type ViajeManual,
 } from "@/lib/motor/validacion-manual";
 import { colorPorCliente } from "@/lib/color-cliente";
+import { parsePortapapeles } from "@/lib/portapapeles";
 import { GanttManual, type SeccionGanttM } from "./gantt-manual";
 
 export interface MixerOpcionManual {
@@ -70,7 +77,14 @@ export interface PlantelManual {
   filas: FilaManualSrv[];
 }
 
-type Override = { inicioCargaMs?: number; volumen?: number; mixerId?: number | null };
+/** Una acción deshacible de la sesión. `hacer` la aplica (y re-aplica al rehacer);
+ *  `deshacer` la revierte. Ambas persisten en el servidor (sin cascada). */
+interface Comando {
+  etiqueta: string;
+  hacer: () => Promise<void>;
+  deshacer: () => Promise<void>;
+}
+type PatchEdit = { mixerId?: number; volumen?: number; horaCargaLocal?: string };
 
 function fmtHM(ms: number): string {
   return new Date(ms).toLocaleTimeString("es-HN", { hour: "2-digit", minute: "2-digit" });
@@ -79,15 +93,13 @@ function hhmmDeMs(ms: number): string {
   const d = new Date(ms);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
-/** Reemplaza la hora (HH:mm) conservando la FECHA del ms base. */
 function conNuevaHora(baseMs: number, hhmm: string): number | null {
-  const m = /^(\d{2}):(\d{2})$/.exec(hhmm);
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
   if (!m) return null;
   const d = new Date(baseMs);
   d.setHours(Number(m[1]), Number(m[2]), 0, 0);
   return d.getTime();
 }
-/** "YYYY-MM-DDTHH:mm" (local) a partir de un ms. */
 function toLocalInput(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
@@ -109,6 +121,91 @@ export function ManualView({
   margenMin: number;
   puedeEditar: boolean;
 }) {
+  const router = useRouter();
+  // Pilas de deshacer/rehacer en ESTADO (el render las lee de forma reactiva). Los
+  // handlers se recrean en cada render (cierran sobre el estado fresco) y el efecto de
+  // teclado los invoca vía refs, para no re-suscribir el listener en cada render.
+  const [pasado, setPasado] = useState<Comando[]>([]);
+  const [futuro, setFuturo] = useState<Comando[]>([]);
+  const [ocupado, setOcupado] = useState(false);
+  const [errorCmd, setErrorCmd] = useState<string | null>(null);
+
+  const ejecutar = async (cmd: Comando) => {
+    setOcupado(true);
+    setErrorCmd(null);
+    try {
+      await cmd.hacer();
+      setPasado((p) => [...p, cmd]);
+      setFuturo([]);
+    } catch (e) {
+      setErrorCmd((e as Error).message || "No se pudo aplicar la acción.");
+    } finally {
+      setOcupado(false);
+      router.refresh();
+    }
+  };
+
+  const deshacer = async () => {
+    if (pasado.length === 0) return;
+    const cmd = pasado[pasado.length - 1];
+    setOcupado(true);
+    setErrorCmd(null);
+    try {
+      await cmd.deshacer();
+      setPasado((p) => p.slice(0, -1));
+      setFuturo((f) => [cmd, ...f]);
+    } catch (e) {
+      setErrorCmd((e as Error).message);
+    } finally {
+      setOcupado(false);
+      router.refresh();
+    }
+  };
+
+  const rehacer = async () => {
+    if (futuro.length === 0) return;
+    const cmd = futuro[0];
+    setOcupado(true);
+    setErrorCmd(null);
+    try {
+      await cmd.hacer();
+      setFuturo((f) => f.slice(1));
+      setPasado((p) => [...p, cmd]);
+    } catch (e) {
+      setErrorCmd((e as Error).message);
+    } finally {
+      setOcupado(false);
+      router.refresh();
+    }
+  };
+
+  // Refs a los handlers más recientes (para un listener de teclado estable).
+  const deshacerRef = useRef(deshacer);
+  const rehacerRef = useRef(rehacer);
+  useEffect(() => {
+    deshacerRef.current = deshacer;
+    rehacerRef.current = rehacer;
+  });
+
+  // Atajos de teclado estándar (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl+Y).
+  useEffect(() => {
+    if (!puedeEditar) return;
+    const onKey = (e: KeyboardEvent) => {
+      const meta = e.ctrlKey || e.metaKey;
+      if (!meta) return;
+      const k = e.key.toLowerCase();
+      if (k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        void deshacerRef.current();
+      } else if ((k === "z" && e.shiftKey) || k === "y") {
+        e.preventDefault();
+        void rehacerRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [puedeEditar]);
+
   if (planteles.length === 0) {
     return (
       <p className="rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted">
@@ -116,13 +213,42 @@ export function ManualView({
       </p>
     );
   }
+
+  const etiquetaDeshacer = pasado.at(-1)?.etiqueta;
+  const etiquetaRehacer = futuro[0]?.etiqueta;
+  const hayPasado = pasado.length > 0;
+  const hayFuturo = futuro.length > 0;
+
   return (
-    <div className="space-y-8">
-      <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
-        <strong>Modo manual:</strong> tú decides todo. El sistema no mueve, no reordena ni
-        reasigna nada — solo calcula las columnas y te avisa si detecta un problema. Puedes
-        continuar aunque haya un aviso.
-      </p>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+          <strong>Modo manual:</strong> tú decides todo. El sistema no mueve, no reordena ni
+          reasigna nada — solo calcula las columnas y te avisa. Puedes continuar aunque haya un aviso.
+        </p>
+        {puedeEditar && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void deshacer()}
+              disabled={ocupado || !hayPasado}
+              title={etiquetaDeshacer ? `Deshacer: ${etiquetaDeshacer}` : "Nada que deshacer"}
+              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-sm text-ink hover:bg-content disabled:opacity-40"
+            >
+              <Undo2 size={15} /> Deshacer
+            </button>
+            <button
+              onClick={() => void rehacer()}
+              disabled={ocupado || !hayFuturo}
+              title={etiquetaRehacer ? `Rehacer: ${etiquetaRehacer}` : "Nada que rehacer"}
+              className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-sm text-ink hover:bg-content disabled:opacity-40"
+            >
+              <Redo2 size={15} /> Rehacer
+            </button>
+          </div>
+        )}
+      </div>
+      {errorCmd && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{errorCmd}</p>}
+
       {planteles.map((pl) => (
         <PlantelManualBloque
           key={pl.plantelId}
@@ -132,6 +258,8 @@ export function ManualView({
           fecha={fecha}
           margenMin={margenMin}
           puedeEditar={puedeEditar}
+          ejecutar={ejecutar}
+          ocupado={ocupado}
         />
       ))}
     </div>
@@ -145,6 +273,8 @@ function PlantelManualBloque({
   fecha,
   margenMin,
   puedeEditar,
+  ejecutar,
+  ocupado,
 }: {
   plantel: PlantelManual;
   clientes: ClienteOpcionManual[];
@@ -152,38 +282,47 @@ function PlantelManualBloque({
   fecha: string;
   margenMin: number;
   puedeEditar: boolean;
+  ejecutar: (cmd: Comando) => Promise<void>;
+  ocupado: boolean;
 }) {
-  const router = useRouter();
-  const [pendiente, startTransition] = useTransition();
-  const [ov, setOv] = useState<Map<number, Override>>(new Map());
+  const [ov, setOv] = useState<Map<number, { inicioCargaMs?: number; volumen?: number; mixerId?: number | null }>>(new Map());
   const [editandoId, setEditandoId] = useState<number | null>(null);
-  const [agregarEn, setAgregarEn] = useState<number | null>(null); // plantaId destino
+  const [agregarEn, setAgregarEn] = useState<number | null>(null);
+  const [serieAbierta, setSerieAbierta] = useState(false);
+  const celdas = useRef<Map<string, HTMLInputElement>>(new Map());
+  const escapando = useRef(false); // Escape canceló: el onBlur siguiente NO debe confirmar
 
-  const plantaPorId = useMemo(
-    () => new Map(plantel.plantas.map((p) => [p.id, p])),
-    [plantel.plantas],
-  );
+  // Al refrescar del servidor (props nuevas) se limpia el estado en vuelo.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOv(new Map());
+  }, [plantel.filas]);
+
+  const plantaPorId = useMemo(() => new Map(plantel.plantas.map((p) => [p.id, p])), [plantel.plantas]);
   const clientePorId = useMemo(() => new Map(clientes.map((c) => [c.id, c])), [clientes]);
 
-  // Fila efectiva = servidor + override en vuelo (para que el Gantt reaccione al teclear).
-  const filaEfectiva = (f: FilaManualSrv) => ({ ...f, ...(ov.get(f.id) ?? {}) });
+  const filaEfectiva = useCallback(
+    (f: FilaManualSrv) => ({ ...f, ...(ov.get(f.id) ?? {}) }),
+    [ov],
+  );
+  const calcular = useCallback(
+    (f: FilaManualSrv) => {
+      const ef = filaEfectiva(f);
+      const planta = plantaPorId.get(f.plantaId);
+      if (!planta) return null;
+      return tiemposDeViaje(ef.inicioCargaMs, {
+        alistamientoMin: planta.alistamientoMin,
+        capacidadPlantaM3h: planta.capacidadM3h,
+        volumen: ef.volumen,
+        tViajeMin: f.transporteMin,
+        tRegresoMin: f.transporteMin,
+        tipoDescarga: f.tipoDescarga,
+      });
+    },
+    [filaEfectiva, plantaPorId],
+  );
 
-  // Derivar tiempos de una fila con la misma matemática del motor.
-  const calcular = (f: FilaManualSrv) => {
-    const ef = filaEfectiva(f);
-    const planta = plantaPorId.get(f.plantaId);
-    if (!planta) return null;
-    return tiemposDeViaje(ef.inicioCargaMs, {
-      alistamientoMin: planta.alistamientoMin,
-      capacidadPlantaM3h: planta.capacidadM3h,
-      volumen: ef.volumen,
-      tViajeMin: f.transporteMin,
-      tRegresoMin: f.transporteMin,
-      tipoDescarga: f.tipoDescarga,
-    });
-  };
-
-  // Viajes para validaciones (todo el plantel; los mixers se comparten entre plantas).
+  // Viajes para validaciones (todo el plantel).
   const viajesVal: ViajeManual[] = plantel.filas
     .map((f) => {
       const ef = filaEfectiva(f);
@@ -203,41 +342,172 @@ function PlantelManualBloque({
     })
     .filter((v): v is ViajeManual => v !== null);
 
-  const traslapes = detectarTraslapesMixer(viajesVal);
-  const idsRojos = idsEnTraslape(traslapes);
+  const traslapesMixer = detectarTraslapesMixer(viajesVal);
+  const traslapesCarga = detectarTraslapesCarga(viajesVal);
+  const idsRojos = useMemo(() => {
+    const s = new Set<number | string>();
+    idsEnTraslape(traslapesMixer).forEach((x) => s.add(x));
+    idsEnTraslapeCarga(traslapesCarga).forEach((x) => s.add(x));
+    return s;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ov, plantel.filas]);
   const avisosCap = plantel.plantas.flatMap((p) =>
     capacidadExcedida(viajesVal.filter((v) => v.plantaId === p.id), p.capacidadM3h),
   );
   const avisosMargen = margenApretado(viajesVal, margenMin);
   const frecCliente = frecuenciaRealPorCliente(viajesVal);
 
-  // Persistir un cambio de una fila (mixer/volumen/hora). Sin cascada en el servidor.
-  const persistir = (viajeId: number, patch: { mixerId?: number; volumen?: number; horaCargaLocal?: string }) => {
-    startTransition(async () => {
-      const res = await editarViajeManualAction(viajeId, patch);
-      if (!res.ok) alert(res.mensaje ?? "No se pudo guardar el cambio.");
-      setOv((prev) => {
-        const n = new Map(prev);
-        n.delete(viajeId);
-        return n;
-      });
-      router.refresh();
-    });
-  };
-
-  const eliminar = (viajeId: number) => {
-    if (!confirm("¿Eliminar este viaje? No se recalcula ningún otro.")) return;
-    startTransition(async () => {
-      const res = await eliminarViajeManualAction(viajeId);
-      if (!res.ok) alert(res.mensaje ?? "No se pudo eliminar.");
-      router.refresh();
-    });
-  };
+  // Mapa: por cada viaje, con quién choca su carga y cuánto (para el mensaje en la fila).
+  const chocaCargaCon = new Map<number, { conMs: number; solapeMin: number }>();
+  for (const c of traslapesCarga) {
+    if (typeof c.viajeId === "number") chocaCargaCon.set(c.viajeId, { conMs: c.conInicioCargaMs, solapeMin: c.solapeMin });
+    if (typeof c.conViajeId === "number") chocaCargaCon.set(c.conViajeId, { conMs: c.inicioCargaMs, solapeMin: c.solapeMin });
+  }
 
   const mixerLabel = (id: number | null) =>
-    id == null ? "—" : (plantel.mixers.find((m) => m.id === id)?.label ?? `#${id}`);
+    id == null ? "—" : plantel.mixers.find((m) => m.id === id)?.label ?? `#${id}`;
 
-  // ── Gantt: secciones Plantas (cargas) + Mixers (ciclos), color por cliente ──
+  // ── Comandos (deshacibles) ──
+  const cmdEditar = (f: FilaManualSrv, despues: PatchEdit, antes: PatchEdit, etiqueta: string): Comando => ({
+    etiqueta,
+    hacer: async () => {
+      const r = await editarViajeManualAction(f.id, despues);
+      if (!r.ok) throw new Error(r.mensaje ?? "No se pudo editar.");
+    },
+    deshacer: async () => {
+      await editarViajeManualAction(f.id, antes);
+    },
+  });
+
+  const commitHora = (f: FilaManualSrv, nuevoMs: number) => {
+    if (nuevoMs === f.inicioCargaMs) return;
+    void ejecutar(
+      cmdEditar(
+        f,
+        { horaCargaLocal: toLocalInput(nuevoMs) },
+        { horaCargaLocal: toLocalInput(f.inicioCargaMs) },
+        `mover carga a ${fmtHM(nuevoMs)}`,
+      ),
+    );
+  };
+  const commitVolumen = (f: FilaManualSrv, nuevo: number) => {
+    if (!(nuevo > 0) || nuevo === f.volumen) return;
+    void ejecutar(cmdEditar(f, { volumen: nuevo }, { volumen: f.volumen }, `volumen ${nuevo} m³`));
+  };
+  const commitMixer = (f: FilaManualSrv, nuevo: number | null) => {
+    if (nuevo == null || nuevo === f.mixerId) return;
+    void ejecutar(cmdEditar(f, { mixerId: nuevo }, { mixerId: f.mixerId ?? undefined }, `mixer ${mixerLabel(nuevo)}`));
+  };
+
+  const eliminarUno = (f: FilaManualSrv) => {
+    if (!confirm("¿Eliminar este viaje? No se recalcula ningún otro.")) return;
+    let idActual = f.id;
+    void ejecutar({
+      etiqueta: `eliminar viaje de ${clientePorId.get(f.clienteId)?.empresa ?? ""}`,
+      hacer: async () => {
+        await eliminarViajesManualAction([idActual]);
+      },
+      deshacer: async () => {
+        const r = await agregarViajeManualAction({
+          clienteId: f.clienteId,
+          disenoId: f.disenoId,
+          plantelId: plantel.plantelId,
+          plantaId: f.plantaId,
+          mixerId: f.mixerId ?? plantel.mixers[0]?.id ?? 0,
+          volumen: f.volumen,
+          horaCargaLocal: toLocalInput(f.inicioCargaMs),
+          tipoDescarga: f.tipoDescarga,
+        });
+        if (r.ok && r.viajeId != null) idActual = r.viajeId; // el recreado tiene id nuevo
+      },
+    });
+  };
+
+  // ── Pegar desde Excel/Sheets: distribuye un bloque en las columnas Volumen/Hora ──
+  const columnasPegado = ["volumen", "hora"] as const;
+  const pegar = (
+    filasOrdenadas: FilaManualSrv[],
+    filaInicio: number,
+    colInicio: "volumen" | "hora",
+    texto: string,
+  ) => {
+    const matriz = parsePortapapeles(texto);
+    if (matriz.length === 0) return;
+    const colIdx0 = columnasPegado.indexOf(colInicio);
+    const cambios: { viajeId: number; antes: PatchEdit; despues: PatchEdit }[] = [];
+    matriz.forEach((filaVals, r) => {
+      const destino = filasOrdenadas[filaInicio + r];
+      if (!destino) return;
+      filaVals.forEach((valor, c) => {
+        const col = columnasPegado[colIdx0 + c];
+        if (!col) return;
+        const v = valor.trim();
+        if (col === "volumen") {
+          const num = Number(v.replace(",", "."));
+          if (num > 0) cambios.push({ viajeId: destino.id, antes: { volumen: destino.volumen }, despues: { volumen: num } });
+        } else {
+          const ms = conNuevaHora(destino.inicioCargaMs, v);
+          if (ms != null)
+            cambios.push({
+              viajeId: destino.id,
+              antes: { horaCargaLocal: toLocalInput(destino.inicioCargaMs) },
+              despues: { horaCargaLocal: toLocalInput(ms) },
+            });
+        }
+      });
+    });
+    if (cambios.length === 0) return;
+    void ejecutar({
+      etiqueta: `pegar ${cambios.length} valor(es)`,
+      hacer: async () => {
+        for (const c of cambios) {
+          const r = await editarViajeManualAction(c.viajeId, c.despues);
+          if (!r.ok) throw new Error(r.mensaje ?? "No se pudo pegar.");
+        }
+      },
+      deshacer: async () => {
+        for (const c of cambios) await editarViajeManualAction(c.viajeId, c.antes);
+      },
+    });
+  };
+
+  // Navegación tipo hoja de cálculo entre las celdas Volumen/Hora de una planta.
+  const moverFoco = (plantaId: number, fila: number, col: "volumen" | "hora") => {
+    const el = celdas.current.get(`${plantaId}:${fila}:${col}`);
+    if (el) {
+      el.focus();
+      el.select?.();
+    }
+  };
+  const onKeyCelda = (
+    e: React.KeyboardEvent,
+    f: FilaManualSrv,
+    plantaId: number,
+    fila: number,
+    col: "volumen" | "hora",
+    filasLen: number,
+  ) => {
+    if (e.key === "Enter" || e.key === "ArrowDown") {
+      e.preventDefault();
+      (e.target as HTMLInputElement).blur(); // dispara onBlur → confirma
+      if (fila + 1 < filasLen) moverFoco(plantaId, fila + 1, col);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      (e.target as HTMLInputElement).blur();
+      if (fila > 0) moverFoco(plantaId, fila - 1, col);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      escapando.current = true; // el onBlur que sigue NO debe confirmar
+      setOv((p) => {
+        const n = new Map(p);
+        n.delete(f.id); // descarta lo tecleado → vuelve al valor del servidor
+        return n;
+      });
+      (e.target as HTMLInputElement).blur();
+    }
+  };
+
+  // ── Gantt (Plantas = cargas, Mixers = ciclos), color por cliente ──
   const seccionesGantt: SeccionGanttM[] = useMemo(() => {
     const plantasSec = {
       titulo: "Plantas (cargas)",
@@ -257,7 +527,7 @@ function PlantelManualBloque({
               etiqueta: cli?.empresa ?? "",
               colorHex: colorPorCliente(f.clienteId),
               titulo: `${cli?.empresa ?? ""} · carga ${fmtHM(t.inicioCargaMs)}–${fmtHM(t.finCargaMs)}`,
-              arrastrable: true, // arrastrar mueve la hora de CARGA
+              arrastrable: true,
             };
           })
           .filter((b): b is NonNullable<typeof b> => b !== null),
@@ -291,14 +561,23 @@ function PlantelManualBloque({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plantel.filas, ov, plantaPorId, clientePorId, plantel.mixers, plantel.plantas]);
 
-  // Clientes presentes (leyenda de color).
   const clientesPresentes = [...new Set(plantel.filas.map((f) => f.clienteId))];
 
   return (
     <div className="rounded-xl border border-border bg-surface p-4">
-      <div className="mb-3">
-        <span className="text-lg font-semibold text-ink">{plantel.nombre}</span>{" "}
-        <span className="text-sm text-muted">({plantel.zona})</span>
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <span className="text-lg font-semibold text-ink">{plantel.nombre}</span>{" "}
+          <span className="text-sm text-muted">({plantel.zona})</span>
+        </div>
+        {puedeEditar && (
+          <button
+            onClick={() => setSerieAbierta(true)}
+            className="inline-flex items-center gap-1 rounded-lg border border-accent px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/10"
+          >
+            <Wand2 size={14} /> Generar en serie
+          </button>
+        )}
       </div>
 
       {plantel.plantas.map((planta) => {
@@ -309,8 +588,7 @@ function PlantelManualBloque({
           <div key={planta.id} className="mb-5">
             <div className="mb-2 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-ink">
-                Planta {planta.nombre}{" "}
-                <span className="font-normal text-muted">· {planta.capacidadM3h} m³/h</span>
+                Planta {planta.nombre} <span className="font-normal text-muted">· {planta.capacidadM3h} m³/h</span>
               </h3>
               {puedeEditar && (
                 <button
@@ -342,7 +620,7 @@ function PlantelManualBloque({
                   {filas.length === 0 ? (
                     <tr>
                       <td colSpan={puedeEditar ? 10 : 9} className="px-2 py-4 text-center text-xs text-muted">
-                        Sin viajes en esta planta. Usa <strong>Agregar viaje</strong>.
+                        Sin viajes en esta planta. Usa <strong>Agregar viaje</strong> o <strong>Generar en serie</strong>.
                       </td>
                     </tr>
                   ) : (
@@ -351,6 +629,7 @@ function PlantelManualBloque({
                       const t = calcular(f);
                       const cli = clientePorId.get(f.clienteId);
                       const rojo = idsRojos.has(f.id);
+                      const choca = chocaCargaCon.get(f.id);
                       return (
                         <tr
                           key={f.id}
@@ -361,25 +640,28 @@ function PlantelManualBloque({
                           <td className="px-2 py-1 text-muted">{i + 1}</td>
                           <td className="px-2 py-1">
                             <span className="flex items-center gap-1.5">
-                              <span
-                                className="inline-block h-3 w-3 shrink-0 rounded-full"
-                                style={{ backgroundColor: colorPorCliente(f.clienteId) }}
-                              />
+                              <span className="inline-block h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: colorPorCliente(f.clienteId) }} />
                               <span className="truncate">
                                 <span className="font-medium text-ink">{cli?.empresa}</span>
                                 {cli?.proyecto ? <span className="text-muted"> · {cli.proyecto}</span> : ""}
                               </span>
                             </span>
+                            {choca && (
+                              <span className="mt-0.5 block text-[11px] font-medium text-red-600">
+                                Choca con la carga de las {fmtHM(choca.conMs)} — se encima {choca.solapeMin} min
+                              </span>
+                            )}
                           </td>
                           <td className="px-2 py-1">
                             {puedeEditar ? (
                               <select
                                 value={ef.mixerId ?? ""}
+                                disabled={ocupado}
                                 onFocus={() => setEditandoId(f.id)}
                                 onChange={(e) => {
                                   const mid = e.target.value ? Number(e.target.value) : null;
                                   setOv((p) => new Map(p).set(f.id, { ...p.get(f.id), mixerId: mid }));
-                                  if (mid != null) persistir(f.id, { mixerId: mid });
+                                  commitMixer(f, mid);
                                 }}
                                 className={selCls + (rojo ? " border-red-400" : "")}
                               >
@@ -397,17 +679,27 @@ function PlantelManualBloque({
                           <td className="px-2 py-1">
                             {puedeEditar ? (
                               <input
+                                ref={(el) => {
+                                  if (el) celdas.current.set(`${planta.id}:${i}:volumen`, el);
+                                }}
                                 type="number"
                                 min="0.5"
                                 step="0.5"
-                                defaultValue={ef.volumen}
+                                value={ef.volumen}
+                                disabled={ocupado}
                                 onFocus={() => setEditandoId(f.id)}
-                                onChange={(e) =>
-                                  setOv((p) => new Map(p).set(f.id, { ...p.get(f.id), volumen: Number(e.target.value) }))
-                                }
+                                onChange={(e) => setOv((p) => new Map(p).set(f.id, { ...p.get(f.id), volumen: Number(e.target.value) }))}
                                 onBlur={(e) => {
-                                  const v = Number(e.target.value);
-                                  if (v > 0 && v !== f.volumen) persistir(f.id, { volumen: v });
+                                  if (escapando.current) {
+                                    escapando.current = false;
+                                    return;
+                                  }
+                                  commitVolumen(f, Number(e.target.value));
+                                }}
+                                onKeyDown={(e) => onKeyCelda(e, f, planta.id, i, "volumen", filas.length)}
+                                onPaste={(e) => {
+                                  e.preventDefault();
+                                  pegar(filas, i, "volumen", e.clipboardData.getData("text"));
                                 }}
                                 className={inCls}
                               />
@@ -418,18 +710,29 @@ function PlantelManualBloque({
                           <td className="px-2 py-1">
                             {puedeEditar ? (
                               <input
+                                ref={(el) => {
+                                  if (el) celdas.current.set(`${planta.id}:${i}:hora`, el);
+                                }}
                                 type="time"
                                 value={hhmmDeMs(ef.inicioCargaMs)}
+                                disabled={ocupado}
                                 onFocus={() => setEditandoId(f.id)}
                                 onChange={(e) => {
                                   const nuevo = conNuevaHora(ef.inicioCargaMs, e.target.value);
                                   if (nuevo != null) setOv((p) => new Map(p).set(f.id, { ...p.get(f.id), inicioCargaMs: nuevo }));
                                 }}
                                 onBlur={(e) => {
-                                  const nuevo = conNuevaHora(f.inicioCargaMs, e.target.value);
-                                  if (nuevo != null && nuevo !== f.inicioCargaMs) {
-                                    persistir(f.id, { horaCargaLocal: toLocalInput(nuevo) });
+                                  if (escapando.current) {
+                                    escapando.current = false;
+                                    return;
                                   }
+                                  const nuevo = conNuevaHora(f.inicioCargaMs, e.target.value);
+                                  if (nuevo != null) commitHora(f, nuevo);
+                                }}
+                                onKeyDown={(e) => onKeyCelda(e, f, planta.id, i, "hora", filas.length)}
+                                onPaste={(e) => {
+                                  e.preventDefault();
+                                  pegar(filas, i, "hora", e.clipboardData.getData("text"));
                                 }}
                                 className={inCls + " w-24"}
                               />
@@ -439,15 +742,14 @@ function PlantelManualBloque({
                           </td>
                           <td className="px-2 py-1 text-muted">{t ? fmtHM(t.salidaMs) : "—"}</td>
                           <td className="px-2 py-1 font-medium text-ink">{t ? fmtHM(t.llegadaMs) : "—"}</td>
-                          <td className="px-2 py-1 text-muted">
-                            {t ? `${fmtHM(t.inicioDescargaMs)}–${fmtHM(t.finDescargaMs)}` : "—"}
-                          </td>
+                          <td className="px-2 py-1 text-muted">{t ? `${fmtHM(t.inicioDescargaMs)}–${fmtHM(t.finDescargaMs)}` : "—"}</td>
                           <td className="px-2 py-1 text-muted">{t ? fmtHM(t.regresoMs) : "—"}</td>
                           {puedeEditar && (
                             <td className="px-2 py-1">
                               <button
-                                onClick={() => eliminar(f.id)}
-                                className="rounded p-1 text-muted hover:bg-red-50 hover:text-red-600"
+                                onClick={() => eliminarUno(f)}
+                                disabled={ocupado}
+                                className="rounded p-1 text-muted hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
                                 title="Eliminar viaje"
                               >
                                 <Trash2 size={14} />
@@ -471,12 +773,13 @@ function PlantelManualBloque({
         <GanttManual
           secciones={seccionesGantt}
           highlightId={editandoId}
+          rojos={idsRojos}
           onMoverInicio={
             puedeEditar
               ? (viajeId, nuevoInicioMs) => {
                   const id = Number(viajeId);
-                  setOv((p) => new Map(p).set(id, { ...p.get(id), inicioCargaMs: nuevoInicioMs }));
-                  persistir(id, { horaCargaLocal: toLocalInput(nuevoInicioMs) });
+                  const f = plantel.filas.find((x) => x.id === id);
+                  if (f) commitHora(f, nuevoInicioMs);
                 }
               : undefined
           }
@@ -493,15 +796,15 @@ function PlantelManualBloque({
         )}
       </div>
 
-      {/* Barra de validaciones (avisos, nunca bloquean) */}
       <BarraValidaciones
-        traslapes={traslapes.length}
+        traslapesMixer={traslapesMixer.length}
+        traslapesCarga={traslapesCarga}
         capacidad={avisosCap.length}
         margen={avisosMargen.length}
+        plantaNombre={(id) => plantaPorId.get(id)?.nombre ?? `Planta ${id}`}
         frecuencias={[...frecCliente.entries()]
           .filter(([, v]) => v != null)
           .map(([cid, v]) => ({ empresa: clientePorId.get(cid)?.empresa ?? `Cliente ${cid}`, min: v as number }))}
-        pendiente={pendiente}
       />
 
       {agregarEn != null && (
@@ -514,9 +817,45 @@ function PlantelManualBloque({
           mixers={plantel.mixers}
           fecha={fecha}
           onCerrar={() => setAgregarEn(null)}
-          onExito={() => {
+          onAgregar={(input, etiqueta) => {
             setAgregarEn(null);
-            router.refresh();
+            let idCreado: number | null = null;
+            void ejecutar({
+              etiqueta,
+              hacer: async () => {
+                const r = await agregarViajeManualAction(input);
+                if (!r.ok || r.viajeId == null) throw new Error(r.mensaje ?? "No se pudo agregar.");
+                idCreado = r.viajeId;
+              },
+              deshacer: async () => {
+                if (idCreado != null) await eliminarViajesManualAction([idCreado]);
+              },
+            });
+          }}
+        />
+      )}
+
+      {serieAbierta && (
+        <GenerarSerieModal
+          plantel={plantel}
+          clientes={clientes}
+          disenos={disenos}
+          fecha={fecha}
+          onCerrar={() => setSerieAbierta(false)}
+          onGenerar={(input, etiqueta) => {
+            setSerieAbierta(false);
+            let ids: number[] = [];
+            void ejecutar({
+              etiqueta,
+              hacer: async () => {
+                const r = await generarViajesEnSerieAction(input);
+                if (!r.ok) throw new Error(r.mensaje ?? "No se pudo generar.");
+                ids = r.viajeIds ?? [];
+              },
+              deshacer: async () => {
+                await eliminarViajesManualAction(ids);
+              },
+            });
           }}
         />
       )}
@@ -525,31 +864,44 @@ function PlantelManualBloque({
 }
 
 function BarraValidaciones({
-  traslapes,
+  traslapesMixer,
+  traslapesCarga,
   capacidad,
   margen,
+  plantaNombre,
   frecuencias,
-  pendiente,
 }: {
-  traslapes: number;
+  traslapesMixer: number;
+  traslapesCarga: { plantaId: number; inicioCargaMs: number }[];
   capacidad: number;
   margen: number;
+  plantaNombre: (id: number) => string;
   frecuencias: { empresa: string; min: number }[];
-  pendiente: boolean;
 }) {
-  const problemas = traslapes + capacidad + margen;
+  const problemas = traslapesMixer + traslapesCarga.length + capacidad + margen;
+  // Agrupar traslapes de carga por planta ("STALO: 2 cargas encimadas a las 07:41").
+  const cargaPorPlanta = new Map<number, number[]>();
+  for (const c of traslapesCarga) {
+    (cargaPorPlanta.get(c.plantaId) ?? cargaPorPlanta.set(c.plantaId, []).get(c.plantaId)!).push(c.inicioCargaMs);
+  }
   return (
     <div className="mt-3 space-y-1 text-sm">
       {problemas === 0 ? (
         <p className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800">
-          ✓ Sin traslapes de mixer, sin exceso de planta ni márgenes apretados.
+          ✓ Sin traslapes de carga ni de mixer, sin exceso de planta ni márgenes apretados.
         </p>
       ) : (
         <div className="rounded-md bg-amber-50 px-3 py-2 text-amber-900">
-          {traslapes > 0 && <p>⚠️ {traslapes} traslape(s) de mixer (mismo mixer en 2 viajes que se enciman). Marcados en rojo.</p>}
-          {capacidad > 0 && <p>⚠️ {capacidad} ventana(s) de 60 min superan la capacidad de la planta.</p>}
+          {[...cargaPorPlanta.entries()].map(([pid, msList]) => (
+            <p key={pid} className="font-medium text-red-700">
+              ⛔ {plantaNombre(pid)}: {msList.length} carga(s) encimada(s) — la planta no puede cargar 2 mixers a la vez
+              {msList[0] != null ? ` (p. ej. a las ${fmtHM(Math.min(...msList))})` : ""}.
+            </p>
+          ))}
+          {traslapesMixer > 0 && <p>⚠️ {traslapesMixer} traslape(s) de mixer (mismo mixer en 2 viajes que se enciman).</p>}
+          {capacidad > 0 && <p>⚠️ {capacidad} ventana(s) de 60 min superan la capacidad m³/h de la planta.</p>}
           {margen > 0 && <p>⚠️ {margen} margen(es) apretado(s) entre el regreso de un mixer y su siguiente carga.</p>}
-          <p className="mt-1 text-xs text-amber-700">Son avisos: puedes continuar igual.</p>
+          <p className="mt-1 text-xs text-amber-700">Son avisos: puedes continuar igual si sabes lo que haces.</p>
         </div>
       )}
       {frecuencias.length > 0 && (
@@ -563,7 +915,6 @@ function BarraValidaciones({
           ))}
         </p>
       )}
-      {pendiente && <p className="text-xs text-muted">Guardando…</p>}
     </div>
   );
 }
@@ -577,7 +928,7 @@ function AgregarViajeModal({
   mixers,
   fecha,
   onCerrar,
-  onExito,
+  onAgregar,
 }: {
   plantelId: number;
   plantaId: number;
@@ -585,11 +936,22 @@ function AgregarViajeModal({
   clientes: ClienteOpcionManual[];
   disenos: DisenoOpcionManual[];
   mixers: MixerOpcionManual[];
-  fecha: string; // "YYYY-MM-DD"
+  fecha: string;
   onCerrar: () => void;
-  onExito: () => void;
+  onAgregar: (
+    input: {
+      clienteId: number;
+      disenoId: number;
+      plantelId: number;
+      plantaId: number;
+      mixerId: number;
+      volumen: number;
+      horaCargaLocal: string;
+      tipoDescarga: string;
+    },
+    etiqueta: string,
+  ) => void;
 }) {
-  const [pendiente, startTransition] = useTransition();
   const [clienteId, setClienteId] = useState<number>(clientes[0]?.id ?? 0);
   const [disenoId, setDisenoId] = useState<number>(disenos[0]?.id ?? 0);
   const [mixerId, setMixerId] = useState<number>(mixers[0]?.id ?? 0);
@@ -603,20 +965,11 @@ function AgregarViajeModal({
     const vol = Number(volumen);
     if (!(vol > 0)) return setError("Volumen inválido.");
     if (!clienteId || !disenoId || !mixerId) return setError("Elige cliente, diseño y mixer.");
-    startTransition(async () => {
-      const res = await agregarViajeManualAction({
-        clienteId,
-        disenoId,
-        plantelId,
-        plantaId,
-        mixerId,
-        volumen: vol,
-        horaCargaLocal: `${fecha}T${hora}`,
-        tipoDescarga,
-      });
-      if (res.ok) onExito();
-      else setError(res.mensaje ?? "No se pudo agregar el viaje.");
-    });
+    const cli = clientes.find((c) => c.id === clienteId);
+    onAgregar(
+      { clienteId, disenoId, plantelId, plantaId, mixerId, volumen: vol, horaCargaLocal: `${fecha}T${hora}`, tipoDescarga },
+      `agregar viaje de ${cli?.empresa ?? ""} a las ${hora}`,
+    );
   };
 
   return (
@@ -675,12 +1028,172 @@ function AgregarViajeModal({
             <button onClick={onCerrar} className="rounded-lg border border-border px-4 py-2 text-sm text-ink hover:bg-content">
               Cancelar
             </button>
-            <button
-              onClick={guardar}
-              disabled={pendiente}
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
-            >
-              {pendiente ? "Agregando…" : "Agregar viaje"}
+            <button onClick={guardar} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
+              Agregar viaje
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GenerarSerieModal({
+  plantel,
+  clientes,
+  disenos,
+  fecha,
+  onCerrar,
+  onGenerar,
+}: {
+  plantel: PlantelManual;
+  clientes: ClienteOpcionManual[];
+  disenos: DisenoOpcionManual[];
+  fecha: string;
+  onCerrar: () => void;
+  onGenerar: (
+    input: {
+      clienteId: number;
+      disenoId: number;
+      plantelId: number;
+      plantaIds: number[];
+      mixerIds: number[];
+      volumen: number;
+      cantidad: number;
+      frecuenciaMin: number;
+      horaCargaLocal: string;
+      tipoDescarga: string;
+    },
+    etiqueta: string,
+  ) => void;
+}) {
+  const [clienteId, setClienteId] = useState<number>(clientes[0]?.id ?? 0);
+  const [disenoId, setDisenoId] = useState<number>(disenos[0]?.id ?? 0);
+  const [tipoDescarga, setTipoDescarga] = useState<string>("Canal directo");
+  const [volumen, setVolumen] = useState<string>("10");
+  const [cantidad, setCantidad] = useState<string>("10");
+  const [frecuencia, setFrecuencia] = useState<string>("15");
+  const [hora, setHora] = useState<string>("07:00");
+  const [plantaSel, setPlantaSel] = useState<number[]>(plantel.plantas.map((p) => p.id));
+  const [mixerSel, setMixerSel] = useState<number[]>(plantel.mixers.map((m) => m.id));
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = (arr: number[], id: number, set: (a: number[]) => void) =>
+    set(arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
+
+  const generar = () => {
+    setError(null);
+    const vol = Number(volumen);
+    const cant = Number(cantidad);
+    const freq = Number(frecuencia);
+    if (!(vol > 0)) return setError("Volumen inválido.");
+    if (!(cant > 0) || cant > 200) return setError("Cantidad entre 1 y 200.");
+    if (!(freq > 0)) return setError("Frecuencia inválida.");
+    if (!clienteId || !disenoId) return setError("Elige cliente y diseño.");
+    const plantaIds = plantel.plantas.filter((p) => plantaSel.includes(p.id)).map((p) => p.id);
+    const mixerIds = plantel.mixers.filter((m) => mixerSel.includes(m.id)).map((m) => m.id);
+    if (plantaIds.length === 0) return setError("Elige al menos una planta.");
+    if (mixerIds.length === 0) return setError("Elige al menos un mixer.");
+    const cli = clientes.find((c) => c.id === clienteId);
+    onGenerar(
+      {
+        clienteId,
+        disenoId,
+        plantelId: plantel.plantelId,
+        plantaIds,
+        mixerIds,
+        volumen: vol,
+        cantidad: cant,
+        frecuenciaMin: freq,
+        horaCargaLocal: `${fecha}T${hora}`,
+        tipoDescarga,
+      },
+      `generar ${cant} viajes de ${cli?.empresa ?? ""}`,
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:p-8" onClick={onCerrar}>
+      <div className="w-full max-w-2xl rounded-xl bg-surface shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <h2 className="text-base font-bold text-ink">Generar en serie — {plantel.nombre}</h2>
+          <button onClick={onCerrar} className="rounded-md p-1 text-muted hover:bg-content hover:text-ink" aria-label="Cerrar">
+            <X size={20} />
+          </button>
+        </div>
+        <div className="grid grid-cols-1 gap-3 p-5 sm:grid-cols-2">
+          <Campo label="Cliente / Proyecto">
+            <select value={clienteId} onChange={(e) => setClienteId(Number(e.target.value))} className={selCls}>
+              {clientes.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.empresa}
+                  {c.proyecto ? ` — ${c.proyecto}` : ""}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Diseño de mezcla">
+            <select value={disenoId} onChange={(e) => setDisenoId(Number(e.target.value))} className={selCls}>
+              {disenos.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.etiqueta}
+                </option>
+              ))}
+            </select>
+          </Campo>
+          <Campo label="Volumen por viaje (m³)">
+            <input type="number" min="0.5" step="0.5" value={volumen} onChange={(e) => setVolumen(e.target.value)} className={inCls} />
+          </Campo>
+          <Campo label="Tipo de descarga">
+            <select value={tipoDescarga} onChange={(e) => setTipoDescarga(e.target.value)} className={selCls}>
+              <option value="Canal directo">Canal directo</option>
+              <option value="Bomba estacionaria">Bomba estacionaria</option>
+              <option value="Bomba pluma">Bomba pluma</option>
+            </select>
+          </Campo>
+          <Campo label="Cantidad de viajes">
+            <input type="number" min="1" max="200" step="1" value={cantidad} onChange={(e) => setCantidad(e.target.value)} className={inCls} />
+          </Campo>
+          <Campo label="Frecuencia (min entre cargas)">
+            <input type="number" min="1" step="1" value={frecuencia} onChange={(e) => setFrecuencia(e.target.value)} className={inCls} />
+          </Campo>
+          <Campo label="Hora de carga del primero">
+            <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} className={inCls} />
+          </Campo>
+          <div />
+          <div className="sm:col-span-1">
+            <span className="mb-1 block text-sm font-medium text-ink">Plantas a alternar</span>
+            <div className="flex flex-wrap gap-2">
+              {plantel.plantas.map((p) => (
+                <label key={p.id} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm">
+                  <input type="checkbox" checked={plantaSel.includes(p.id)} onChange={() => toggle(plantaSel, p.id, setPlantaSel)} className="h-3.5 w-3.5 accent-accent" />
+                  {p.nombre}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="sm:col-span-1">
+            <span className="mb-1 block text-sm font-medium text-ink">Mixers a rotar ({mixerSel.length})</span>
+            <div className="flex max-h-28 flex-wrap gap-2 overflow-y-auto">
+              {plantel.mixers.map((m) => (
+                <label key={m.id} className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs">
+                  <input type="checkbox" checked={mixerSel.includes(m.id)} onChange={() => toggle(mixerSel, m.id, setMixerSel)} className="h-3.5 w-3.5 accent-accent" />
+                  {m.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          {error && <p className="sm:col-span-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+          <p className="sm:col-span-2 text-xs text-muted">
+            Se crean {cantidad || "N"} viajes cada {frecuencia || "?"} min a partir de las {hora}, alternando las plantas
+            marcadas y rotando los mixers marcados. Puedes deshacerlo todo con Ctrl+Z en un solo paso.
+          </p>
+          <div className="sm:col-span-2 flex justify-end gap-2">
+            <button onClick={onCerrar} className="rounded-lg border border-border px-4 py-2 text-sm text-ink hover:bg-content">
+              Cancelar
+            </button>
+            <button onClick={generar} className="inline-flex items-center gap-1 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
+              <Wand2 size={15} /> Generar
             </button>
           </div>
         </div>

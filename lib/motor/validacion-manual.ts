@@ -71,6 +71,65 @@ export function idsEnTraslape(conflictos: TraslapeMixer[]): Set<ViajeManual["id"
   return s;
 }
 
+/** Traslape de CARGA en una planta: dos viajes de la MISMA planta cuyas ventanas de
+ *  carga [inicioCarga, finCarga) se enciman. Es DISTINTO del traslape de mixer y del
+ *  exceso de capacidad por hora: aquí una boca de carga no puede llenar 2 mixers a la
+ *  vez. `solapeMin` = minutos que se encima (para el mensaje). */
+export interface TraslapeCarga {
+  plantaId: number;
+  viajeId: ViajeManual["id"];
+  conViajeId: ViajeManual["id"];
+  inicioCargaMs: number; // del viaje `viajeId` (para mensajes)
+  conInicioCargaMs: number; // del viaje `conViajeId`
+  solapeMin: number;
+}
+
+/**
+ * Detecta traslapes de la BOCA DE CARGA por planta: para cada planta, ordena sus
+ * viajes por inicio de carga y marca los pares cuyas ventanas [inicioCarga, finCarga)
+ * se encimen (bordes que se tocan NO cuentan). Una planta solo puede cargar un mixer
+ * a la vez, así que esto es un problema físico aunque el volumen/hora esté dentro de
+ * la capacidad.
+ */
+export function detectarTraslapesCarga(viajes: ViajeManual[]): TraslapeCarga[] {
+  const conflictos: TraslapeCarga[] = [];
+  const porPlanta = new Map<number, ViajeManual[]>();
+  for (const v of viajes) {
+    (porPlanta.get(v.plantaId) ?? porPlanta.set(v.plantaId, []).get(v.plantaId)!).push(v);
+  }
+  for (const [plantaId, lista] of porPlanta) {
+    const ord = [...lista].sort((a, b) => a.inicioCargaMs - b.inicioCargaMs);
+    for (let i = 0; i < ord.length; i++) {
+      for (let j = i + 1; j < ord.length; j++) {
+        const solapeMs = Math.min(ord[i].finCargaMs, ord[j].finCargaMs) - Math.max(ord[i].inicioCargaMs, ord[j].inicioCargaMs);
+        if (solapeMs > 0) {
+          conflictos.push({
+            plantaId,
+            viajeId: ord[i].id,
+            conViajeId: ord[j].id,
+            inicioCargaMs: ord[i].inicioCargaMs,
+            conInicioCargaMs: ord[j].inicioCargaMs,
+            solapeMin: Math.round(solapeMs / 60_000),
+          });
+        } else if (ord[j].inicioCargaMs >= ord[i].finCargaMs) {
+          break; // ordenados por inicio: si j ya no encima con i, los siguientes tampoco
+        }
+      }
+    }
+  }
+  return conflictos;
+}
+
+/** Set de ids de viaje involucrados en algún traslape de carga (para pintar en rojo). */
+export function idsEnTraslapeCarga(conflictos: TraslapeCarga[]): Set<ViajeManual["id"]> {
+  const s = new Set<ViajeManual["id"]>();
+  for (const c of conflictos) {
+    s.add(c.viajeId);
+    s.add(c.conViajeId);
+  }
+  return s;
+}
+
 /** Aviso de capacidad de planta excedida en alguna ventana de 60 min. */
 export interface AvisoCapacidad {
   plantaId: number;

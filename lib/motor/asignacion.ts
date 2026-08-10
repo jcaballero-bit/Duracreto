@@ -30,6 +30,7 @@ import {
 import { planificarCombinacion, unidadLibreEnVentana } from "./planificador";
 import type { VentanaViaje } from "./planificador";
 import { analizarFrecuencia, type ResultadoFrecuencia } from "./frecuencia";
+import { planificarSerie } from "./serie";
 import { leerMargenHueco } from "./config-runtime";
 import { calcularHuecos, planificarDosPasadas, type Hueco, type PedidoOrg } from "./organizador";
 import {
@@ -2032,6 +2033,68 @@ export async function eliminarViajeManual(viajeId: number): Promise<{ ok: boolea
   await prisma.viajes.delete({ where: { id: viajeId } });
   await reconciliarPedidoManual(viaje.pedido_id);
   return { ok: true };
+}
+
+/** Elimina VARIOS viajes a mano (p. ej. deshacer una generación en serie completa).
+ *  Ignora los que ya iniciaron/completaron. Reconcilia cada pedido afectado una vez. */
+export async function eliminarViajesManual(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  const viajes = await prisma.viajes.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, pedido_id: true, estado: true, ts_inicio_carga_real: true },
+  });
+  const borrables = viajes.filter(
+    (v) => v.estado !== ESTADO_VIAJE_COMPLETADO && v.ts_inicio_carga_real == null,
+  );
+  if (borrables.length === 0) return;
+  await prisma.viajes.deleteMany({ where: { id: { in: borrables.map((v) => v.id) } } });
+  for (const pid of [...new Set(borrables.map((v) => v.pedido_id))]) {
+    await reconciliarPedidoManual(pid);
+  }
+}
+
+/** Entrada para generar una serie de viajes iguales a mano. */
+export interface EntradaSerieManual {
+  cliente_id: number;
+  diseno_id: number;
+  plantel_id: number;
+  plantaIds: number[]; // se alternan (round-robin)
+  mixerIds: number[]; // se rotan (round-robin)
+  volumen: number;
+  cantidad: number;
+  frecuenciaMin: number; // min entre inicios de carga
+  inicio_carga: Date; // carga del PRIMER viaje
+  tipo_descarga: string;
+  creado_por: string;
+}
+
+/** Genera N viajes de una vez (mismo cliente/diseño/volumen), alternando plantas y
+ *  rotando mixers a una cadencia fija. Escribe cada viaje TAL CUAL el plan (sin
+ *  cascada) y devuelve los ids creados (para poder deshacer la serie como un bloque). */
+export async function generarViajesEnSerie(e: EntradaSerieManual): Promise<{ viajeIds: number[] }> {
+  const plan = planificarSerie({
+    cantidad: e.cantidad,
+    frecuenciaMin: e.frecuenciaMin,
+    inicioMs: e.inicio_carga.getTime(),
+    plantaIds: e.plantaIds,
+    mixerIds: e.mixerIds,
+  });
+  const viajeIds: number[] = [];
+  for (const v of plan) {
+    const r = await agregarViajeManual({
+      cliente_id: e.cliente_id,
+      diseno_id: e.diseno_id,
+      plantel_id: e.plantel_id,
+      planta_id: v.plantaId,
+      mixer_id: v.mixerId,
+      volumen: e.volumen,
+      inicio_carga: new Date(v.inicioCargaMs),
+      tipo_descarga: e.tipo_descarga,
+      creado_por: e.creado_por,
+    });
+    viajeIds.push(r.viajeId);
+  }
+  return { viajeIds };
 }
 
 /**

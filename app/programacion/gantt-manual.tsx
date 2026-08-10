@@ -35,10 +35,13 @@ function hhmm(ms: number): string {
 export function GanttManual({
   secciones,
   highlightId,
+  rojos,
   onMoverInicio,
 }: {
   secciones: SeccionGanttM[];
   highlightId?: number | string | null;
+  // Ids de viaje con traslape (carga o mixer): sus bloques se marcan en rojo.
+  rojos?: Set<number | string>;
   // Al soltar un bloque arrastrable: nuevo inicio de carga (ms, ya redondeado al minuto).
   onMoverInicio?: (viajeId: number | string, nuevoInicioMs: number) => void;
 }) {
@@ -85,6 +88,7 @@ export function GanttManual({
                     desde={desde}
                     span={span}
                     highlightId={highlightId}
+                    rojos={rojos}
                     onMoverInicio={onMoverInicio}
                   />
                 ))}
@@ -113,12 +117,14 @@ function Pista({
   desde,
   span,
   highlightId,
+  rojos,
   onMoverInicio,
 }: {
   fila: FilaGanttM;
   desde: number;
   span: number;
   highlightId?: number | string | null;
+  rojos?: Set<number | string>;
   onMoverInicio?: (viajeId: number | string, nuevoInicioMs: number) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -163,6 +169,7 @@ function Pista({
           const left = pct(b.inicioMs);
           const width = Math.max(1.2, pct(b.finMs) - left);
           const resaltado = highlightId != null && b.id === highlightId;
+          const enRojo = rojos?.has(b.id) ?? false;
           return (
             <div
               key={`${b.id}-${b.inicioMs}`}
@@ -170,8 +177,13 @@ function Pista({
               onPointerDown={(e) => iniciarArrastre(e, b)}
               className={`absolute top-0.5 h-6 overflow-hidden rounded px-1 text-[10px] leading-6 text-white ${
                 b.arrastrable && onMoverInicio ? "cursor-ew-resize" : ""
-              } ${resaltado ? "ring-2 ring-offset-1 ring-accent" : ""}`}
-              style={{ left: `${left}%`, width: `${width}%`, backgroundColor: b.colorHex }}
+              } ${enRojo ? "ring-2 ring-red-600" : resaltado ? "ring-2 ring-offset-1 ring-accent" : ""}`}
+              style={{
+                left: `${left}%`,
+                width: `${width}%`,
+                backgroundColor: enRojo ? "#dc2626" : b.colorHex,
+                zIndex: enRojo ? 5 : undefined,
+              }}
             >
               {b.etiqueta}
             </div>
