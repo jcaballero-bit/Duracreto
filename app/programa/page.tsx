@@ -486,21 +486,19 @@ function renderPedido(
     </td>
   );
 
-  // ── Modo PLANO (comportamiento original) ────────────────────────────────────
+  // ── Modo PLANO ──────────────────────────────────────────────────────────────
+  // SIN rowspan: Cliente/Tipo se muestran solo en la 1ª fila del pedido; la franja de
+  // color va en TODAS las filas para agrupar visualmente al cliente. Cada viaje es una
+  // fila independiente → al imprimir el corte de página cae ENTRE viajes (documento
+  // corrido, sin saltar el pedido entero a la hoja siguiente dejando huecos).
   if (!agrupar) {
     return (filas as (ViajeDoc | null)[]).map((viaje, i) => (
       <tr key={`${p.id}-${i}`}>
-        {i === 0 && (
-          <td className={td} rowSpan={filas.length} style={franja}>
-            {cliente}
-          </td>
-        )}
+        <td className={`${td} align-top`} style={franja}>
+          {i === 0 ? cliente : null}
+        </td>
         {celdasViaje(viaje, i + 1)}
-        {i === 0 && (
-          <td className={`${td} text-center`} rowSpan={filas.length}>
-            {tipo}
-          </td>
-        )}
+        <td className={`${td} align-top text-center`}>{i === 0 ? tipo : null}</td>
         {celdaVol(viaje)}
       </tr>
     ));
@@ -517,8 +515,10 @@ function renderPedido(
     else porPlanta.set(nombre, [v]);
   }
   const grupos = [...porPlanta.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  const totalFilas = grupos.length + trips.length; // subtítulos + viajes
 
+  // SIN rowspan (igual que el modo plano): Cliente/Tipo solo en la 1ª fila del pedido;
+  // la franja de color va en la columna Cliente de TODAS las filas para agrupar. Cada
+  // fila es independiente → el corte de página cae entre viajes (documento corrido).
   const filasJSX: ReactElement[] = [];
   let numViaje = 0;
   let primeraFila = true;
@@ -528,19 +528,13 @@ function renderPedido(
     // Fila de subtítulo de la planta (colspan de las 7 columnas centrales).
     filasJSX.push(
       <tr key={`${p.id}-sub-${nombrePlanta}`}>
-        {primeraFila && (
-          <td className={td} rowSpan={totalFilas} style={franja}>
-            {cliente}
-          </td>
-        )}
+        <td className={`${td} align-top`} style={franja}>
+          {primeraFila ? cliente : null}
+        </td>
         <td className={subCls} colSpan={7}>
           Planta: {nombrePlanta}
         </td>
-        {primeraFila && (
-          <td className={`${td} text-center`} rowSpan={totalFilas}>
-            {tipo}
-          </td>
-        )}
+        <td className={`${td} align-top text-center`}>{primeraFila ? tipo : null}</td>
         <td className={`${td} bg-slate-50`} />
       </tr>,
     );
@@ -549,7 +543,9 @@ function renderPedido(
       numViaje += 1;
       filasJSX.push(
         <tr key={`${p.id}-v-${numViaje}`}>
+          <td className={td} style={franja} />
           {celdasViaje(v, numViaje)}
+          <td className={`${td} text-center`} />
           {celdaVol(v)}
         </tr>,
       );
