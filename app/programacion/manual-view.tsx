@@ -11,7 +11,7 @@
 // generar N viajes en serie, y validación de traslape de CARGA en planta.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Redo2, Trash2, Undo2, Wand2, X } from "lucide-react";
+import { ChevronRight, Plus, Redo2, Trash2, Truck, Undo2, Wand2, X } from "lucide-react";
 import {
   agregarViajeManualAction,
   editarViajeManualAction,
@@ -68,12 +68,22 @@ export interface FilaManualSrv {
   disenoId: number;
   transporteMin: number;
 }
+/** Mixer para el PANEL lateral (incluye no disponibles, con su estado). */
+export interface MixerPanel {
+  id: number;
+  label: string;
+  capacidad: number;
+  estado: string; // "Disponible" | "En mantenimiento" | "Fuera de servicio" | "Dañado"
+  enMantenimiento: boolean; // rango de disponibilidad_flota que cubre el día
+  esHub: boolean; // préstamo (base distinta del plantel)
+}
 export interface PlantelManual {
   plantelId: number;
   nombre: string;
   zona: string;
   plantas: PlantaManual[];
-  mixers: MixerOpcionManual[];
+  mixers: MixerOpcionManual[]; // seleccionables (Disponibles, sin mantenimiento)
+  mixersPanel: MixerPanel[]; // TODOS los del plantel+hub, para el panel lateral
   filas: FilaManualSrv[];
 }
 
@@ -357,6 +367,23 @@ function PlantelManualBloque({
   const avisosMargen = margenApretado(viajesVal, margenMin);
   const frecCliente = frecuenciaRealPorCliente(viajesVal);
 
+  // Panel lateral: por mixer, cuántos viajes tiene asignados hoy y a qué hora queda
+  // libre (fin de su último ciclo). Se deriva de las filas EFECTIVAS (refleja lo que el
+  // usuario está editando en vivo). Solo informa; no reprograma nada.
+  const infoMixer = useMemo(() => {
+    const m = new Map<number, { viajes: number; libreMs: number | null }>();
+    for (const f of plantel.filas) {
+      const ef = filaEfectiva(f);
+      if (ef.mixerId == null) continue;
+      const t = calcular(f);
+      const prev = m.get(ef.mixerId) ?? { viajes: 0, libreMs: null };
+      prev.viajes += 1;
+      if (t) prev.libreMs = Math.max(prev.libreMs ?? 0, t.regresoMs);
+      m.set(ef.mixerId, prev);
+    }
+    return m;
+  }, [plantel.filas, filaEfectiva, calcular]);
+
   // Mapa: por cada viaje, con quién choca su carga y cuánto (para el mensaje en la fila).
   const chocaCargaCon = new Map<number, { conMs: number; solapeMin: number }>();
   for (const c of traslapesCarga) {
@@ -580,6 +607,8 @@ function PlantelManualBloque({
         )}
       </div>
 
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <div className="min-w-0 flex-1">
       {plantel.plantas.map((planta) => {
         const filas = [...plantel.filas]
           .filter((f) => f.plantaId === planta.id)
@@ -766,6 +795,11 @@ function PlantelManualBloque({
           </div>
         );
       })}
+        </div>
+
+        {/* Panel lateral colapsable: mixers y a qué hora queda libre cada uno */}
+        <PanelMixers mixers={plantel.mixersPanel} info={infoMixer} />
+      </div>
 
       {/* Gantt espejo en vivo */}
       <div className="mt-2 rounded-lg border border-border bg-content/30 p-3">
@@ -858,6 +892,115 @@ function PlantelManualBloque({
             });
           }}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Panel lateral COLAPSABLE de mixers para el día/plantel en contexto. Solo informa
+ * (no reprograma nada): por cada mixer muestra identificador + capacidad, a qué hora
+ * queda libre (fin de su último ciclo) o "Libre todo el día", su estado si no está
+ * disponible, y cuántos viajes ya tiene asignados hoy. Ordena por "quién queda libre
+ * más pronto" para ubicar de inmediato con qué mixer contar para el siguiente hueco.
+ */
+function PanelMixers({
+  mixers,
+  info,
+}: {
+  mixers: MixerPanel[];
+  info: Map<number, { viajes: number; libreMs: number | null }>;
+}) {
+  const [abierto, setAbierto] = useState(true);
+
+  const disponibleHoy = (m: MixerPanel) => m.estado === "Disponible" && !m.enMantenimiento;
+  const libreMsDe = (m: MixerPanel) => info.get(m.id)?.libreMs ?? null;
+
+  const orden = [...mixers].sort((a, b) => {
+    const da = disponibleHoy(a);
+    const db = disponibleHoy(b);
+    if (da !== db) return da ? -1 : 1; // no disponibles al final
+    if (da) {
+      // Disponibles: el que queda libre más pronto arriba (sin viajes = libre ya).
+      const la = libreMsDe(a) ?? -Infinity;
+      const lb = libreMsDe(b) ?? -Infinity;
+      if (la !== lb) return la - lb;
+    }
+    return a.label.localeCompare(b.label);
+  });
+
+  if (!abierto) {
+    return (
+      <button
+        onClick={() => setAbierto(true)}
+        title="Mostrar mixers disponibles"
+        className="flex shrink-0 items-center gap-1 self-start rounded-lg border border-border bg-content/40 px-2 py-2 text-xs font-medium text-muted hover:text-ink lg:flex-col lg:py-3"
+      >
+        <Truck size={15} />
+        <span className="lg:[writing-mode:vertical-rl]">Mixers</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="shrink-0 rounded-lg border border-border bg-content/30 p-3 lg:w-72">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+          <Truck size={15} /> Mixers ({mixers.length})
+        </h3>
+        <button
+          onClick={() => setAbierto(false)}
+          title="Ocultar panel"
+          className="rounded p-1 text-muted hover:bg-content hover:text-ink"
+          aria-label="Ocultar panel de mixers"
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
+      <p className="mb-2 text-[11px] text-muted">
+        Ordenados por quién queda libre más pronto (para el siguiente hueco).
+      </p>
+      {orden.length === 0 ? (
+        <p className="py-3 text-center text-xs text-muted">No hay mixers para este plantel.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {orden.map((m) => {
+            const inf = info.get(m.id);
+            const viajes = inf?.viajes ?? 0;
+            const disp = disponibleHoy(m);
+            const libreMs = inf?.libreMs ?? null;
+            // Estado/línea principal.
+            let estadoTxt: string;
+            let tono: string;
+            if (!disp) {
+              estadoTxt = m.enMantenimiento && m.estado === "Disponible" ? "En mantenimiento (hoy)" : m.estado;
+              tono = "text-danger";
+            } else if (libreMs == null) {
+              estadoTxt = "Libre todo el día";
+              tono = "text-ok";
+            } else {
+              estadoTxt = `Queda libre ~${fmtHM(libreMs)}`;
+              tono = "text-ink";
+            }
+            return (
+              <li
+                key={m.id}
+                className={`rounded-md border px-2 py-1.5 text-xs ${
+                  disp ? "border-border bg-surface" : "border-red-200 bg-red-50/60"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-ink">
+                    {m.label} <span className="font-normal text-muted">· {m.capacidad} m³</span>
+                    {m.esHub && <span className="ml-1 text-[10px] text-sky-600">(préstamo)</span>}
+                  </span>
+                  <span className="text-muted">{viajes} viaje{viajes === 1 ? "" : "s"}</span>
+                </div>
+                <div className={`mt-0.5 font-medium ${tono}`}>{estadoTxt}</div>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );

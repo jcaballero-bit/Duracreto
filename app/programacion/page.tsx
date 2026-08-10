@@ -661,10 +661,12 @@ export default async function ProgramacionPage({
   let clientesManual: ClienteOpcionManual[] = [];
   let disenosManual: DisenoOpcionManual[] = [];
   if (puedeManual) {
-    const [mixersDisp, mantMixers] = await Promise.all([
+    const [mixersTodos, mantMixers] = await Promise.all([
+      // TODOS los mixers (cualquier estado) para el panel lateral; los seleccionables
+      // se derivan filtrando estado Disponible y sin mantenimiento del día.
       prisma.mixers.findMany({
-        where: { estado: "Disponible" },
-        select: { id: true, identificador: true, capacidad_m3: true, plantel_base_id: true },
+        select: { id: true, identificador: true, capacidad_m3: true, plantel_base_id: true, estado: true },
+        orderBy: { identificador: "asc" },
       }),
       unidadesEnMantenimiento("Mixer", ini),
     ]);
@@ -697,14 +699,26 @@ export default async function ProgramacionPage({
       .sort((a, b) => compararPlanteles(a.nombre, b.nombre))
       .map((pl) => {
         const hubIds = new Set<number>([pl.id, ...(pl.hub_id != null ? [pl.hub_id] : [])]);
-        const mixers = mixersDisp
-          .filter((m) => hubIds.has(m.plantel_base_id) && !mantMixers.has(m.id))
+        const delHub = mixersTodos.filter((m) => hubIds.has(m.plantel_base_id));
+        // Seleccionables: solo Disponibles y sin mantenimiento la fecha.
+        const mixers = delHub
+          .filter((m) => m.estado === "Disponible" && !mantMixers.has(m.id))
           .map((m) => ({
             id: m.id,
             label: m.identificador ?? `#${m.id}`,
             capacidad: m.capacidad_m3,
             plantelBaseId: m.plantel_base_id,
           }));
+        // Panel lateral: TODOS los del plantel+hub, con su estado y si están en
+        // mantenimiento hoy (para ver también los no disponibles).
+        const mixersPanel = delHub.map((m) => ({
+          id: m.id,
+          label: m.identificador ?? `#${m.id}`,
+          capacidad: m.capacidad_m3,
+          estado: m.estado,
+          enMantenimiento: mantMixers.has(m.id),
+          esHub: m.plantel_base_id !== pl.id,
+        }));
         return {
           plantelId: pl.id,
           nombre: pl.nombre,
@@ -716,6 +730,7 @@ export default async function ProgramacionPage({
             alistamientoMin: pt.tiempo_alistamiento_min,
           })),
           mixers,
+          mixersPanel,
           filas: filasPorPlantel.get(pl.id) ?? [],
         };
       });
