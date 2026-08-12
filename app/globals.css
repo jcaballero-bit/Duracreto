@@ -41,3 +41,23 @@ body {
   background: var(--color-content);
   color: var(--color-ink);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Impresión: aislar el documento imprimible (Programa DPCR-08, etc.) del shell.
+   El shell se OCULTA con display:none (no ocupa espacio) para que el documento
+   quede en FLUJO NORMAL y pagine correctamente (llena cada hoja y corta entre
+   filas). Antes se usaba position:absolute, que dejaba grandes huecos entre hojas.
+   ───────────────────────────────────────────────────────────────────────────── */
+@media print {
+  .print-hide {
+    display: none !important;
+  }
+  .print-shell-wrap {
+    display: block !important;
+    min-height: 0 !important;
+    padding-left: 0 !important;
+  }
+  .print-shell-main {
+    padding: 0 !important;
+  }
+}

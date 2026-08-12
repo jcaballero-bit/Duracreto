@@ -16,7 +16,7 @@ export function Topbar({ usuario }: { usuario: UsuarioSesion }) {
   const seccion = tituloDeRuta(pathname, usuario.roles);
 
   return (
-    <header className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-surface px-4 py-3 md:px-6">
+    <header className="print-hide sticky top-0 z-10 flex items-center justify-between border-b border-border bg-surface px-4 py-3 md:px-6">
       <div className="flex items-center gap-2">
         <MobileNav usuario={usuario} />
         <div className="leading-tight">

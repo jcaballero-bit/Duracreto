@@ -46,7 +46,7 @@ export function InstallBanner() {
   };
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-30 px-3 pb-3" role="dialog" aria-label="Instalar aplicación">
+    <div className="print-hide fixed inset-x-0 bottom-0 z-30 px-3 pb-3" role="dialog" aria-label="Instalar aplicación">
       <div className="mx-auto max-w-md rounded-xl border border-border bg-surface p-3 shadow-lg">
         <div className="flex items-center gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}

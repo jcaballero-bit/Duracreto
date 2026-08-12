@@ -26,7 +26,7 @@ export function Sidebar({ usuario }: { usuario: UsuarioShell }) {
   const items = NAV.filter((item) => puedeAccederRuta(usuario.roles, item.href));
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-20 hidden w-[260px] flex-col bg-sidebar text-sidebar-text md:flex">
+    <aside className="print-hide fixed inset-y-0 left-0 z-20 hidden w-[260px] flex-col bg-sidebar text-sidebar-text md:flex">
       {/* Logo DURACRETO + nombre del sistema */}
       <div className="flex items-center gap-3 px-5 py-5">
         <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white p-1">

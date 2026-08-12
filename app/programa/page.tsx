@@ -102,15 +102,16 @@ const PRINT_CSS = `
   @page { size: A4 portrait; margin: 8mm; }
   html, body { background: #fff !important; }
   body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  body * { visibility: hidden; }
-  .programa-doc, .programa-doc * { visibility: visible; }
-  .programa-doc { position: absolute; left: 0; top: 0; width: 100%; font-size: 10px; }
   .no-print { display: none !important; }
+  /* El documento va en FLUJO NORMAL (el shell se oculta con display:none via
+     .print-hide en globals.css). Antes se usaba position:absolute, que en impresión
+     paginaba mal y dejaba grandes huecos en blanco entre hojas. */
+  .programa-doc { width: 100% !important; font-size: 10px; }
   /* En vertical las tablas deben ajustarse al ancho de la página (no forzar min-width). */
   .programa-doc table { min-width: 0 !important; width: 100% !important; }
   .programa-doc .overflow-x-auto { overflow: visible !important; }
-  /* Documento CORRIDO: la tabla única fluye entre páginas y solo corta ENTRE filas
-     (viajes), nunca dentro de una. El encabezado de columnas se repite en cada hoja. */
+  /* Documento CORRIDO: la tabla fluye entre páginas y corta ENTRE filas (viajes),
+     nunca dentro de una. El encabezado de columnas se repite en cada hoja. */
   .plantel-tabla { break-inside: auto; }
   .programa-doc thead { display: table-header-group; }
   .programa-doc tr { break-inside: avoid; }
@@ -446,6 +447,13 @@ function renderPedido(
   // Franja izquierda de color en la celda del cliente (diferencia la bomba).
   const franja = color ? { borderLeft: `4px solid ${color}` } : undefined;
 
+  // Versión COMPACTA para las filas de continuación de un pedido: como NO usamos
+  // rowspan (para que el documento pagine sin dejar grandes huecos), cada viaje repite
+  // el nombre del cliente y el tipo de concreto (atenuados) para no perder de vista a
+  // qué cliente pertenece cada viaje, incluso si el pedido se parte entre hojas.
+  const clienteCompacto = <div className="font-medium text-slate-500">{p.cliente.empresa}</div>;
+  const tipoCompacto = <div className="text-slate-500">{resistencia}</div>;
+
   type ViajeDoc = {
     volumen_asignado_m3: number;
     operador: { nombre: string } | null;
@@ -487,18 +495,20 @@ function renderPedido(
   );
 
   // ── Modo PLANO ──────────────────────────────────────────────────────────────
-  // SIN rowspan: Cliente/Tipo se muestran solo en la 1ª fila del pedido; la franja de
-  // color va en TODAS las filas para agrupar visualmente al cliente. Cada viaje es una
-  // fila independiente → al imprimir el corte de página cae ENTRE viajes (documento
-  // corrido, sin saltar el pedido entero a la hoja siguiente dejando huecos).
+  // SIN rowspan: la 1ª fila muestra el bloque COMPLETO del cliente/tipo y las demás
+  // repiten el nombre del cliente y el tipo (atenuados). Todo CENTRADO (horizontal y
+  // vertical) con la franja de color en todas las filas. Al no combinar celdas, cada
+  // viaje es una fila independiente → la tabla pagina llenando cada hoja y corta entre
+  // viajes, sin saltar el pedido completo dejando grandes huecos.
+  const cCli = `${td} text-center align-middle`;
   if (!agrupar) {
     return (filas as (ViajeDoc | null)[]).map((viaje, i) => (
       <tr key={`${p.id}-${i}`}>
-        <td className={`${td} align-top`} style={franja}>
-          {i === 0 ? cliente : null}
+        <td className={cCli} style={franja}>
+          {i === 0 ? cliente : clienteCompacto}
         </td>
         {celdasViaje(viaje, i + 1)}
-        <td className={`${td} align-top text-center`}>{i === 0 ? tipo : null}</td>
+        <td className={cCli}>{i === 0 ? tipo : tipoCompacto}</td>
         {celdaVol(viaje)}
       </tr>
     ));
@@ -516,9 +526,9 @@ function renderPedido(
   }
   const grupos = [...porPlanta.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
-  // SIN rowspan (igual que el modo plano): Cliente/Tipo solo en la 1ª fila del pedido;
-  // la franja de color va en la columna Cliente de TODAS las filas para agrupar. Cada
-  // fila es independiente → el corte de página cae entre viajes (documento corrido).
+  // SIN rowspan (igual que el modo plano, reusa `cCli`): la 1ª fila del pedido lleva
+  // el bloque completo del cliente/tipo; las demás (subtítulos de planta y viajes)
+  // repiten el nombre del cliente y el tipo atenuados. Todo CENTRADO, franja en todas.
   const filasJSX: ReactElement[] = [];
   let numViaje = 0;
   let primeraFila = true;
@@ -528,13 +538,11 @@ function renderPedido(
     // Fila de subtítulo de la planta (colspan de las 7 columnas centrales).
     filasJSX.push(
       <tr key={`${p.id}-sub-${nombrePlanta}`}>
-        <td className={`${td} align-top`} style={franja}>
-          {primeraFila ? cliente : null}
-        </td>
+        <td className={cCli} style={franja}>{primeraFila ? cliente : clienteCompacto}</td>
         <td className={subCls} colSpan={7}>
           Planta: {nombrePlanta}
         </td>
-        <td className={`${td} align-top text-center`}>{primeraFila ? tipo : null}</td>
+        <td className={cCli}>{primeraFila ? tipo : tipoCompacto}</td>
         <td className={`${td} bg-slate-50`} />
       </tr>,
     );
@@ -543,9 +551,9 @@ function renderPedido(
       numViaje += 1;
       filasJSX.push(
         <tr key={`${p.id}-v-${numViaje}`}>
-          <td className={td} style={franja} />
+          <td className={cCli} style={franja}>{clienteCompacto}</td>
           {celdasViaje(v, numViaje)}
-          <td className={`${td} text-center`} />
+          <td className={cCli}>{tipoCompacto}</td>
           {celdaVol(v)}
         </tr>,
       );

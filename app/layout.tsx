@@ -50,9 +50,9 @@ export default async function RootLayout({
         {usuario ? (
           <>
             <Sidebar usuario={usuario} />
-            <div className="flex min-h-screen flex-col md:pl-[260px]">
+            <div className="print-shell-wrap flex min-h-screen flex-col md:pl-[260px]">
               <Topbar usuario={usuario} />
-              <main className="flex-1 px-4 py-4 md:px-6 md:py-6">{children}</main>
+              <main className="print-shell-main flex-1 px-4 py-4 md:px-6 md:py-6">{children}</main>
             </div>
             <InstallBanner />
           </>
