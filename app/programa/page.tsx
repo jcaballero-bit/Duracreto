@@ -20,8 +20,12 @@ export const dynamic = "force-dynamic";
 // bájalo. La primera hoja lleva menos porque comparte espacio con el encabezado ISO
 // + barra de fecha/zona + fila de bombas; las siguientes solo repiten los títulos de
 // columna (`thead`).
-const FILAS_PRIMERA_PAGINA = 16;
-const FILAS_PAGINAS_SIGUIENTES = 28;
+// Calibrado con impresión real (ago-2026): las filas de viaje ocupan ~2 líneas (el
+// nombre del motorista suele partirse), así que caben menos de lo que un conteo de
+// 1 línea sugeriría. Si una hoja queda con espacio sobrante, sube el número; si se
+// desborda (empuja contenido y deja hueco en la hoja siguiente), bájalo.
+const FILAS_PRIMERA_PAGINA = 20;
+const FILAS_PAGINAS_SIGUIENTES = 21;
 
 // Datos fijos del encabezado ISO (documento controlado).
 const DOC = {
