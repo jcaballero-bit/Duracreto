@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import type { CSSProperties, ReactElement } from "react";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import type { Alcance } from "@/lib/auth/acceso";
@@ -10,6 +10,18 @@ import { cierreProgramaDe } from "@/lib/motor/config";
 import { ProgramaControles } from "./programa-controles";
 
 export const dynamic = "force-dynamic";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Filas de VIAJE que caben por hoja al imprimir. Se usan para PARTIR el bloque de
+// cada cliente en sub-bloques (uno por página), cada uno con su propio rowSpan
+// pequeño que sí cabe en su hoja → la celda combinada se conserva pero sin dejar
+// grandes huecos entre páginas. SON CALIBRABLES: si al imprimir una hoja queda con
+// espacio sobrante, sube el número; si se desborda (una hoja "empuja" contenido),
+// bájalo. La primera hoja lleva menos porque comparte espacio con el encabezado ISO
+// + barra de fecha/zona + fila de bombas; las siguientes solo repiten los títulos de
+// columna (`thead`).
+const FILAS_PRIMERA_PAGINA = 16;
+const FILAS_PAGINAS_SIGUIENTES = 28;
 
 // Datos fijos del encabezado ISO (documento controlado).
 const DOC = {
@@ -216,6 +228,10 @@ export default async function ProgramaPage({
   const th = "border border-slate-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-700";
   const td = "border border-slate-300 px-2 py-1 align-middle text-[11px] text-slate-800";
 
+  // Cuerpo de la tabla PAGINADO: un <tbody> por hoja, con `break-after: page` entre
+  // ellos, y el rowSpan de cada cliente partido para que quepa en su hoja.
+  const tbodies = paginarZona(plantelesOrd, pedidos, colorBomba, td);
+
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: PRINT_CSS }} />
@@ -282,12 +298,11 @@ export default async function ProgramaPage({
           </div>
         )}
 
-        {/* ── UNA sola tabla continua para toda la zona ──────────────────────
-            Documento "corrido": el nombre del plantel y su total van como FILAS de
-            esta única tabla (antes cada plantel era una tabla aparte, y al imprimir el
-            navegador saltaba una tabla completa a la hoja siguiente dejando huecos en
-            blanco). Con una sola tabla, el corte de página ocurre solo ENTRE filas
-            (viajes) y el encabezado de columnas se repite en cada hoja. */}
+        {/* ── UNA sola tabla continua para toda la zona, PAGINADA ────────────
+            El cuerpo se arma en varios <tbody> (uno por hoja) con `break-after:page`
+            entre ellos, y el rowSpan de cada cliente se PARTE por página (sub-bloques):
+            así la celda combinada se conserva pero ninguna hoja queda con hueco. El
+            encabezado de columnas (`thead`) se repite en cada hoja. */}
         <div className="mt-3 overflow-x-auto">
           <table className="plantel-tabla w-full min-w-[1000px] border-collapse">
             <thead>
@@ -304,66 +319,7 @@ export default async function ProgramaPage({
                 <th className={th}>Vol. m³</th>
               </tr>
             </thead>
-            <tbody>
-              {plantelesOrd.flatMap((pl, plIdx) => {
-                const suyos = pedidos.filter((p) => p.plantel_id === pl.id);
-                const totalPl = suyos.reduce((s, p) => s + (p.volumen_programado ?? p.volumen_total_m3), 0);
-                // La planta solo se indica en planteles con 2+ plantas.
-                const mostrarPlanta = pl.plantas.length >= 2;
-                const filas: ReactElement[] = [];
-                // Fila de nombre del plantel (encabezado de sección).
-                filas.push(
-                  <tr key={`pl-${pl.id}`} className="bg-slate-100">
-                    <td colSpan={10} className="border border-slate-300 px-3 py-1.5 text-sm font-bold text-slate-800">
-                      {pl.nombre}
-                    </td>
-                  </tr>,
-                );
-                if (suyos.length === 0) {
-                  filas.push(
-                    <tr key={`empty-${pl.id}`}>
-                      <td className={`${td} text-center text-slate-400`} colSpan={10}>
-                        Sin pedidos programados.
-                      </td>
-                    </tr>,
-                  );
-                } else {
-                  // Orden ASCENDENTE por hora de llegada del primer viaje. Línea en
-                  // blanco entre cliente y cliente.
-                  const ordenados = [...suyos].sort((a, b) => primeraLlegadaMs(a) - primeraLlegadaMs(b));
-                  ordenados.forEach((p, idx) => {
-                    for (const f of renderPedido(p, colorBomba, td, mostrarPlanta)) filas.push(f);
-                    if (idx < ordenados.length - 1) {
-                      filas.push(
-                        <tr key={`sep-${p.id}`}>
-                          <td colSpan={10} className="h-3" />
-                        </tr>,
-                      );
-                    }
-                  });
-                }
-                // Total del plantel.
-                filas.push(
-                  <tr key={`tot-${pl.id}`} className="bg-slate-100 font-bold text-slate-800">
-                    <td className="border border-slate-400 px-2 py-1 text-right text-[11px]" colSpan={9}>
-                      Total {pl.nombre}
-                    </td>
-                    <td className="border border-slate-400 px-2 py-1 text-center text-[11px]">
-                      {totalPl.toFixed(2)} m³
-                    </td>
-                  </tr>,
-                );
-                // Separación entre plantel y plantel (no tras el último).
-                if (plIdx < plantelesOrd.length - 1) {
-                  filas.push(
-                    <tr key={`plsep-${pl.id}`}>
-                      <td colSpan={10} className="h-5" />
-                    </tr>,
-                  );
-                }
-                return filas;
-              })}
-            </tbody>
+            {tbodies}
           </table>
         </div>
 
@@ -392,13 +348,30 @@ function primeraLlegadaMs(p: PedidoDoc): number {
   return llegadas.length ? Math.min(...llegadas) : 0;
 }
 
-// ── Render de un pedido (bloque de filas: una por viaje) ──────────────────────
-function renderPedido(
+/** Una fila de contenido de un pedido = las 7 columnas centrales + la de volumen
+ *  (sin la celda de Cliente ni la de Tipo, que se combinan y se insertan al paginar). */
+interface FilaContenido {
+  centro: ReactElement; // 7 <td> (viaje) o 1 <td colSpan=7> (subtítulo de planta)
+  vol: ReactElement; // <td> de volumen (o vacío en los subtítulos)
+}
+/** Datos de un pedido ya preparados para paginar: sus filas de contenido y las celdas
+ *  combinables de Cliente/Tipo (con su variante de continuación y con/sin total). */
+interface PedidoPreparado {
+  id: number;
+  contentRows: FilaContenido[];
+  cliente: ReactElement; // bloque completo (1ª aparición)
+  clienteCont: ReactElement; // "EMPRESA (continuación)" (2º sub-bloque en adelante)
+  tipo: (conTotal: boolean) => ReactElement; // el Total va SOLO en el último sub-bloque
+  franja: CSSProperties | undefined;
+}
+
+// ── Prepara un pedido para paginar (no emite <tr>: eso lo hace el paginador) ──────
+function prepararPedido(
   p: PedidoDoc,
   colorBomba: Map<number, string>,
   td: string,
   mostrarPlanta: boolean,
-) {
+): PedidoPreparado {
   const trips = p.viajes.filter((v: { mixer_id: number | null }) => v.mixer_id != null);
   const filas = trips.length > 0 ? trips : [null];
   const color = p.bomba_id != null ? colorBomba.get(p.bomba_id) : undefined;
@@ -425,14 +398,28 @@ function renderPedido(
     </>
   );
 
-  const tipo = (
+  // Etiqueta de continuación: si el bloque del cliente se parte entre hojas, del 2º
+  // sub-bloque en adelante se indica "(continuación)" para que no parezca otro cliente.
+  const clienteCont = (
+    <div className="font-semibold">
+      {p.cliente.empresa}{" "}
+      <span className="font-normal italic text-slate-500">(continuación)</span>
+    </div>
+  );
+
+  // El Total del cliente va SOLO en el último sub-bloque (no repetido en cada hoja).
+  const tipo = (conTotal: boolean) => (
     <>
       <div className="font-bold">{resistencia}</div>
       <div>{hielo}</div>
       {(p.revenimiento || p.diseno.revenimiento) && (
         <div>Rev: {p.revenimiento || p.diseno.revenimiento}</div>
       )}
-      <div className="font-semibold">Total: {(p.volumen_programado ?? p.volumen_total_m3).toFixed(2)} m³</div>
+      {conTotal && (
+        <div className="font-semibold">
+          Total: {(p.volumen_programado ?? p.volumen_total_m3).toFixed(2)} m³
+        </div>
+      )}
       {color && (
         <span
           className="mt-1 inline-block rounded-sm px-1.5 py-0.5 text-[10px] font-semibold text-white"
@@ -445,7 +432,7 @@ function renderPedido(
   );
 
   // Franja izquierda de color en la celda del cliente (diferencia la bomba).
-  const franja = color ? { borderLeft: `4px solid ${color}` } : undefined;
+  const franja: CSSProperties | undefined = color ? { borderLeft: `4px solid ${color}` } : undefined;
 
 
   type ViajeDoc = {
@@ -488,79 +475,179 @@ function renderPedido(
     </td>
   );
 
-  // ── Modo PLANO ──────────────────────────────────────────────────────────────
-  // Cliente y Tipo van COMBINADOS (rowSpan) UNA sola vez sobre todos los viajes del
-  // pedido: el Cliente alineado a la IZQUIERDA y el Tipo CENTRADO, ambos centrados
-  // verticalmente (`align-middle`, ya incluido en `td`).
+  // ── Filas de contenido (sin Cliente/Tipo: eso lo combina el paginador) ──────
+  const contentRows: FilaContenido[] = [];
+
   if (!agrupar) {
-    return (filas as (ViajeDoc | null)[]).map((viaje, i) => (
-      <tr key={`${p.id}-${i}`}>
-        {i === 0 && (
-          <td className={`${td} text-left`} rowSpan={filas.length} style={franja}>
-            {cliente}
+    // Modo PLANO: una fila por viaje.
+    (filas as (ViajeDoc | null)[]).forEach((viaje, i) => {
+      contentRows.push({ centro: celdasViaje(viaje, i + 1), vol: celdaVol(viaje) });
+    });
+  } else {
+    // Modo AGRUPADO POR PLANTA (reparto en 2 plantas): subtítulo de planta + sus
+    // viajes. La numeración de viaje es CONTINUA a través de las plantas.
+    const porPlanta = new Map<string, ViajeDoc[]>();
+    for (const v of trips as ViajeDoc[]) {
+      const nombre = v.planta?.nombre ?? p.planta?.nombre ?? "—";
+      const arr = porPlanta.get(nombre);
+      if (arr) arr.push(v);
+      else porPlanta.set(nombre, [v]);
+    }
+    const grupos = [...porPlanta.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const subCls =
+      "border border-slate-300 bg-slate-50 px-2 py-1 text-left text-[10px] font-bold uppercase tracking-wide text-slate-700";
+    let numViaje = 0;
+    for (const [nombrePlanta, vs] of grupos) {
+      contentRows.push({
+        centro: (
+          <td className={subCls} colSpan={7}>
+            Planta: {nombrePlanta}
           </td>
-        )}
-        {celdasViaje(viaje, i + 1)}
-        {i === 0 && (
-          <td className={`${td} text-center`} rowSpan={filas.length}>
-            {tipo}
-          </td>
-        )}
-        {celdaVol(viaje)}
-      </tr>
-    ));
+        ),
+        vol: <td className={`${td} bg-slate-50`} />,
+      });
+      for (const v of vs) {
+        numViaje += 1;
+        contentRows.push({ centro: celdasViaje(v, numViaje), vol: celdaVol(v) });
+      }
+    }
   }
 
-  // ── Modo AGRUPADO POR PLANTA (reparto en 2 plantas) ─────────────────────────
-  // Grupos ordenados por nombre de planta; dentro, por hora de carga. Se intercala
-  // una fila de subtítulo por planta. Cliente/Tipo se rowspanean sobre TODO el bloque.
-  const porPlanta = new Map<string, ViajeDoc[]>();
-  for (const v of trips as ViajeDoc[]) {
-    const nombre = v.planta?.nombre ?? p.planta?.nombre ?? "—";
-    const arr = porPlanta.get(nombre);
-    if (arr) arr.push(v);
-    else porPlanta.set(nombre, [v]);
-  }
-  const grupos = [...porPlanta.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  const totalFilas = grupos.length + trips.length; // subtítulos + viajes
+  return { id: p.id, contentRows, cliente, clienteCont, tipo, franja };
+}
 
-  // Cliente/Tipo COMBINADOS (rowSpan) UNA sola vez sobre TODO el bloque del pedido
-  // (subtítulos de planta + viajes): Cliente a la izquierda, Tipo centrado.
-  const filasJSX: ReactElement[] = [];
-  let numViaje = 0;
-  let primeraFila = true;
-  const subCls =
-    "border border-slate-300 bg-slate-50 px-2 py-1 text-left text-[10px] font-bold uppercase tracking-wide text-slate-700";
-  for (const [nombrePlanta, vs] of grupos) {
-    // Fila de subtítulo de la planta (colspan de las 7 columnas centrales).
-    filasJSX.push(
-      <tr key={`${p.id}-sub-${nombrePlanta}`}>
-        {primeraFila && (
-          <td className={`${td} text-left`} rowSpan={totalFilas} style={franja}>
-            {cliente}
-          </td>
-        )}
-        <td className={subCls} colSpan={7}>
-          Planta: {nombrePlanta}
+// ── Paginador de la zona ─────────────────────────────────────────────────────
+// Arma el cuerpo de la tabla en varios <tbody> (uno por HOJA) con `break-after: page`
+// entre ellos. El bloque de cada cliente se PARTE por página: cada sub-bloque lleva su
+// propio rowSpan (= filas de ESE grupo) para Cliente y Tipo, así la celda combinada se
+// conserva pero ningún rowSpan excede el alto de una hoja → no hay huecos. Respeta el
+// espacio ya usado en la hoja en curso (los clientes fluyen uno tras otro).
+function paginarZona(
+  plantelesOrd: { id: number; nombre: string; plantas: unknown[] }[],
+  pedidos: PedidoDoc[],
+  colorBomba: Map<number, string>,
+  td: string,
+): ReactElement[] {
+  const paginas: ReactElement[][] = [];
+  let pagina: ReactElement[] = [];
+  let usadas = 0;
+  let cap = FILAS_PRIMERA_PAGINA;
+  const saltar = () => {
+    paginas.push(pagina);
+    pagina = [];
+    usadas = 0;
+    cap = FILAS_PAGINAS_SIGUIENTES;
+  };
+  const asegurar = (n: number) => {
+    if (pagina.length > 0 && usadas + n > cap) saltar();
+  };
+  const filaSimple = (el: ReactElement) => {
+    asegurar(1);
+    pagina.push(el);
+    usadas += 1;
+  };
+
+  plantelesOrd.forEach((pl, plIdx) => {
+    const suyos = pedidos.filter((p) => p.plantel_id === pl.id);
+    const totalPl = suyos.reduce((s, p) => s + (p.volumen_programado ?? p.volumen_total_m3), 0);
+    const mostrarPlanta = pl.plantas.length >= 2;
+
+    // Encabezado del plantel: pedimos hueco para él + al menos 1 fila (no dejarlo
+    // huérfano al pie de la hoja).
+    asegurar(2);
+    pagina.push(
+      <tr key={`pl-${pl.id}`} className="bg-slate-100">
+        <td colSpan={10} className="border border-slate-300 px-3 py-1.5 text-sm font-bold text-slate-800">
+          {pl.nombre}
         </td>
-        {primeraFila && (
-          <td className={`${td} text-center`} rowSpan={totalFilas}>
-            {tipo}
-          </td>
-        )}
-        <td className={`${td} bg-slate-50`} />
       </tr>,
     );
-    primeraFila = false;
-    for (const v of vs) {
-      numViaje += 1;
-      filasJSX.push(
-        <tr key={`${p.id}-v-${numViaje}`}>
-          {celdasViaje(v, numViaje)}
-          {celdaVol(v)}
+    usadas += 1;
+
+    if (suyos.length === 0) {
+      filaSimple(
+        <tr key={`empty-${pl.id}`}>
+          <td className={`${td} text-center text-slate-400`} colSpan={10}>
+            Sin pedidos programados.
+          </td>
+        </tr>,
+      );
+    } else {
+      const ordenados = [...suyos].sort((a, b) => primeraLlegadaMs(a) - primeraLlegadaMs(b));
+      ordenados.forEach((p, idx) => {
+        const pr = prepararPedido(p, colorBomba, td, mostrarPlanta);
+        let i = 0;
+        let primera = true;
+        while (i < pr.contentRows.length) {
+          let disp = cap - usadas;
+          if (disp < 1) {
+            saltar();
+            disp = cap - usadas;
+          }
+          const chunkSize = Math.min(pr.contentRows.length - i, disp);
+          const esUltimo = i + chunkSize >= pr.contentRows.length;
+          const clienteCell = primera ? pr.cliente : pr.clienteCont;
+          const tipoCell = pr.tipo(esUltimo); // Total solo en el último sub-bloque
+          for (let j = 0; j < chunkSize; j++) {
+            const cr = pr.contentRows[i + j];
+            pagina.push(
+              <tr key={`${pr.id}-${i + j}`}>
+                {j === 0 && (
+                  <td className={`${td} text-left`} rowSpan={chunkSize} style={pr.franja}>
+                    {clienteCell}
+                  </td>
+                )}
+                {cr.centro}
+                {j === 0 && (
+                  <td className={`${td} text-center`} rowSpan={chunkSize}>
+                    {tipoCell}
+                  </td>
+                )}
+                {cr.vol}
+              </tr>,
+            );
+          }
+          usadas += chunkSize;
+          i += chunkSize;
+          primera = false;
+          if (i < pr.contentRows.length) saltar(); // queda más → salto de página
+        }
+        // Línea en blanco entre cliente y cliente (no tras el último).
+        if (idx < ordenados.length - 1) {
+          filaSimple(
+            <tr key={`sep-${p.id}`}>
+              <td colSpan={10} className="h-3" />
+            </tr>,
+          );
+        }
+      });
+    }
+
+    // Total del plantel.
+    filaSimple(
+      <tr key={`tot-${pl.id}`} className="bg-slate-100 font-bold text-slate-800">
+        <td className="border border-slate-400 px-2 py-1 text-right text-[11px]" colSpan={9}>
+          Total {pl.nombre}
+        </td>
+        <td className="border border-slate-400 px-2 py-1 text-center text-[11px]">
+          {totalPl.toFixed(2)} m³
+        </td>
+      </tr>,
+    );
+    // Separación entre plantel y plantel (no tras el último).
+    if (plIdx < plantelesOrd.length - 1) {
+      filaSimple(
+        <tr key={`plsep-${pl.id}`}>
+          <td colSpan={10} className="h-5" />
         </tr>,
       );
     }
-  }
-  return filasJSX;
+  });
+  paginas.push(pagina);
+
+  return paginas.map((filas, i) => (
+    <tbody key={i} style={i < paginas.length - 1 ? { breakAfter: "page" } : undefined}>
+      {filas}
+    </tbody>
+  ));
 }
