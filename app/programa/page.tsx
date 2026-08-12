@@ -447,12 +447,6 @@ function renderPedido(
   // Franja izquierda de color en la celda del cliente (diferencia la bomba).
   const franja = color ? { borderLeft: `4px solid ${color}` } : undefined;
 
-  // Versión COMPACTA para las filas de continuación de un pedido: como NO usamos
-  // rowspan (para que el documento pagine sin dejar grandes huecos), cada viaje repite
-  // el nombre del cliente y el tipo de concreto (atenuados) para no perder de vista a
-  // qué cliente pertenece cada viaje, incluso si el pedido se parte entre hojas.
-  const clienteCompacto = <div className="font-medium text-slate-500">{p.cliente.empresa}</div>;
-  const tipoCompacto = <div className="text-slate-500">{resistencia}</div>;
 
   type ViajeDoc = {
     volumen_asignado_m3: number;
@@ -495,20 +489,23 @@ function renderPedido(
   );
 
   // ── Modo PLANO ──────────────────────────────────────────────────────────────
-  // SIN rowspan: la 1ª fila muestra el bloque COMPLETO del cliente/tipo y las demás
-  // repiten el nombre del cliente y el tipo (atenuados). Todo CENTRADO (horizontal y
-  // vertical) con la franja de color en todas las filas. Al no combinar celdas, cada
-  // viaje es una fila independiente → la tabla pagina llenando cada hoja y corta entre
-  // viajes, sin saltar el pedido completo dejando grandes huecos.
-  const cCli = `${td} text-center align-middle`;
+  // Cliente y Tipo van COMBINADOS (rowSpan) UNA sola vez sobre todos los viajes del
+  // pedido: el Cliente alineado a la IZQUIERDA y el Tipo CENTRADO, ambos centrados
+  // verticalmente (`align-middle`, ya incluido en `td`).
   if (!agrupar) {
     return (filas as (ViajeDoc | null)[]).map((viaje, i) => (
       <tr key={`${p.id}-${i}`}>
-        <td className={cCli} style={franja}>
-          {i === 0 ? cliente : clienteCompacto}
-        </td>
+        {i === 0 && (
+          <td className={`${td} text-left`} rowSpan={filas.length} style={franja}>
+            {cliente}
+          </td>
+        )}
         {celdasViaje(viaje, i + 1)}
-        <td className={cCli}>{i === 0 ? tipo : tipoCompacto}</td>
+        {i === 0 && (
+          <td className={`${td} text-center`} rowSpan={filas.length}>
+            {tipo}
+          </td>
+        )}
         {celdaVol(viaje)}
       </tr>
     ));
@@ -525,10 +522,10 @@ function renderPedido(
     else porPlanta.set(nombre, [v]);
   }
   const grupos = [...porPlanta.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const totalFilas = grupos.length + trips.length; // subtítulos + viajes
 
-  // SIN rowspan (igual que el modo plano, reusa `cCli`): la 1ª fila del pedido lleva
-  // el bloque completo del cliente/tipo; las demás (subtítulos de planta y viajes)
-  // repiten el nombre del cliente y el tipo atenuados. Todo CENTRADO, franja en todas.
+  // Cliente/Tipo COMBINADOS (rowSpan) UNA sola vez sobre TODO el bloque del pedido
+  // (subtítulos de planta + viajes): Cliente a la izquierda, Tipo centrado.
   const filasJSX: ReactElement[] = [];
   let numViaje = 0;
   let primeraFila = true;
@@ -538,11 +535,19 @@ function renderPedido(
     // Fila de subtítulo de la planta (colspan de las 7 columnas centrales).
     filasJSX.push(
       <tr key={`${p.id}-sub-${nombrePlanta}`}>
-        <td className={cCli} style={franja}>{primeraFila ? cliente : clienteCompacto}</td>
+        {primeraFila && (
+          <td className={`${td} text-left`} rowSpan={totalFilas} style={franja}>
+            {cliente}
+          </td>
+        )}
         <td className={subCls} colSpan={7}>
           Planta: {nombrePlanta}
         </td>
-        <td className={cCli}>{primeraFila ? tipo : tipoCompacto}</td>
+        {primeraFila && (
+          <td className={`${td} text-center`} rowSpan={totalFilas}>
+            {tipo}
+          </td>
+        )}
         <td className={`${td} bg-slate-50`} />
       </tr>,
     );
@@ -551,9 +556,7 @@ function renderPedido(
       numViaje += 1;
       filasJSX.push(
         <tr key={`${p.id}-v-${numViaje}`}>
-          <td className={cCli} style={franja}>{clienteCompacto}</td>
           {celdasViaje(v, numViaje)}
-          <td className={cCli}>{tipoCompacto}</td>
           {celdaVol(v)}
         </tr>,
       );
