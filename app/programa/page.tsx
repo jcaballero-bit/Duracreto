@@ -1,149 +1,27 @@
-import type { CSSProperties, ReactElement } from "react";
-import { prisma } from "@/lib/prisma";
+// Programa DPCR-08 — VISTA PREVIA en pantalla.
+//
+// El documento oficial ya NO se produce con la impresión del navegador: se genera
+// como PDF en el servidor (`/programa/pdf`, ver `lib/programa/`), con paginación
+// exacta y archivado por versiones. Esta pantalla es solo la vista previa: muestra el
+// mismo contenido del snapshot en una tabla continua, sin cortes de página ni CSS de
+// impresión (por eso aquí sí se puede usar un `rowSpan` grande por cliente).
+
 import { auth } from "@/auth";
-import {
-  type Alcance,
-  filtroPedidoPorAsesor,
-  filtroPedidoPorLaboratorista,
-} from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
-import { ZONAS } from "@/lib/auth/roles";
-import { textoResistencia } from "@/lib/formato";
-import { compararPlanteles } from "@/lib/planteles-orden";
-import { cierreProgramaDe } from "@/lib/motor/config";
+import { filtroPorRol, zonasParaPrograma } from "@/lib/programa/acceso";
+import {
+  construirSnapshot,
+  ymd,
+  type PedidoSnap,
+  type SnapshotPrograma,
+} from "@/lib/programa/snapshot";
 import { ProgramaControles } from "./programa-controles";
 
 export const dynamic = "force-dynamic";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Filas de VIAJE que caben por hoja al imprimir. Se usan para PARTIR el bloque de
-// cada cliente en sub-bloques (uno por página), cada uno con su propio rowSpan
-// pequeño que sí cabe en su hoja → la celda combinada se conserva pero sin dejar
-// grandes huecos entre páginas. SON CALIBRABLES: si al imprimir una hoja queda con
-// espacio sobrante, sube el número; si se desborda (una hoja "empuja" contenido),
-// bájalo. La primera hoja lleva menos porque comparte espacio con el encabezado ISO
-// + barra de fecha/zona + fila de bombas; las siguientes solo repiten los títulos de
-// columna (`thead`).
-// Calibrado con impresión real (ago-2026): las filas de viaje ocupan ~2 líneas (el
-// nombre del motorista suele partirse), así que caben menos de lo que un conteo de
-// 1 línea sugeriría. Si una hoja queda con espacio sobrante, sube el número; si se
-// desborda (empuja contenido y deja hueco en la hoja siguiente), bájalo.
-const FILAS_PRIMERA_PAGINA = 20;
-const FILAS_PAGINAS_SIGUIENTES = 21;
-
-// Datos fijos del encabezado ISO (documento controlado).
-const DOC = {
-  codigo: "DPCR-08",
-  titulo: "PROGRAMA DE ENTREGA DE CONCRETO",
-  elaboradoPor: "Jefe de Producción de Concreto",
-  aprobadoPor: "Gestor de Calidad",
-  edicion: "01",
-  fechaEdicion: "1 Junio 2016",
-};
-
-// Paleta ejecutiva (sobria) para diferenciar las bombas: franja + etiqueta.
-const PALETA_BOMBA = ["#1F4E79", "#2F6F4E", "#B0730D", "#5B4B8A", "#1C6E7D", "#8A3B3B"];
-
-/**
- * Zonas cuyo Programa DPCR-08 puede ver el usuario (enforcement server-side).
- * Regla: TODOS los roles pueden verlo. Si el usuario tiene una zona ASIGNADA, se
- * filtra a esa zona; si NO tiene ninguna asignada, ve ambas. La zona asignada se
- * resuelve según el rol:
- *  · Admin y Gerencia Comercial: sin límite → ambas zonas.
- *  · Asesor: `asesores.zona_asignada` (fresca de BD).
- *  · Dosificador / Jefe de Planta: la zona de su plantel asignado.
- *  · Programador / Despachador / Laboratorista / Jefe de Laboratorio: `User.zona`.
- */
-async function zonasParaPrograma(alcance: Alcance, userId: string | null): Promise<string[]> {
-  // Roles globales (sin límite de zona): siempre ambas zonas. Almacen consulta el
-  // documento de ambas zonas; el Gerente de Control de Calidad también.
-  if (
-    alcance.esAdmin ||
-    alcance.esGerenteComercial ||
-    alcance.esGerenteControlCalidad ||
-    alcance.esAlmacen
-  )
-    return [...ZONAS];
-
-  // AsesorRestringido: el DPCR-08 se limita a SUS clientes (filtroPedidoPorAsesor,
-  // aplicado abajo), no por zona. Devolvemos ambas zonas para que ninguna zona oculte
-  // un pedido suyo; el filtro por cliente es el que realmente acota lo que ve.
-  if (alcance.esAsesorRestringido) return [...ZONAS];
-
-  // Reunir la(s) zona(s) asignada(s) del usuario desde todas las fuentes posibles.
-  const zonas = new Set<string>();
-  if (alcance.esAsesor && userId) {
-    const yo = await prisma.asesores.findFirst({
-      where: { usuario_auth_id: userId },
-      select: { zona_asignada: true },
-    });
-    if (yo?.zona_asignada) zonas.add(yo.zona_asignada);
-  }
-  if (alcance.zona) zonas.add(alcance.zona); // User.zona (Programador/Despachador/etc.)
-  if (alcance.plantelAsignadoId != null) {
-    const pl = await prisma.planteles.findUnique({
-      where: { id: alcance.plantelAsignadoId },
-      select: { zona: true },
-    });
-    if (pl) zonas.add(pl.zona); // Dosificador
-  }
-  if (alcance.plantelesAsignados.length > 0) {
-    const suyos = await prisma.planteles.findMany({
-      where: { id: { in: alcance.plantelesAsignados } },
-      select: { zona: true },
-    });
-    for (const p of suyos) zonas.add(p.zona); // Jefe de Planta (M2M)
-  }
-
-  // Con zona asignada → se FILTRA a esa(s); sin ninguna → ve AMBAS.
-  return zonas.size > 0 ? [...zonas] : [...ZONAS];
-}
-
-function ymd(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-function hhmm(d: Date | null): string {
-  if (!d) return "—";
-  let h = d.getHours();
-  const m = String(d.getMinutes()).padStart(2, "0");
-  const suf = h < 12 ? "a.m." : "p.m.";
-  h = h % 12;
-  if (h === 0) h = 12;
-  return `${h}:${m} ${suf}`;
-}
-function fechaLarga(iso: string): string {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("es-HN", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
-}
-
-const PRINT_CSS = `
-@media print {
-  @page { size: A4 portrait; margin: 8mm; }
-  html, body { background: #fff !important; }
-  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .no-print { display: none !important; }
-  /* El documento va en FLUJO NORMAL (el shell se oculta con display:none via
-     .print-hide en globals.css). Antes se usaba position:absolute, que en impresión
-     paginaba mal y dejaba grandes huecos en blanco entre hojas. */
-  .programa-doc { width: 100% !important; font-size: 10px; }
-  /* En vertical las tablas deben ajustarse al ancho de la página (no forzar min-width). */
-  .programa-doc table { min-width: 0 !important; width: 100% !important; }
-  .programa-doc .overflow-x-auto { overflow: visible !important; }
-  /* Documento CORRIDO: la tabla fluye entre páginas y corta ENTRE filas (viajes),
-     nunca dentro de una. El encabezado de columnas se repite en cada hoja. */
-  .plantel-tabla { break-inside: auto; }
-  .programa-doc thead { display: table-header-group; }
-  .programa-doc tr { break-inside: avoid; }
-  .programa-doc tfoot { break-inside: avoid; }
-}
-.programa-doc { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-`;
+const th =
+  "border border-slate-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-700";
+const td = "border border-slate-300 px-2 py-1 align-middle text-[11px] text-slate-800";
 
 export default async function ProgramaPage({
   searchParams,
@@ -155,10 +33,8 @@ export default async function ProgramaPage({
   const userId = sesion?.user?.id ?? null;
   const sp = await searchParams;
 
-  // Zonas que el usuario puede ver (server-side, no solo la UI). El Programa es un
-  // documento POR ZONA: Admin ve ambas; Programador/Despachador/Laboratorista por
-  // su zona directa; Dosificador por la zona de su plantel asignado; Asesor ambas
-  // pero con su zona asignada PRESELECCIONADA.
+  // Zonas que el usuario puede ver (server-side, no solo la UI). Las mismas reglas
+  // las aplica la ruta que genera el PDF.
   const zonasPermitidas = await zonasParaPrograma(alcance, userId);
   const fecha = sp.fecha ?? ymd(new Date());
 
@@ -173,95 +49,19 @@ export default async function ProgramaPage({
     );
   }
 
-  const zonaPedida = sp.zona && zonasPermitidas.includes(sp.zona) ? sp.zona : null;
-  const zona = zonaPedida ?? zonasPermitidas[0];
+  const zona = sp.zona && zonasPermitidas.includes(sp.zona) ? sp.zona : zonasPermitidas[0];
 
-  // Restricción del programa por rol (server-side, no solo UI):
-  //  · Laboratorista → SOLO los pedidos que le fueron asignados ese día (F1).
-  //  · AsesorRestringido → SOLO los pedidos de SUS propios clientes (F3).
-  //  · Asesor normal / demás roles → sin filtro de cliente (el programa completo de la zona).
-  const soloLabAsignado = alcance.esLaboratorista && !alcance.esAdmin && userId != null;
-  const soloAsesorPropio = alcance.esAsesorRestringido && !alcance.esAdmin && userId != null;
-  const filtroExtra: Record<string, unknown> = soloLabAsignado
-    ? filtroPedidoPorLaboratorista(userId!)
-    : soloAsesorPropio
-      ? filtroPedidoPorAsesor(userId!)
-      : {};
-
-  const [y, m, d] = fecha.split("-").map(Number);
-  const ini = new Date(y, m - 1, d, 0, 0, 0, 0);
-  const fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
-  // Cierre/publicación del programa de este día: 4:00 PM del día anterior. Una
-  // cancelación ANTES de ese instante saca al cliente del documento; una posterior
-  // (esa tarde, el día mismo o después) lo CONSERVA (documento ya congelado).
-  const cierrePrograma = cierreProgramaDe(ini);
-
-  const [planteles, pedidos] = await Promise.all([
-    prisma.planteles.findMany({
-      where: { zona },
-      include: { plantas: { select: { id: true } } },
-    }),
-    prisma.pedidos.findMany({
-      where: {
-        hora_solicitada: { gte: ini, lt: fin },
-        plantel: { zona },
-        // Restricción por rol (Laboratorista: solo asignados; AsesorRestringido: solo
-        // sus clientes). Vacío para los demás.
-        ...filtroExtra,
-        // Las ADICIONES (creadas desde Despacho en vivo) NO son parte del programa
-        // y NO aparecen en el DPCR-08. Los pedidos de Programación (Nuevo pedido /
-        // conversión de solicitud) sí — son el programa.
-        es_adicion: false,
-        // Congelamiento del Programa DPCR-08 (documento controlado): se incluye si
-        // sigue Activo, o si se canceló DESPUÉS del cierre (permanece publicado).
-        OR: [
-          { estado_pedido: "Activo" },
-          { estado_pedido: "Cancelado", fecha_cancelacion: { gte: cierrePrograma } },
-        ],
-      },
-      include: {
-        cliente: { include: { asesor: { select: { nombre: true } } } },
-        diseno: true,
-        planta: { select: { nombre: true } },
-        bomba: { select: { identificador: true } },
-        viajes: {
-          // Los viajes de ADICIÓN (agregados en Despacho a un pedido de programa)
-          // NO forman parte del documento publicado.
-          where: { es_adicion: false },
-          include: {
-            mixer: { select: { identificador: true } },
-            operador: { select: { nombre: true } },
-            planta: { select: { nombre: true } }, // planta de ESTE viaje (reparto 2 plantas)
-          },
-          orderBy: { hora_inicio_carga: "asc" },
-        },
-      },
-      orderBy: [{ orden_dia: "asc" }, { hora_solicitada: "asc" }],
-    }),
-  ]);
-
-  const plantelesOrd = [...planteles].sort((a, b) => compararPlanteles(a.nombre, b.nombre));
-
-  // Color por bomba (una tonalidad por bomba en toda la zona/día).
-  const colorBomba = new Map<number, string>();
-  for (const p of pedidos) {
-    if (p.bomba_id != null && !colorBomba.has(p.bomba_id)) {
-      colorBomba.set(p.bomba_id, PALETA_BOMBA[colorBomba.size % PALETA_BOMBA.length]);
-    }
-  }
-
-  // Total del PROGRAMA (línea base congelada), sin el volumen adicionado en Despacho.
-  const totalZona = pedidos.reduce((s, p) => s + (p.volumen_programado ?? p.volumen_total_m3), 0);
-
-  const th = "border border-slate-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-700";
-  const td = "border border-slate-300 px-2 py-1 align-middle text-[11px] text-slate-800";
+  // Restricción por rol: el Laboratorista ve solo sus proyectos asignados y el
+  // AsesorRestringido solo los pedidos de sus clientes.
+  const { filtro, soloLabAsignado, soloAsesorPropio } = filtroPorRol(alcance, userId);
+  const snap = await construirSnapshot({ fecha, zona, filtroExtra: filtro });
+  const sinPedidos = snap.planteles.every((p) => p.pedidos.length === 0);
 
   // Laboratorista / AsesorRestringido sin nada asignado ese día: mensaje claro en vez
-  // del documento (no el programa completo ni un documento vacío).
-  if ((soloLabAsignado || soloAsesorPropio) && pedidos.length === 0) {
+  // de un documento vacío.
+  if ((soloLabAsignado || soloAsesorPropio) && sinPedidos) {
     return (
       <>
-        <style dangerouslySetInnerHTML={{ __html: PRINT_CSS }} />
         <ProgramaControles fecha={fecha} zona={zona} zonas={zonasPermitidas} />
         <div className="mx-auto mt-4 max-w-lg rounded-xl border border-border bg-surface p-8 text-center">
           <p className="text-sm text-muted">
@@ -274,426 +74,210 @@ export default async function ProgramaPage({
     );
   }
 
-  // Cuerpo de la tabla PAGINADO: un <tbody> por hoja, con `break-after: page` entre
-  // ellos, y el rowSpan de cada cliente partido para que quepa en su hoja.
-  const tbodies = paginarZona(plantelesOrd, pedidos, colorBomba, td);
-
   return (
     <>
-      <style dangerouslySetInnerHTML={{ __html: PRINT_CSS }} />
-
       <ProgramaControles fecha={fecha} zona={zona} zonas={zonasPermitidas} />
+      <Preview snap={snap} />
+    </>
+  );
+}
 
-      <div className="programa-doc mx-auto max-w-[1120px] bg-white p-4 text-slate-900">
-        {/* ── Encabezado ISO ─────────────────────────────────────────────── */}
-        <table className="w-full border-collapse">
+/** Vista previa: el mismo contenido del documento, en una tabla continua. */
+function Preview({ snap }: { snap: SnapshotPrograma }) {
+  return (
+    <div className="mx-auto max-w-[1120px] bg-white p-4 text-slate-900">
+      {/* Encabezado ISO (en el PDF se repite en cada hoja) */}
+      <table className="w-full border-collapse">
+        <tbody>
+          <tr>
+            <td className="w-[220px] border border-slate-400 p-2 align-middle" rowSpan={2}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logo-duracreto.png" alt="DURACRETO" className="mx-auto h-16 w-auto" />
+            </td>
+            <td className="border border-slate-400 p-2 text-center align-middle">
+              <div className="text-lg font-bold tracking-wide text-slate-900">{snap.doc.titulo}</div>
+            </td>
+            <td className="w-[150px] border border-slate-400 p-2 text-center align-middle">
+              <div className="text-[11px] text-slate-600">Código:</div>
+              <div className="text-base font-bold text-slate-900">{snap.doc.codigo}</div>
+            </td>
+          </tr>
+          <tr>
+            <td className="border border-slate-400 p-2 text-[11px] text-slate-700">
+              <div>
+                <span className="font-semibold">Elaborado por:</span> {snap.doc.elaboradoPor}
+              </div>
+              <div>
+                <span className="font-semibold">Aprobado por:</span> {snap.doc.aprobadoPor}
+              </div>
+            </td>
+            <td className="border border-slate-400 p-2 text-right text-[11px] text-slate-700">
+              <div>Edición: {snap.doc.edicion}</div>
+              <div>Fecha: {snap.doc.fechaEdicion}</div>
+              <div className="mt-1 italic text-slate-500">
+                La numeración de páginas va en el PDF
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      {/* Franja de fecha + zona */}
+      <div className="mt-3 flex items-center justify-between rounded-sm bg-slate-800 px-3 py-1.5 text-white">
+        <span className="text-sm font-semibold">{snap.fechaLarga}</span>
+        <span className="text-sm font-semibold uppercase tracking-wide">Zona {snap.zona}</span>
+        <span className="text-xs">Probabilidad de lluvia: ______ %</span>
+      </div>
+
+      {/* Bombas del día */}
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-700">
+        <span className="font-semibold">Bombas:</span>
+        {snap.bombas.length === 0 ? (
+          <span className="text-slate-500">ninguna programada</span>
+        ) : (
+          snap.bombas.map((b) => (
+            <span key={b.codigo} className="inline-flex items-center gap-1">
+              <span className="inline-block h-3 w-3 rounded-sm" style={{ background: b.color }} />
+              {b.codigo}
+            </span>
+          ))
+        )}
+        <span className="text-slate-400">· descarga directa sin marca</span>
+      </div>
+
+      {/* Tabla continua (el corte en hojas lo decide el paginador del PDF) */}
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[1000px] border-collapse">
+          <thead>
+            <tr className="bg-slate-50">
+              <th className={`${th} text-left`}>Cliente</th>
+              <th className={th}>Viaje</th>
+              <th className={`${th} text-left`}>Motorista</th>
+              <th className={th}>Mixer</th>
+              <th className={th}>Carga</th>
+              <th className={th}>Llegada</th>
+              <th className={th}>Finaliza</th>
+              <th className={th}>Regreso</th>
+              <th className={`${th} text-left`}>Tipo de concreto</th>
+              <th className={th}>Vol. m³</th>
+            </tr>
+          </thead>
           <tbody>
-            <tr>
-              <td className="w-[220px] border border-slate-400 p-2 align-middle" rowSpan={2}>
-                {/* Logo ORIGINAL de la empresa. Deja el archivo en public/logo-duracreto.png. */}
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/logo-duracreto.png" alt="DURACRETO" className="mx-auto h-16 w-auto" />
-              </td>
-              <td className="border border-slate-400 p-2 text-center align-middle">
-                <div className="text-lg font-bold tracking-wide text-slate-900">{DOC.titulo}</div>
-              </td>
-              <td className="w-[150px] border border-slate-400 p-2 text-center align-middle">
-                <div className="text-[11px] text-slate-600">Código:</div>
-                <div className="text-base font-bold text-slate-900">{DOC.codigo}</div>
-              </td>
-            </tr>
-            <tr>
-              <td className="border border-slate-400 p-2 text-[11px] text-slate-700">
-                <div>
-                  <span className="font-semibold">Elaborado por:</span> {DOC.elaboradoPor}
-                </div>
-                <div>
-                  <span className="font-semibold">Aprobado por:</span> {DOC.aprobadoPor}
-                </div>
-              </td>
-              <td className="border border-slate-400 p-2 text-right text-[11px] text-slate-700">
-                <div>Edición: {DOC.edicion}</div>
-                <div>Fecha: {DOC.fechaEdicion}</div>
-                <div className="mt-1 italic">Página 1 de 1</div>
-              </td>
-            </tr>
+            {snap.planteles.map((pl) => (
+              <FilasPlantel key={pl.id} plantel={pl} />
+            ))}
           </tbody>
         </table>
+      </div>
 
-        {/* ── Franja de fecha + zona ─────────────────────────────────────── */}
-        <div className="mt-3 flex items-center justify-between rounded-sm bg-slate-800 px-3 py-1.5 text-white">
-          <span className="text-sm font-semibold capitalize">{fechaLarga(fecha)}</span>
-          <span className="text-sm font-semibold uppercase tracking-wide">Zona {zona}</span>
-          <span className="text-xs">Probabilidad de lluvia: ______ %</span>
-        </div>
-
-        {/* ── Leyenda de bombas ──────────────────────────────────────────── */}
-        {colorBomba.size > 0 && (
-          <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-700">
-            <span className="font-semibold">Bombas:</span>
-            {[...colorBomba.entries()].map(([id, color]) => {
-              const b = pedidos.find((p) => p.bomba_id === id)?.bomba;
-              return (
-                <span key={id} className="inline-flex items-center gap-1">
-                  <span className="inline-block h-3 w-3 rounded-sm" style={{ background: color }} />
-                  {b?.identificador ?? `#${id}`}
-                </span>
-              );
-            })}
-            <span className="text-slate-400">· descarga directa sin marca</span>
-          </div>
-        )}
-
-        {/* ── UNA sola tabla continua para toda la zona, PAGINADA ────────────
-            El cuerpo se arma en varios <tbody> (uno por hoja) con `break-after:page`
-            entre ellos, y el rowSpan de cada cliente se PARTE por página (sub-bloques):
-            así la celda combinada se conserva pero ninguna hoja queda con hueco. El
-            encabezado de columnas (`thead`) se repite en cada hoja. */}
-        <div className="mt-3 overflow-x-auto">
-          <table className="plantel-tabla w-full min-w-[1000px] border-collapse">
-            <thead>
-              <tr className="bg-slate-50">
-                <th className={`${th} text-left`}>Cliente</th>
-                <th className={th}>Viaje</th>
-                <th className={`${th} text-left`}>Motorista</th>
-                <th className={th}>Mixer</th>
-                <th className={th}>Carga</th>
-                <th className={th}>Llegada</th>
-                <th className={th}>Finaliza</th>
-                <th className={th}>Regreso</th>
-                <th className={`${th} text-left`}>Tipo de concreto</th>
-                <th className={th}>Vol. m³</th>
-              </tr>
-            </thead>
-            {tbodies}
-          </table>
-        </div>
-
-        {/* ── Total de la zona ───────────────────────────────────────────── */}
-        <div className="mt-4 flex justify-end">
-          <div className="rounded-sm bg-slate-800 px-4 py-2 text-sm font-bold text-white">
-            Total Zona {zona}: {totalZona.toFixed(2)} m³
-          </div>
+      <div className="mt-4 flex justify-end">
+        <div className="rounded-sm bg-slate-800 px-4 py-2 text-sm font-bold text-white">
+          Total Zona {snap.zona}: {snap.totalZona.toFixed(2)} m³
         </div>
       </div>
-    </>
-  );
-}
-
-// Pedido con sus relaciones (include). Firma laxa para no repetir el tipo Prisma.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type PedidoDoc = any;
-
-/** Hora de llegada del PRIMER viaje del pedido (la más temprana), en ms. */
-function primeraLlegadaMs(p: PedidoDoc): number {
-  const llegadas = p.viajes
-    .filter((v: { mixer_id: number | null; hora_llegada_proyecto: Date | null }) =>
-      v.mixer_id != null && v.hora_llegada_proyecto != null,
-    )
-    .map((v: { hora_llegada_proyecto: Date }) => v.hora_llegada_proyecto.getTime());
-  return llegadas.length ? Math.min(...llegadas) : 0;
-}
-
-/** Una fila de contenido de un pedido = las 7 columnas centrales + la de volumen
- *  (sin la celda de Cliente ni la de Tipo, que se combinan y se insertan al paginar). */
-interface FilaContenido {
-  centro: ReactElement; // 7 <td> (viaje) o 1 <td colSpan=7> (subtítulo de planta)
-  vol: ReactElement; // <td> de volumen (o vacío en los subtítulos)
-}
-/** Datos de un pedido ya preparados para paginar: sus filas de contenido y las celdas
- *  combinables de Cliente/Tipo (con su variante de continuación y con/sin total). */
-interface PedidoPreparado {
-  id: number;
-  contentRows: FilaContenido[];
-  cliente: ReactElement; // bloque completo (1ª aparición)
-  clienteCont: ReactElement; // "EMPRESA (continuación)" (2º sub-bloque en adelante)
-  tipo: (conTotal: boolean) => ReactElement; // el Total va SOLO en el último sub-bloque
-  franja: CSSProperties | undefined;
-}
-
-// ── Prepara un pedido para paginar (no emite <tr>: eso lo hace el paginador) ──────
-function prepararPedido(
-  p: PedidoDoc,
-  colorBomba: Map<number, string>,
-  td: string,
-  mostrarPlanta: boolean,
-): PedidoPreparado {
-  const trips = p.viajes.filter((v: { mixer_id: number | null }) => v.mixer_id != null);
-  const filas = trips.length > 0 ? trips : [null];
-  const color = p.bomba_id != null ? colorBomba.get(p.bomba_id) : undefined;
-
-  const codigoDescarga = p.tipo_descarga === "Canal directo" ? "C/C" : "C/B";
-  const resistencia = `${textoResistencia(p.diseno)} ${p.diseno.tamano_agregado ?? ""} ${codigoDescarga}`.trim();
-  const hielo = p.sacos_hielo_por_m3 > 0 ? `Temp: ${p.sacos_hielo_por_m3} sacos/m³` : "Sin control temp.";
-
-  const cliente = (
-    <>
-      <div className="font-semibold">{p.cliente.empresa}</div>
-      {p.cliente.proyecto && <div className="text-slate-600">{p.cliente.proyecto}</div>}
-      {p.elemento && (
-        <div className="text-[10px] text-slate-600">Elemento: {p.elemento}</div>
-      )}
-      {mostrarPlanta && (
-        <div className="mt-1 inline-block rounded-sm bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
-          Planta: {p.planta?.nombre ?? "—"}
-        </div>
-      )}
-      {p.cliente.asesor?.nombre && (
-        <div className="mt-0.5 text-[10px] text-slate-500">{p.cliente.asesor.nombre}</div>
-      )}
-    </>
-  );
-
-  // Etiqueta de continuación: si el bloque del cliente se parte entre hojas, del 2º
-  // sub-bloque en adelante se indica "(continuación)" para que no parezca otro cliente.
-  const clienteCont = (
-    <div className="font-semibold">
-      {p.cliente.empresa}{" "}
-      <span className="font-normal italic text-slate-500">(continuación)</span>
     </div>
   );
-
-  // El Total del cliente va SOLO en el último sub-bloque (no repetido en cada hoja).
-  const tipo = (conTotal: boolean) => (
-    <>
-      <div className="font-bold">{resistencia}</div>
-      <div>{hielo}</div>
-      {(p.revenimiento || p.diseno.revenimiento) && (
-        <div>Rev: {p.revenimiento || p.diseno.revenimiento}</div>
-      )}
-      {conTotal && (
-        <div className="font-semibold">
-          Total: {(p.volumen_programado ?? p.volumen_total_m3).toFixed(2)} m³
-        </div>
-      )}
-      {color && (
-        <span
-          className="mt-1 inline-block rounded-sm px-1.5 py-0.5 text-[10px] font-semibold text-white"
-          style={{ background: color }}
-        >
-          Bomba {p.bomba?.identificador ?? ""}
-        </span>
-      )}
-    </>
-  );
-
-  // Franja izquierda de color en la celda del cliente (diferencia la bomba).
-  const franja: CSSProperties | undefined = color ? { borderLeft: `4px solid ${color}` } : undefined;
-
-
-  type ViajeDoc = {
-    volumen_asignado_m3: number;
-    operador: { nombre: string } | null;
-    mixer: { identificador: string | null } | null;
-    planta: { nombre: string } | null;
-    hora_inicio_carga: Date | null;
-    hora_llegada_proyecto: Date | null;
-    hora_fin_descarga: Date | null;
-    hora_regreso_planta: Date | null;
-  };
-
-  // ¿Se reparte entre 2+ plantas? Solo entonces agrupamos por planta con subtítulo
-  // (puntos 1 y 10). En planteles de 1 planta o si todos los viajes cargan en la
-  // misma, se lista plano (la "Planta: X" ya la muestra la celda del cliente).
-  const plantasDistintas = new Set(
-    (trips as ViajeDoc[]).map((v) => v.planta?.nombre ?? p.planta?.nombre ?? "—"),
-  );
-  const agrupar = mostrarPlanta && trips.length > 0 && plantasDistintas.size >= 2;
-
-  // Celda de una fila de viaje (las 7 columnas centrales + la de volumen). Se
-  // reutiliza en el modo plano y en el agrupado.
-  const celdasViaje = (viaje: ViajeDoc | null, num: number | null) => (
-    <>
-      <td className={`${td} text-center`}>{viaje ? num : "—"}</td>
-      <td className={td}>{viaje?.operador?.nombre ?? "—"}</td>
-      <td className={`${td} text-center`}>{viaje?.mixer?.identificador ?? "—"}</td>
-      <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_inicio_carga ?? null)}</td>
-      <td className={`${td} text-center whitespace-nowrap font-semibold`}>
-        {hhmm(viaje?.hora_llegada_proyecto ?? null)}
-      </td>
-      <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_fin_descarga ?? null)}</td>
-      <td className={`${td} text-center whitespace-nowrap`}>{hhmm(viaje?.hora_regreso_planta ?? null)}</td>
-    </>
-  );
-  const celdaVol = (viaje: ViajeDoc | null) => (
-    <td className={`${td} text-center whitespace-nowrap`}>
-      {viaje ? `${viaje.volumen_asignado_m3.toFixed(2)} m³` : "—"}
-    </td>
-  );
-
-  // ── Filas de contenido (sin Cliente/Tipo: eso lo combina el paginador) ──────
-  const contentRows: FilaContenido[] = [];
-
-  if (!agrupar) {
-    // Modo PLANO: una fila por viaje.
-    (filas as (ViajeDoc | null)[]).forEach((viaje, i) => {
-      contentRows.push({ centro: celdasViaje(viaje, i + 1), vol: celdaVol(viaje) });
-    });
-  } else {
-    // Modo AGRUPADO POR PLANTA (reparto en 2 plantas): subtítulo de planta + sus
-    // viajes. La numeración de viaje es CONTINUA a través de las plantas.
-    const porPlanta = new Map<string, ViajeDoc[]>();
-    for (const v of trips as ViajeDoc[]) {
-      const nombre = v.planta?.nombre ?? p.planta?.nombre ?? "—";
-      const arr = porPlanta.get(nombre);
-      if (arr) arr.push(v);
-      else porPlanta.set(nombre, [v]);
-    }
-    const grupos = [...porPlanta.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-    const subCls =
-      "border border-slate-300 bg-slate-50 px-2 py-1 text-left text-[10px] font-bold uppercase tracking-wide text-slate-700";
-    let numViaje = 0;
-    for (const [nombrePlanta, vs] of grupos) {
-      contentRows.push({
-        centro: (
-          <td className={subCls} colSpan={7}>
-            Planta: {nombrePlanta}
-          </td>
-        ),
-        vol: <td className={`${td} bg-slate-50`} />,
-      });
-      for (const v of vs) {
-        numViaje += 1;
-        contentRows.push({ centro: celdasViaje(v, numViaje), vol: celdaVol(v) });
-      }
-    }
-  }
-
-  return { id: p.id, contentRows, cliente, clienteCont, tipo, franja };
 }
 
-// ── Paginador de la zona ─────────────────────────────────────────────────────
-// Arma el cuerpo de la tabla en varios <tbody> (uno por HOJA) con `break-after: page`
-// entre ellos. El bloque de cada cliente se PARTE por página: cada sub-bloque lleva su
-// propio rowSpan (= filas de ESE grupo) para Cliente y Tipo, así la celda combinada se
-// conserva pero ningún rowSpan excede el alto de una hoja → no hay huecos. Respeta el
-// espacio ya usado en la hoja en curso (los clientes fluyen uno tras otro).
-function paginarZona(
-  plantelesOrd: { id: number; nombre: string; plantas: unknown[] }[],
-  pedidos: PedidoDoc[],
-  colorBomba: Map<number, string>,
-  td: string,
-): ReactElement[] {
-  const paginas: ReactElement[][] = [];
-  let pagina: ReactElement[] = [];
-  let usadas = 0;
-  let cap = FILAS_PRIMERA_PAGINA;
-  const saltar = () => {
-    paginas.push(pagina);
-    pagina = [];
-    usadas = 0;
-    cap = FILAS_PAGINAS_SIGUIENTES;
-  };
-  const asegurar = (n: number) => {
-    if (pagina.length > 0 && usadas + n > cap) saltar();
-  };
-  const filaSimple = (el: ReactElement) => {
-    asegurar(1);
-    pagina.push(el);
-    usadas += 1;
-  };
-
-  plantelesOrd.forEach((pl, plIdx) => {
-    const suyos = pedidos.filter((p) => p.plantel_id === pl.id);
-    const totalPl = suyos.reduce((s, p) => s + (p.volumen_programado ?? p.volumen_total_m3), 0);
-    const mostrarPlanta = pl.plantas.length >= 2;
-
-    // Encabezado del plantel: pedimos hueco para él + al menos 1 fila (no dejarlo
-    // huérfano al pie de la hoja).
-    asegurar(2);
-    pagina.push(
-      <tr key={`pl-${pl.id}`} className="bg-slate-100">
+function FilasPlantel({ plantel }: { plantel: SnapshotPrograma["planteles"][number] }) {
+  return (
+    <>
+      <tr className="bg-slate-100">
         <td colSpan={10} className="border border-slate-300 px-3 py-1.5 text-sm font-bold text-slate-800">
-          {pl.nombre}
+          {plantel.nombre}
         </td>
-      </tr>,
-    );
-    usadas += 1;
+      </tr>
 
-    if (suyos.length === 0) {
-      filaSimple(
-        <tr key={`empty-${pl.id}`}>
+      {plantel.pedidos.length === 0 ? (
+        <tr>
           <td className={`${td} text-center text-slate-400`} colSpan={10}>
             Sin pedidos programados.
           </td>
-        </tr>,
-      );
-    } else {
-      const ordenados = [...suyos].sort((a, b) => primeraLlegadaMs(a) - primeraLlegadaMs(b));
-      ordenados.forEach((p, idx) => {
-        const pr = prepararPedido(p, colorBomba, td, mostrarPlanta);
-        let i = 0;
-        let primera = true;
-        while (i < pr.contentRows.length) {
-          let disp = cap - usadas;
-          if (disp < 1) {
-            saltar();
-            disp = cap - usadas;
-          }
-          const chunkSize = Math.min(pr.contentRows.length - i, disp);
-          const esUltimo = i + chunkSize >= pr.contentRows.length;
-          const clienteCell = primera ? pr.cliente : pr.clienteCont;
-          const tipoCell = pr.tipo(esUltimo); // Total solo en el último sub-bloque
-          for (let j = 0; j < chunkSize; j++) {
-            const cr = pr.contentRows[i + j];
-            pagina.push(
-              <tr key={`${pr.id}-${i + j}`}>
-                {j === 0 && (
-                  <td className={`${td} text-left`} rowSpan={chunkSize} style={pr.franja}>
-                    {clienteCell}
-                  </td>
-                )}
-                {cr.centro}
-                {j === 0 && (
-                  <td className={`${td} text-center`} rowSpan={chunkSize}>
-                    {tipoCell}
-                  </td>
-                )}
-                {cr.vol}
-              </tr>,
-            );
-          }
-          usadas += chunkSize;
-          i += chunkSize;
-          primera = false;
-          if (i < pr.contentRows.length) saltar(); // queda más → salto de página
-        }
-        // Línea en blanco entre cliente y cliente (no tras el último).
-        if (idx < ordenados.length - 1) {
-          filaSimple(
-            <tr key={`sep-${p.id}`}>
-              <td colSpan={10} className="h-3" />
-            </tr>,
-          );
-        }
-      });
-    }
+        </tr>
+      ) : (
+        plantel.pedidos.map((p, i) => <FilasPedido key={`${p.id}-${i}`} pedido={p} />)
+      )}
 
-    // Total del plantel.
-    filaSimple(
-      <tr key={`tot-${pl.id}`} className="bg-slate-100 font-bold text-slate-800">
+      <tr className="bg-slate-100 font-bold text-slate-800">
         <td className="border border-slate-400 px-2 py-1 text-right text-[11px]" colSpan={9}>
-          Total {pl.nombre}
+          Total {plantel.nombre}
         </td>
         <td className="border border-slate-400 px-2 py-1 text-center text-[11px]">
-          {totalPl.toFixed(2)} m³
+          {plantel.totalM3.toFixed(2)} m³
         </td>
-      </tr>,
-    );
-    // Separación entre plantel y plantel (no tras el último).
-    if (plIdx < plantelesOrd.length - 1) {
-      filaSimple(
-        <tr key={`plsep-${pl.id}`}>
-          <td colSpan={10} className="h-5" />
-        </tr>,
-      );
-    }
-  });
-  paginas.push(pagina);
+      </tr>
+      <tr>
+        <td colSpan={10} className="h-4" />
+      </tr>
+    </>
+  );
+}
 
-  return paginas.map((filas, i) => (
-    <tbody key={i} style={i < paginas.length - 1 ? { breakAfter: "page" } : undefined}>
-      {filas}
-    </tbody>
-  ));
+/** Un pedido: celdas de Cliente y Tipo combinadas sobre todas sus filas. En pantalla
+ *  no hay cortes de página, así que el rowSpan puede ser tan grande como haga falta. */
+function FilasPedido({ pedido: p }: { pedido: PedidoSnap }) {
+  const franja = p.bombaColor ? { borderLeft: `4px solid ${p.bombaColor}` } : undefined;
+  return (
+    <>
+      {p.filas.map((f, i) => (
+        <tr key={i}>
+          {i === 0 && (
+            /* Igual que en el PDF: a la izquierda y centrado verticalmente (`align-middle`
+               ya viene en `td`), para que la vista previa muestre lo que se imprime. */
+            <td className={`${td} text-left`} rowSpan={p.filas.length} style={franja}>
+              <div className="font-semibold">{p.cliente}</div>
+              {!!p.proyecto && <div className="text-slate-600">{p.proyecto}</div>}
+              {!!p.elemento && <div className="text-[10px] text-slate-600">Elemento: {p.elemento}</div>}
+              {p.mostrarPlanta && (
+                <div className="mt-1 inline-block rounded-sm bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
+                  Planta: {p.planta}
+                </div>
+              )}
+              {!!p.asesor && <div className="mt-0.5 text-[10px] text-slate-500">{p.asesor}</div>}
+            </td>
+          )}
+
+          {f.tipo === "planta" ? (
+            <td
+              className="border border-slate-300 bg-slate-50 px-2 py-1 text-left text-[10px] font-bold uppercase tracking-wide text-slate-700"
+              colSpan={7}
+            >
+              Planta: {f.nombre}
+            </td>
+          ) : (
+            <>
+              <td className={`${td} text-center`}>{f.num ?? "—"}</td>
+              <td className={td}>{f.motorista}</td>
+              <td className={`${td} text-center`}>{f.mixer}</td>
+              <td className={`${td} whitespace-nowrap text-center`}>{f.carga}</td>
+              <td className={`${td} whitespace-nowrap text-center font-semibold`}>{f.llegada}</td>
+              <td className={`${td} whitespace-nowrap text-center`}>{f.finaliza}</td>
+              <td className={`${td} whitespace-nowrap text-center`}>{f.regreso}</td>
+            </>
+          )}
+
+          {i === 0 && (
+            <td className={`${td} text-center`} rowSpan={p.filas.length}>
+              <div className="font-bold">{p.resistencia}</div>
+              <div>{p.hielo}</div>
+              {!!p.revenimiento && <div>Rev: {p.revenimiento}</div>}
+              <div className="font-semibold">Total: {p.totalM3.toFixed(2)} m³</div>
+              {!!p.bombaCodigo && (
+                <span
+                  className="mt-1 inline-block rounded-sm px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                  style={{ background: p.bombaColor ?? "#334155" }}
+                >
+                  Bomba {p.bombaCodigo}
+                </span>
+              )}
+            </td>
+          )}
+
+          <td className={`${td} whitespace-nowrap text-center`}>
+            {f.tipo === "viaje" ? f.volumen : ""}
+          </td>
+        </tr>
+      ))}
+    </>
+  );
 }

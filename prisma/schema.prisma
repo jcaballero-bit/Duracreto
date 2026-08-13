@@ -747,6 +747,27 @@ model VerificationToken {
   @@unique([identifier, token])
 }
 
+// ── Programa DPCR-08: historial de versiones generadas ───────────────────────
+// Cada vez que alguien GENERA el PDF del Programa DPCR-08 se guarda aquí una
+// version con el SNAPSHOT de los datos con los que se armó, de modo que el
+// documento sea reproducible identico despues aunque la programacion cambie
+// (documento controlado ISO). `version` es incremental por (fecha_programa, zona).
+// `generado_por` es auditoria INTERNA (se ve en el historial de la app); NO se
+// imprime en el documento, que lleva las etiquetas ISO fijas por cargo.
+model programas_dpcr08 {
+  id             Int      @id @default(autoincrement())
+  fecha_programa DateTime // dia del programa (medianoche local)
+  zona           String
+  snapshot_json  Json // datos congelados con los que se genero el PDF
+  generado_por   String
+  ts_generado    DateTime @default(now())
+  version        Int
+
+  @@unique([fecha_programa, zona, version])
+  @@index([fecha_programa, zona])
+  @@index([ts_generado])
+}
+
 // ── Bitácora de auditoría ────────────────────────────────────────────────────
 // Registro de cambios sensibles. Se usa plenamente en Fase 4; por ahora la
 // corrección manual de horas reales en Despacho ya escribe aquí.
