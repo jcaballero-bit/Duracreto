@@ -65,7 +65,7 @@ export default async function CalidadPage({
   // → su zona; Admin / Gerente de Control de Calidad → todos.
   let scopePedido: Record<string, unknown> = {};
   if (alcance.esLaboratorista && !alcance.esAdmin && !alcance.esGerenteControlCalidad) {
-    scopePedido = { asignacion_lab: { is: { laboratorista_id: userId } } };
+    scopePedido = { asignaciones_lab: { some: { laboratorista_id: userId } } };
   } else if (alcance.esJefeLaboratorio && !alcance.esAdmin && !alcance.esGerenteControlCalidad) {
     scopePedido = { plantel: { zona: alcance.zona ?? "" } };
   }
@@ -81,7 +81,7 @@ export default async function CalidadPage({
       cliente: { select: { empresa: true, proyecto: true } },
       diseno: { select: { codigo: true, etiqueta_resistencia: true } },
       plantel: { select: { nombre: true } },
-      asignacion_lab: { include: { laboratorista: { select: { name: true, email: true } } } },
+      asignaciones_lab: { include: { laboratorista: { select: { name: true, email: true } } } },
       control_calidad_general: {
         include: { laboratorista: { select: { name: true, email: true } } },
       },
@@ -154,12 +154,15 @@ export default async function CalidadPage({
 
             {pedidosVista.map((p) => {
               const cg = p.control_calidad_general;
+              // "Elaborado por": el que capturó el general, o los laboratoristas
+              // asignados (pueden ser varios).
+              const labsAsignados = p.asignaciones_lab
+                .map((a) => a.laboratorista?.name ?? a.laboratorista?.email)
+                .filter((n): n is string => !!n);
               const elaborado =
                 cg?.laboratorista?.name ??
                 cg?.laboratorista?.email ??
-                p.asignacion_lab?.laboratorista?.name ??
-                p.asignacion_lab?.laboratorista?.email ??
-                "—";
+                (labsAsignados.length > 0 ? labsAsignados.join(", ") : "—");
               return (
                 <section key={`doc-${p.id}`} className="calidad-pedido mb-6">
                   <div className="mb-2">

@@ -67,7 +67,7 @@ export default async function LaboratorioPage({
         hora_solicitada: { gte: ini, lt: fin },
         estado_pedido: "Activo",
         // El Laboratorista solo ve SUS programas asignados.
-        ...(soloLectura ? { asignacion_lab: { is: { laboratorista_id: userId } } } : {}),
+        ...(soloLectura ? { asignaciones_lab: { some: { laboratorista_id: userId } } } : {}),
         // El JefeLaboratorio solo ve programas de su zona.
         ...(zonaGestor ? { plantel: { zona: zonaGestor } } : {}),
       },
@@ -77,7 +77,7 @@ export default async function LaboratorioPage({
         hora_solicitada: true,
         cliente: { select: { empresa: true, proyecto: true } },
         plantel: { select: { nombre: true, zona: true } },
-        asignacion_lab: { select: { laboratorista_id: true } },
+        asignaciones_lab: { select: { laboratorista_id: true } },
         viajes: { where: { mixer_id: { not: null } }, select: SELECT_VIAJE_VENTANA },
       },
     }),
@@ -123,7 +123,7 @@ export default async function LaboratorioPage({
         proyecto: p.cliente.proyecto ?? "",
         plantel: p.plantel.nombre,
         zona: p.plantel.zona,
-        labId: p.asignacion_lab?.laboratorista_id ?? "",
+        labIds: p.asignaciones_lab.map((a) => a.laboratorista_id),
         ventana,
         ventanaTxt: ventana ? formatearVentana(ventana) : null,
         inicioMs: ventana ? ventana.inicioMs : Number.MAX_SAFE_INTEGER,
@@ -131,15 +131,17 @@ export default async function LaboratorioPage({
     })
     .sort((a, b) => a.inicioMs - b.inicioMs || a.empresa.localeCompare(b.empresa));
 
-  // Traslapes: por laboratorista, dos programas de cliente DISTINTO que se cruzan.
+  // Traslapes: POR laboratorista, dos programas de cliente DISTINTO que se cruzan.
+  // Un pedido puede tener VARIOS laboratoristas → se indexa cada (pedido, lab).
   const conConflicto = new Set<number>();
   const conflictos: string[] = [];
   const porLab = new Map<string, typeof filas>();
   for (const f of filas) {
-    if (!f.labId) continue;
-    const arr = porLab.get(f.labId) ?? [];
-    arr.push(f);
-    porLab.set(f.labId, arr);
+    for (const labId of f.labIds) {
+      const arr = porLab.get(labId) ?? [];
+      arr.push(f);
+      porLab.set(labId, arr);
+    }
   }
   for (const [labId, arr] of porLab) {
     for (let i = 0; i < arr.length; i++) {
@@ -166,7 +168,7 @@ export default async function LaboratorioPage({
     plantel: f.plantel,
     zona: f.zona,
     ventanaTxt: f.ventanaTxt,
-    labId: f.labId,
+    labIds: f.labIds,
     enConflicto: conConflicto.has(f.pedidoId),
   }));
 

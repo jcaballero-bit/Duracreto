@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight, Plus, Trash2, X } from "lucide-react";
 import { eliminarSolicitudAction, guardarSolicitudAction } from "../solicitudes-actions";
 import { ClienteFormModal, type Opcion } from "../cliente-form-modal";
 import { REVENIMIENTOS, TIPOS_SERVICIO } from "@/lib/revenimiento";
+import { fechaHoraCorta, tiempoRelativo } from "@/lib/formato";
 
 export interface DiaSemana {
   iso: string;
@@ -30,6 +31,9 @@ export interface Celda {
   observaciones: string;
   plantelId: number | null;
   estado: string;
+  // Antigüedad de la proyección (ISO). `creadoEn` es fijo; `actualizadoEn` la última edición.
+  creadoEn: string | null;
+  actualizadoEn: string | null;
 }
 export interface ClienteFila {
   id: number;
@@ -775,6 +779,16 @@ function CeldaVista({
       {celda.estado !== "Pendiente" && (
         <div className="mt-0.5 inline-block rounded bg-content px-1 text-[10px] text-muted">
           {celda.estado}
+        </div>
+      )}
+      {celda.creadoEn && (
+        <div
+          className="mt-0.5 text-[10px] text-muted/70"
+          title={`Creada: ${fechaHoraCorta(celda.creadoEn)}${
+            celda.actualizadoEn ? ` · Editada: ${fechaHoraCorta(celda.actualizadoEn)}` : ""
+          }`}
+        >
+          {tiempoRelativo(celda.actualizadoEn ?? celda.creadoEn)}
         </div>
       )}
     </>

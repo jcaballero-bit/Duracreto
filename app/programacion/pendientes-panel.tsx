@@ -1,11 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { CalendarPlus, X } from "lucide-react";
 import { descartarSolicitudAction } from "../clientes/solicitudes-actions";
 import { PedidoForm, type PresetPedido } from "../pedido-form";
 import type { OpcionesModal } from "./tabla-pedidos";
+import { fechaHoraCorta, tiempoRelativo } from "@/lib/formato";
 
 export interface PendienteVista {
   id: number;
@@ -24,7 +25,11 @@ export interface PendienteVista {
   observaciones: string;
   plantelId: number | null;
   disenoSugeridoId: number | null;
+  // Cuándo la creó el asesor (ISO). Para ordenar por antigüedad (la más vieja primero).
+  creadoEn: string | null;
 }
+
+type OrdenPendiente = "antiguedad" | "volumen" | "cliente";
 
 /** Panel de proyecciones (Programa Semana) pendientes para el día seleccionado. */
 export function PendientesDelDia({
@@ -39,6 +44,23 @@ export function PendientesDelDia({
   const router = useRouter();
   const [convirtiendo, setConvirtiendo] = useState<PendienteVista | null>(null);
   const [pendiente, startTransition] = useTransition();
+  // Orden por defecto: ANTIGÜEDAD — la proyección que lleva más tiempo esperando va
+  // primero, para que el Programador atienda lo más viejo antes que lo recién pedido.
+  const [orden, setOrden] = useState<OrdenPendiente>("antiguedad");
+
+  const ordenados = useMemo(() => {
+    const ms = (p: PendienteVista) => (p.creadoEn ? new Date(p.creadoEn).getTime() : Infinity);
+    const copia = [...pendientes];
+    if (orden === "antiguedad") {
+      // Más antigua (menor timestamp) primero; las sin fecha, al final.
+      copia.sort((a, b) => ms(a) - ms(b));
+    } else if (orden === "volumen") {
+      copia.sort((a, b) => (b.volumen ?? 0) - (a.volumen ?? 0));
+    } else {
+      copia.sort((a, b) => a.empresa.localeCompare(b.empresa, "es"));
+    }
+    return copia;
+  }, [pendientes, orden]);
 
   if (pendientes.length === 0) return null;
 
@@ -71,13 +93,28 @@ export function PendientesDelDia({
 
   return (
     <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50/60 p-4">
-      <h2 className="mb-3 text-sm font-semibold text-amber-900">
-        Pendientes del Programa Semana para este día ({pendientes.length})
-      </h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-amber-900">
+          Pendientes del Programa Semana para este día ({pendientes.length})
+        </h2>
+        <label className="flex items-center gap-1.5 text-xs text-amber-900">
+          <span className="font-medium">Ordenar:</span>
+          <select
+            value={orden}
+            onChange={(e) => setOrden(e.target.value as OrdenPendiente)}
+            className="rounded-md border border-amber-300 bg-white px-2 py-1 text-xs text-ink outline-none focus:border-accent"
+          >
+            <option value="antiguedad">Más antiguas primero</option>
+            <option value="volumen">Mayor volumen</option>
+            <option value="cliente">Cliente (A–Z)</option>
+          </select>
+        </label>
+      </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[720px] text-sm">
+        <table className="w-full min-w-[820px] text-sm">
           <thead>
             <tr className="border-b border-amber-200 text-left text-xs uppercase tracking-wide text-amber-800/80">
+              <th className="px-3 py-2">Solicitada</th>
               <th className="px-3 py-2">Cliente</th>
               <th className="px-3 py-2">Asesor</th>
               <th className="px-3 py-2">Volumen</th>
@@ -88,8 +125,17 @@ export function PendientesDelDia({
             </tr>
           </thead>
           <tbody>
-            {pendientes.map((p) => (
+            {ordenados.map((p) => (
               <tr key={p.id} className="border-b border-amber-200/60">
+                <td className="px-3 py-2 whitespace-nowrap">
+                  {p.creadoEn ? (
+                    <span className="text-xs text-muted" title={fechaHoraCorta(p.creadoEn)}>
+                      {tiempoRelativo(p.creadoEn)}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted/50">—</span>
+                  )}
+                </td>
                 <td className="px-3 py-2">
                   <div className="font-medium text-ink">{p.empresa}</div>
                   {p.proyecto && <div className="text-xs text-link">{p.proyecto}</div>}

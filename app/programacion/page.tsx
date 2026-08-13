@@ -433,7 +433,8 @@ export default async function ProgramacionPage({
           ...filtroZonaPendientes,
         },
         include: { cliente: true, asesor: { select: { nombre: true } } },
-        orderBy: { id: "asc" },
+        // Más antiguas primero (por defecto); el panel permite reordenar.
+        orderBy: { creado_en: "asc" },
       })
     : [];
   const pendientes: PendienteVista[] = pendientesRaw.map((s) => ({
@@ -453,6 +454,7 @@ export default async function ProgramacionPage({
     observaciones: s.observaciones ?? "",
     plantelId: s.plantel_id,
     disenoSugeridoId: sugerirDiseno(s.tipo_concreto_estimado, disenosSimple),
+    creadoEn: s.creado_en ? s.creado_en.toISOString() : null,
   }));
 
   // ── Gantt de recursos del día (Plantas / Mixers / Bombas, eje compartido) ────

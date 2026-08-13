@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Clock } from "lucide-react";
-import { asignarPedidoAction } from "./actions";
+import { AlertTriangle, Clock, Plus, X } from "lucide-react";
+import { guardarLaboratoristasAction } from "./actions";
 
 export interface LaboratoristaOpc {
   id: string;
@@ -17,7 +17,7 @@ export interface ProgramaDia {
   plantel: string;
   zona: string;
   ventanaTxt: string | null;
-  labId: string; // "" = Ninguno
+  labIds: string[]; // uno o varios laboratoristas; vacío = Ninguno
   enConflicto: boolean;
 }
 
@@ -87,7 +87,7 @@ export function GestionAsignaciones({
           <ul className="space-y-2">
             {programas.map((p, idx) => (
               <FilaPrograma
-                key={`${p.pedidoId}-${p.labId}`}
+                key={`${p.pedidoId}-${p.labIds.join(",")}`}
                 indice={idx + 1}
                 p={p}
                 laboratoristas={laboratoristas}
@@ -102,7 +102,8 @@ export function GestionAsignaciones({
   );
 }
 
-/** Una fila = un programa del día, con el selector de Laboratorista (+ Ninguno). */
+/** Una fila = un programa del día. Puede tener UNO O VARIOS Laboratoristas: un
+ *  selector por cada uno + botón "+" para agregar otro y una "X" para quitar. */
 function FilaPrograma({
   indice,
   p,
@@ -117,25 +118,36 @@ function FilaPrograma({
   onCambiar: () => void;
 }) {
   const [pendiente, startTransition] = useTransition();
-  const [sel, setSel] = useState(p.labId);
+  // Al menos una fila visible (vacía = "Ninguno") para poder elegir el primero.
+  const [sel, setSel] = useState<string[]>(p.labIds.length ? p.labIds : [""]);
 
-  const cambiar = (nuevo: string) => {
+  // Guarda el conjunto (dedup + sin vacíos lo hace el servidor). Revierte si se rechaza.
+  const guardar = (nuevas: string[]) => {
     const anterior = sel;
-    setSel(nuevo);
+    setSel(nuevas.length ? nuevas : [""]);
     startTransition(async () => {
-      const res = await asignarPedidoAction(p.pedidoId, nuevo);
-      if (res.ok) {
-        onCambiar();
-      } else {
-        alert(res.mensaje ?? "No se pudo asignar el Laboratorista.");
-        setSel(anterior); // revertir el selector si se rechazó
+      const res = await guardarLaboratoristasAction(p.pedidoId, nuevas.filter((x) => x));
+      if (res.ok) onCambiar();
+      else {
+        alert(res.mensaje ?? "No se pudo guardar la asignación.");
+        setSel(anterior.length ? anterior : [""]); // revertir
       }
     });
   };
 
+  const cambiarEn = (i: number, valor: string) => {
+    const copia = [...sel];
+    copia[i] = valor;
+    guardar(copia);
+  };
+  const quitar = (i: number) => guardar(sel.filter((_, k) => k !== i));
+  const agregar = () => setSel([...sel, ""]); // fila vacía; se guarda al elegir
+
+  const nombreDe = (id: string) => laboratoristas.find((l) => l.id === id)?.nombre ?? "Ninguno";
+
   return (
     <li
-      className={`flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between ${
+      className={`flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-start sm:justify-between ${
         p.enConflicto ? "border-amber-300 bg-amber-50" : "border-border bg-surface"
       }`}
     >
@@ -161,29 +173,57 @@ function FilaPrograma({
         {soloLectura ? (
           <div className="text-sm">
             <span className="mr-1 text-[10px] uppercase tracking-wide text-muted sm:hidden">
-              Laboratorista:
+              Laboratorista(s):
             </span>
             <span className="font-medium text-ink">
-              {laboratoristas.find((l) => l.id === sel)?.nombre ?? "Ninguno"}
+              {p.labIds.length ? p.labIds.map(nombreDe).join(", ") : "Ninguno"}
             </span>
           </div>
         ) : (
-          <label className="block">
-            <span className="mb-1 block text-[10px] uppercase tracking-wide text-muted sm:hidden">
-              Laboratorista
-            </span>
-            <select
-              value={sel}
-              disabled={pendiente || laboratoristas.length === 0}
-              onChange={(e) => cambiar(e.target.value)}
-              className="w-full rounded-lg border border-border bg-surface px-2.5 py-2.5 text-sm text-ink outline-none focus:border-accent disabled:opacity-50 sm:w-auto sm:min-w-[180px] sm:py-1.5"
+          <div className="space-y-1.5">
+            <span className="block text-[10px] uppercase tracking-wide text-muted">Laboratorista(s)</span>
+            {sel.map((valor, i) => (
+              <div key={i} className="flex items-center gap-1">
+                <select
+                  value={valor}
+                  disabled={pendiente || laboratoristas.length === 0}
+                  onChange={(e) => cambiarEn(i, e.target.value)}
+                  className="w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent disabled:opacity-50 sm:w-auto sm:min-w-[190px]"
+                >
+                  <option value="">Ninguno</option>
+                  {laboratoristas.map((l) => {
+                    // Marcar/deshabilitar los ya elegidos en OTRA línea (no duplicar).
+                    const yaEnOtra = sel.some((s, k) => k !== i && s === l.id);
+                    return (
+                      <option key={l.id} value={l.id} disabled={yaEnOtra}>
+                        {l.nombre}{yaEnOtra ? " (ya asignado)" : ""}
+                      </option>
+                    );
+                  })}
+                </select>
+                {(sel.length > 1 || valor !== "") && (
+                  <button
+                    type="button"
+                    onClick={() => quitar(i)}
+                    disabled={pendiente}
+                    title="Quitar este laboratorista"
+                    className="rounded p-1 text-muted hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={agregar}
+              disabled={pendiente || laboratoristas.length === 0 || sel.some((s) => !s)}
+              title="Agregar otro laboratorista a este proyecto"
+              className="inline-flex items-center gap-1 rounded-lg border border-accent px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10 disabled:opacity-40"
             >
-              <option value="">Ninguno</option>
-              {laboratoristas.map((l) => (
-                <option key={l.id} value={l.id}>{l.nombre}</option>
-              ))}
-            </select>
-          </label>
+              <Plus size={13} /> Agregar laboratorista
+            </button>
+          </div>
         )}
       </div>
     </li>

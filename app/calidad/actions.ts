@@ -23,7 +23,7 @@ async function puedeCapturarPedido(
     where: { id: pedidoId },
     select: {
       plantel: { select: { zona: true } },
-      asignacion_lab: { select: { laboratorista_id: true } },
+      asignaciones_lab: { where: { laboratorista_id: userId }, select: { id: true } },
     },
   });
   if (!pedido) return { ok: false, mensaje: "Programa no encontrado." };
@@ -35,7 +35,7 @@ async function puedeCapturarPedido(
       : { ok: false, mensaje: "Ese programa es de otra zona." };
   }
   if (alcance.esLaboratorista) {
-    return pedido.asignacion_lab?.laboratorista_id === userId
+    return pedido.asignaciones_lab.length > 0
       ? { ok: true, userId, quien }
       : { ok: false, mensaje: "Ese programa no está asignado a ti." };
   }

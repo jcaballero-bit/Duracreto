@@ -48,21 +48,21 @@ const SELECT_VIAJE_VENTANA = {
 } as const;
 
 /**
- * Asigna (o cambia) el Laboratorista de UN programa (pedido). `laboratoristaId`
- * vacío = "Ninguno" (quita la asignación). Antes de asignar, valida que el horario
- * del programa no se cruce con otro programa YA asignado a ese laboratorista ese
- * día (de un cliente distinto): si se cruza, RECHAZA indicando con cuál y en qué
- * horario.
+ * Fija la lista de Laboratoristas de UN programa (pedido). `laboratoristaIds` = el
+ * conjunto COMPLETO de laboratoristas que quedan asignados (uno, varios o ninguno —
+ * lista vacía = "Ninguno"). Para CADA laboratorista de la lista valida, POR PERSONA,
+ * que el horario del programa no se cruce con otro programa YA asignado a ESE
+ * laboratorista ese día (de un cliente distinto): si se cruza, RECHAZA indicando quién
+ * y con cuál. No permite duplicar el mismo laboratorista en el mismo programa.
  */
-export async function asignarPedidoAction(
+export async function guardarLaboratoristasAction(
   pedidoId: number,
-  laboratoristaId: string,
+  laboratoristaIds: string[],
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const g = await autorizar();
   if (!g.ok) return g;
 
-  // Límite por zona (punto 12): un JefeLaboratorio solo gestiona programas de SU
-  // zona. Admin y Gerente de Control de Calidad: cualquier zona.
+  // Límite por zona (punto 12): un JefeLaboratorio solo gestiona programas de SU zona.
   const zonaLimit = zonaLimiteGestor(g.alcance);
   if (zonaLimit) {
     const pz = await prisma.pedidos.findUnique({
@@ -74,34 +74,8 @@ export async function asignarPedidoAction(
     }
   }
 
-  // "Ninguno": quitar la asignación de este pedido.
-  if (!laboratoristaId) {
-    await prisma.asignaciones_laboratorista.deleteMany({ where: { pedido_id: pedidoId } });
-    await prisma.bitacora_auditoria.create({
-      data: {
-        tabla_afectada: "asignaciones_laboratorista",
-        registro_id: pedidoId,
-        usuario: g.quien,
-        campo_modificado: "laboratorista",
-        valor_anterior: null,
-        valor_nuevo: null,
-        motivo: "Programa sin laboratorista (Ninguno)",
-      },
-    });
-    revalidatePath("/laboratorio");
-    revalidatePath("/despacho");
-    return { ok: true };
-  }
-
-  // El usuario asignado debe existir, estar activo y tener el rol Laboratorista
-  // (no se puede registrar a cualquier User.id como laboratorista de un programa).
-  const labUser = await prisma.user.findUnique({
-    where: { id: laboratoristaId },
-    select: { activo: true, roles: { where: { rol: "Laboratorista" }, select: { id: true } } },
-  });
-  if (!labUser || !labUser.activo || labUser.roles.length === 0) {
-    return { ok: false, mensaje: "El usuario seleccionado no es un Laboratorista activo." };
-  }
+  // Deduplicar (no asignar dos veces al mismo laboratorista) y descartar vacíos.
+  const ids = [...new Set(laboratoristaIds.filter((x) => x))];
 
   const pedido = await prisma.pedidos.findUnique({
     where: { id: pedidoId },
@@ -113,46 +87,64 @@ export async function asignarPedidoAction(
   });
   if (!pedido) return { ok: false, mensaje: "Programa no encontrado." };
 
-  const ventanaNueva = ventanaDePedido(pedido.viajes as ViajeVentana[], pedido.hora_solicitada);
-  if (ventanaNueva) {
-    const dia = pedido.hora_solicitada;
-    const ini = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate());
-    const fin = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate() + 1);
-    // Otros programas del mismo laboratorista ese día, de cliente DISTINTO (dos
-    // programas del mismo proyecto no se cruzan consigo mismos).
-    const otros = await prisma.pedidos.findMany({
-      where: {
-        id: { not: pedidoId },
-        cliente_id: { not: pedido.cliente_id },
-        hora_solicitada: { gte: ini, lt: fin },
-        estado_pedido: "Activo",
-        asignacion_lab: { is: { laboratorista_id: laboratoristaId } },
-      },
-      select: {
-        hora_solicitada: true,
-        cliente: { select: { empresa: true } },
-        viajes: { where: { mixer_id: { not: null } }, select: SELECT_VIAJE_VENTANA },
-      },
+  if (ids.length > 0) {
+    // Todos deben ser Laboratoristas activos.
+    const validos = await prisma.user.findMany({
+      where: { id: { in: ids }, activo: true, roles: { some: { rol: "Laboratorista" } } },
+      select: { id: true, name: true, email: true },
     });
-    for (const o of otros) {
-      const vo = ventanaDePedido(o.viajes as ViajeVentana[], o.hora_solicitada);
-      if (vo && seTraslapan(ventanaNueva, vo)) {
-        return {
-          ok: false,
-          mensaje:
-            `El horario se cruza con "${o.cliente.empresa}" (${formatearVentana(vo)}). ` +
-            `Este programa ocupa ${formatearVentana(ventanaNueva)}. ` +
-            `Un laboratorista no puede estar en dos proyectos a la vez.`,
-        };
+    if (validos.length !== ids.length) {
+      return { ok: false, mensaje: "Alguno de los seleccionados no es un Laboratorista activo." };
+    }
+    const nombreDe = (id: string) => {
+      const u = validos.find((v) => v.id === id);
+      return u?.name ?? u?.email ?? "Laboratorista";
+    };
+
+    const ventanaNueva = ventanaDePedido(pedido.viajes as ViajeVentana[], pedido.hora_solicitada);
+    if (ventanaNueva) {
+      const dia = pedido.hora_solicitada;
+      const ini = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate());
+      const fin = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate() + 1);
+      // Validación de traslape POR PERSONA: para cada laboratorista de la lista, sus
+      // OTROS programas del día (cliente distinto) no deben cruzarse con este.
+      for (const labId of ids) {
+        const otros = await prisma.pedidos.findMany({
+          where: {
+            id: { not: pedidoId },
+            cliente_id: { not: pedido.cliente_id },
+            hora_solicitada: { gte: ini, lt: fin },
+            estado_pedido: "Activo",
+            asignaciones_lab: { some: { laboratorista_id: labId } },
+          },
+          select: {
+            hora_solicitada: true,
+            cliente: { select: { empresa: true } },
+            viajes: { where: { mixer_id: { not: null } }, select: SELECT_VIAJE_VENTANA },
+          },
+        });
+        for (const o of otros) {
+          const vo = ventanaDePedido(o.viajes as ViajeVentana[], o.hora_solicitada);
+          if (vo && seTraslapan(ventanaNueva, vo)) {
+            return {
+              ok: false,
+              mensaje:
+                `${nombreDe(labId)} ya tiene "${o.cliente.empresa}" (${formatearVentana(vo)}), que se cruza con ` +
+                `este programa (${formatearVentana(ventanaNueva)}). Un laboratorista no puede estar en dos proyectos a la vez.`,
+            };
+          }
+        }
       }
     }
   }
 
-  await prisma.asignaciones_laboratorista.upsert({
-    where: { pedido_id: pedidoId },
-    update: { laboratorista_id: laboratoristaId, creado_por: g.quien },
-    create: { pedido_id: pedidoId, laboratorista_id: laboratoristaId, creado_por: g.quien },
-  });
+  // Reemplazar el conjunto de laboratoristas del pedido (borra y vuelve a crear).
+  await prisma.asignaciones_laboratorista.deleteMany({ where: { pedido_id: pedidoId } });
+  if (ids.length > 0) {
+    await prisma.asignaciones_laboratorista.createMany({
+      data: ids.map((labId) => ({ pedido_id: pedidoId, laboratorista_id: labId, creado_por: g.quien })),
+    });
+  }
   await prisma.bitacora_auditoria.create({
     data: {
       tabla_afectada: "asignaciones_laboratorista",
@@ -160,8 +152,8 @@ export async function asignarPedidoAction(
       usuario: g.quien,
       campo_modificado: "laboratorista",
       valor_anterior: null,
-      valor_nuevo: `pedido=${pedidoId} laboratorista=${laboratoristaId}`,
-      motivo: "Asignación de laboratorista a un programa",
+      valor_nuevo: ids.length > 0 ? `pedido=${pedidoId} laboratoristas=${ids.join(",")}` : null,
+      motivo: ids.length > 0 ? "Asignación de laboratorista(s) a un programa" : "Programa sin laboratorista (Ninguno)",
     },
   });
 

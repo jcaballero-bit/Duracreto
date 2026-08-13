@@ -209,7 +209,11 @@ export async function guardarSolicitudAction(
     }
 
     if (existente) {
-      await prisma.solicitudes_anticipadas.update({ where: { id: existente.id }, data });
+      // `actualizado_en` marca la última edición (aparte de `creado_en`, que queda fijo).
+      await prisma.solicitudes_anticipadas.update({
+        where: { id: existente.id },
+        data: { ...data, actualizado_en: new Date() },
+      });
       await auditar(existente.id, ctx.quien, "*", "Edición de proyección (Programa Semana)");
     } else {
       const creada = await prisma.solicitudes_anticipadas.create({

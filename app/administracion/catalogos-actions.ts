@@ -107,7 +107,13 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         plantel_base_id: int(d.plantel_base_id),
       };
     case "operadores":
-      return { nombre: s(d.nombre), estado: s(d.estado) || "Disponible" };
+      return {
+        nombre: s(d.nombre),
+        estado: s(d.estado) || "Disponible",
+        // Plantel donde trabaja normalmente (el mixer habitual se asigna aparte, en
+        // mixers.operador_asignado_id — fuente única — vía asignarMixerOperadorAction).
+        plantel_asignado_id: idNull(d.plantel_asignado_id),
+      };
     case "asesores":
       return {
         nombre: s(d.nombre),

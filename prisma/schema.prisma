@@ -58,6 +58,7 @@ model planteles {
   solicitudes   solicitudes_anticipadas[]
   usuarios_asignados User[] @relation("PlantelAsignadoUsuario")
   jefes         jefes_planta_planteles[] // Jefes de Planta asignados a este plantel (M2M)
+  operadores_asignados operadores[] @relation("OperadorPlantel") // motoristas cuyo plantel habitual es este
 
   @@index([zona])
 }
@@ -73,7 +74,7 @@ model planteles {
 // (ver lib/laboratorio/ventana.ts).
 model asignaciones_laboratorista {
   id               Int      @id @default(autoincrement())
-  pedido_id        Int      @unique // un laboratorista por pedido (programa)
+  pedido_id        Int // UNO O MAS laboratoristas por pedido (una fila por laboratorista)
   laboratorista_id String
   creado_por       String
   creado_en        DateTime @default(now())
@@ -81,6 +82,10 @@ model asignaciones_laboratorista {
   laboratorista User    @relation(fields: [laboratorista_id], references: [id], onDelete: Cascade)
   pedido        pedidos @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
 
+  // Un mismo laboratorista no se repite en el mismo pedido, pero un pedido puede tener
+  // varios laboratoristas (proyectos grandes).
+  @@unique([pedido_id, laboratorista_id])
+  @@index([pedido_id])
   @@index([laboratorista_id])
 }
 
@@ -179,10 +184,17 @@ model operadores {
   nombre String
   estado String @default("Disponible") // "Disponible" | "No disponible"
 
+  // Plantel donde el operador trabaja normalmente (FK opcional). El MIXER habitual del
+  // operador NO vive aqui: es la relacion inversa `mixers_asignados` (fuente unica =
+  // mixers.operador_asignado_id), para no desincronizar el dato en dos lugares.
+  plantel_asignado_id Int?
+  plantel_asignado    planteles? @relation("OperadorPlantel", fields: [plantel_asignado_id], references: [id])
+
   mixers_asignados mixers[] @relation("OperadorMixer") // mixers cuyo motorista habitual es este
   viajes           viajes[] // viajes donde va este motorista
 
   @@index([estado])
+  @@index([plantel_asignado_id])
 }
 
 // ── Mixers (camiones revolvedores) ─────────────────────────────────────────
@@ -483,8 +495,8 @@ model pedidos {
   viajes  viajes[]
   // Solicitud anticipada (proyección semanal) de la que nació este pedido, si aplica.
   solicitud solicitudes_anticipadas?
-  // Laboratorista asignado a este programa (o ninguno).
-  asignacion_lab asignaciones_laboratorista?
+  // Laboratorista(s) asignado(s) a este programa (uno o varios, o ninguno).
+  asignaciones_lab asignaciones_laboratorista[]
   // Preguntas generales del control de calidad (una vez por pedido/cliente/día).
   control_calidad_general control_calidad_general?
 
@@ -515,7 +527,8 @@ model solicitudes_anticipadas {
   estado                 String   @default("Pendiente") // Pendiente | Programado | Descartada
   pedido_id              Int?     @unique // se llena al convertir en pedido real
   creado_por             String
-  creado_en              DateTime @default(now())
+  creado_en              DateTime @default(now()) // antiguedad: cuando el asesor la registro
+  actualizado_en         DateTime? // ultima modificacion (no pisa creado_en)
 
   cliente clientes  @relation(fields: [cliente_id], references: [id])
   asesor  asesores? @relation(fields: [asesor_id], references: [id])

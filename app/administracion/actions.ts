@@ -69,8 +69,9 @@ export async function alternarRolAction(
     await prisma.userRole.delete({ where: { id: existe.id } });
   } else {
     await prisma.userRole.create({ data: { userId, rol } });
-    // Al ACTIVAR el rol Asesor, autocrear/vincular su registro en asesores (con su zona).
-    if (rol === "Asesor") {
+    // Al ACTIVAR el rol Asesor (o AsesorRestringido), autocrear/vincular su registro en
+    // asesores (con su zona) — ambos necesitan su asesor para "sus clientes".
+    if (rol === "Asesor" || rol === "AsesorRestringido") {
       const u = await prisma.user.findUnique({
         where: { id: userId },
         select: { name: true, email: true, zona: true },
@@ -237,9 +238,9 @@ export async function crearUsuarioAction(
       roles: { create: roles.map((rol) => ({ rol })) },
     },
   });
-  // Si nace con rol Asesor, autocrear/vincular su registro en `asesores` con la
-  // zona seleccionada al crear el usuario.
-  if (roles.includes("Asesor")) {
+  // Si nace con rol Asesor o AsesorRestringido, autocrear/vincular su registro en
+  // `asesores` con la zona seleccionada al crear el usuario.
+  if (roles.includes("Asesor") || roles.includes("AsesorRestringido")) {
     await vincularOCrearAsesor(u.id, nombre, email, zona);
   }
   revalidatePath("/administracion");

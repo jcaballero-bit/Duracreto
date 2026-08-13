@@ -184,9 +184,9 @@ export default async function DespachoPage({
           plantel: true,
           diseno: true,
           bomba: { select: { identificador: true } },
-          // Control de calidad: si hay Laboratorista asignado (para mostrar la captura
-          // en la tarjeta) y las preguntas generales ya guardadas del pedido.
-          asignacion_lab: { select: { laboratorista_id: true } },
+          // Control de calidad: si hay Laboratorista(s) asignado(s) (para mostrar la
+          // captura en la tarjeta) y las preguntas generales ya guardadas del pedido.
+          asignaciones_lab: { select: { laboratorista_id: true } },
           control_calidad_general: true,
           viajes: {
             where: {
@@ -293,7 +293,7 @@ export default async function DespachoPage({
 
   for (const p of pedidos) {
     // ── Control de calidad a nivel de PEDIDO (para la captura en Despacho) ─────
-    const tieneLab = p.asignacion_lab != null;
+    const tieneLab = p.asignaciones_lab.length > 0;
     const cg = p.control_calidad_general;
     const generalCalidad = cg
       ? {

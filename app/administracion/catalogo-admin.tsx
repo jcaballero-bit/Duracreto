@@ -10,11 +10,21 @@ import {
   type Catalogo,
 } from "./catalogos-actions";
 import {
+  asignarMixerOperadorAction,
   cambiarEstadoUnidadAction,
   historialEstadoUnidad,
   type CambioEstadoUnidad,
 } from "../flota/actions";
 import { ImportarCsv } from "./importar-csv";
+
+/** Un mixer disponible para asignar como habitual de un operador (F5). */
+export interface MixerOpc {
+  id: number;
+  identificador: string;
+  capacidad: number;
+  plantelBaseId: number;
+  operadorAsignadoId: number | null;
+}
 
 export interface OpcionCampo {
   value: string;
@@ -49,6 +59,7 @@ export function CatalogoAdmin({
   filas,
   sinImport = false,
   estadoRapido,
+  mixerAsignado,
 }: {
   catalogo: Catalogo;
   singular: string;
@@ -59,6 +70,10 @@ export function CatalogoAdmin({
   // Cuando se define, la columna "estado" se vuelve un cambio RÁPIDO (desplegable
   // inline) para la unidad, con historial. `unidadTipo` = "Mixer"|"Bomba"|... .
   estadoRapido?: { unidadTipo: string; opciones: OpcionCampo[] };
+  // Cuando se define, la columna "mixer" (catálogo operadores) es un desplegable
+  // inline para asignar el MIXER habitual del operador (F5). `mixers` = todos los
+  // mixers; la celda filtra por el plantel asignado del operador.
+  mixerAsignado?: { mixers: MixerOpc[] };
 }) {
   const router = useRouter();
   const [abierto, setAbierto] = useState(false);
@@ -141,6 +156,16 @@ export function CatalogoAdmin({
                           unidadId={f.id}
                           valor={f.valores.estado ?? f.celdas.estado ?? ""}
                           opciones={estadoRapido.opciones}
+                        />
+                      ) : mixerAsignado && c.key === "mixer" ? (
+                        <MixerAsignadoCelda
+                          operadorId={f.id}
+                          plantelAsignadoId={
+                            f.valores.plantel_asignado_id
+                              ? Number(f.valores.plantel_asignado_id)
+                              : null
+                          }
+                          mixers={mixerAsignado.mixers}
                         />
                       ) : (
                         (f.celdas[c.key] ?? "—")
@@ -246,6 +271,67 @@ export function CatalogoAdmin({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Desplegable inline para asignar el MIXER habitual de un operador (F5). Muestra solo
+ * los mixers del plantel asignado del operador (si tiene uno); marca los que ya son
+ * habituales de OTRO operador como "(asignado)" y deshabilitados. Al elegir, guarda en
+ * mixers.operador_asignado_id (fuente única) vía asignarMixerOperadorAction.
+ */
+function MixerAsignadoCelda({
+  operadorId,
+  plantelAsignadoId,
+  mixers,
+}: {
+  operadorId: number;
+  plantelAsignadoId: number | null;
+  mixers: MixerOpc[];
+}) {
+  const router = useRouter();
+  const [pendiente, startTransition] = useTransition();
+
+  // Mixer actualmente asignado a ESTE operador (si alguno).
+  const actual = mixers.find((m) => m.operadorAsignadoId === operadorId) ?? null;
+  // Candidatos: los del plantel asignado del operador (o todos si no tiene plantel).
+  const candidatos = mixers.filter(
+    (m) => plantelAsignadoId == null || m.plantelBaseId === plantelAsignadoId,
+  );
+
+  const cambiar = (valor: string) => {
+    const nuevo = valor === "" ? null : Number(valor);
+    if ((nuevo ?? null) === (actual?.id ?? null)) return;
+    startTransition(async () => {
+      const res = await asignarMixerOperadorAction(operadorId, nuevo);
+      if (res.ok) router.refresh();
+      else alert(res.mensaje ?? "No se pudo asignar el mixer.");
+    });
+  };
+
+  if (plantelAsignadoId == null && candidatos.length === 0) {
+    return <span className="text-xs text-muted/60">Sin plantel</span>;
+  }
+
+  return (
+    <select
+      value={actual?.id ?? ""}
+      disabled={pendiente}
+      onChange={(e) => cambiar(e.target.value)}
+      className="rounded border border-border bg-surface px-1.5 py-1 text-xs text-ink outline-none focus:border-accent disabled:opacity-50"
+    >
+      <option value="">— Ninguno —</option>
+      {candidatos.map((m) => {
+        // Ya es habitual de OTRO operador: se muestra pero no se puede elegir.
+        const ocupadoPorOtro =
+          m.operadorAsignadoId != null && m.operadorAsignadoId !== operadorId;
+        return (
+          <option key={m.id} value={m.id} disabled={ocupadoPorOtro}>
+            {m.identificador} ({m.capacidad} m³){ocupadoPorOtro ? " · asignado" : ""}
+          </option>
+        );
+      })}
+    </select>
   );
 }
 

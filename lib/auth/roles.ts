@@ -4,6 +4,9 @@ export const ROLES = [
   "Programador",
   "Despachador",
   "Asesor",
+  // Igual que Asesor pero MAS restringido: NO ve informacion de ningun otro asesor en
+  // ninguna pantalla (Programa Semana y DPCR-08 se limitan a sus propios clientes).
+  "AsesorRestringido",
   "GerenteComercial",
   "JefePlanta",
   "Dosificador",

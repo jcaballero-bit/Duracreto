@@ -258,9 +258,11 @@ async function autorizarEdicionCampos(): Promise<Permiso> {
 async function viajeEsDeLaboratorista(viajeId: number, userId: string): Promise<boolean> {
   const v = await prisma.viajes.findUnique({
     where: { id: viajeId },
-    select: { pedido: { select: { asignacion_lab: { select: { laboratorista_id: true } } } } },
+    select: {
+      pedido: { select: { asignaciones_lab: { where: { laboratorista_id: userId }, select: { id: true } } } },
+    },
   });
-  return v?.pedido.asignacion_lab?.laboratorista_id === userId;
+  return (v?.pedido.asignaciones_lab.length ?? 0) > 0;
 }
 
 export interface EstadoFormulario {

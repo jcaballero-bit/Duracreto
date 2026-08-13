@@ -1,7 +1,11 @@
 import type { CSSProperties, ReactElement } from "react";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
-import type { Alcance } from "@/lib/auth/acceso";
+import {
+  type Alcance,
+  filtroPedidoPorAsesor,
+  filtroPedidoPorLaboratorista,
+} from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { ZONAS } from "@/lib/auth/roles";
 import { textoResistencia } from "@/lib/formato";
@@ -60,6 +64,11 @@ async function zonasParaPrograma(alcance: Alcance, userId: string | null): Promi
     alcance.esAlmacen
   )
     return [...ZONAS];
+
+  // AsesorRestringido: el DPCR-08 se limita a SUS clientes (filtroPedidoPorAsesor,
+  // aplicado abajo), no por zona. Devolvemos ambas zonas para que ninguna zona oculte
+  // un pedido suyo; el filtro por cliente es el que realmente acota lo que ve.
+  if (alcance.esAsesorRestringido) return [...ZONAS];
 
   // Reunir la(s) zona(s) asignada(s) del usuario desde todas las fuentes posibles.
   const zonas = new Set<string>();
@@ -167,6 +176,18 @@ export default async function ProgramaPage({
   const zonaPedida = sp.zona && zonasPermitidas.includes(sp.zona) ? sp.zona : null;
   const zona = zonaPedida ?? zonasPermitidas[0];
 
+  // Restricción del programa por rol (server-side, no solo UI):
+  //  · Laboratorista → SOLO los pedidos que le fueron asignados ese día (F1).
+  //  · AsesorRestringido → SOLO los pedidos de SUS propios clientes (F3).
+  //  · Asesor normal / demás roles → sin filtro de cliente (el programa completo de la zona).
+  const soloLabAsignado = alcance.esLaboratorista && !alcance.esAdmin && userId != null;
+  const soloAsesorPropio = alcance.esAsesorRestringido && !alcance.esAdmin && userId != null;
+  const filtroExtra: Record<string, unknown> = soloLabAsignado
+    ? filtroPedidoPorLaboratorista(userId!)
+    : soloAsesorPropio
+      ? filtroPedidoPorAsesor(userId!)
+      : {};
+
   const [y, m, d] = fecha.split("-").map(Number);
   const ini = new Date(y, m - 1, d, 0, 0, 0, 0);
   const fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
@@ -184,6 +205,9 @@ export default async function ProgramaPage({
       where: {
         hora_solicitada: { gte: ini, lt: fin },
         plantel: { zona },
+        // Restricción por rol (Laboratorista: solo asignados; AsesorRestringido: solo
+        // sus clientes). Vacío para los demás.
+        ...filtroExtra,
         // Las ADICIONES (creadas desde Despacho en vivo) NO son parte del programa
         // y NO aparecen en el DPCR-08. Los pedidos de Programación (Nuevo pedido /
         // conversión de solicitud) sí — son el programa.
@@ -231,6 +255,24 @@ export default async function ProgramaPage({
 
   const th = "border border-slate-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-700";
   const td = "border border-slate-300 px-2 py-1 align-middle text-[11px] text-slate-800";
+
+  // Laboratorista / AsesorRestringido sin nada asignado ese día: mensaje claro en vez
+  // del documento (no el programa completo ni un documento vacío).
+  if ((soloLabAsignado || soloAsesorPropio) && pedidos.length === 0) {
+    return (
+      <>
+        <style dangerouslySetInnerHTML={{ __html: PRINT_CSS }} />
+        <ProgramaControles fecha={fecha} zona={zona} zonas={zonasPermitidas} />
+        <div className="mx-auto mt-4 max-w-lg rounded-xl border border-border bg-surface p-8 text-center">
+          <p className="text-sm text-muted">
+            {soloLabAsignado
+              ? "No tienes proyectos asignados para esta fecha."
+              : "No tienes pedidos de tus clientes para esta fecha."}
+          </p>
+        </div>
+      </>
+    );
+  }
 
   // Cuerpo de la tabla PAGINADO: un <tbody> por hoja, con `break-after: page` entre
   // ellos, y el rowSpan de cada cliente partido para que quepa en su hoja.

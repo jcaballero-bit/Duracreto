@@ -38,7 +38,8 @@ export interface Alcance {
   esAdmin: boolean;
   esProgramador: boolean;
   esDespachador: boolean;
-  esAsesor: boolean;
+  esAsesor: boolean; // true también para AsesorRestringido (hereda el comportamiento base)
+  esAsesorRestringido: boolean; // además: no ve NADA de otros asesores
   esGerenteComercial: boolean;
   esJefePlanta: boolean;
   esDosificador: boolean;
@@ -60,7 +61,11 @@ export function calcularAlcance(
   const esAdmin = roles.includes("Administrador");
   const esProgramador = roles.includes("Programador");
   const esDespachador = roles.includes("Despachador");
-  const esAsesor = roles.includes("Asesor");
+  const esAsesorRestringido = roles.includes("AsesorRestringido");
+  // AsesorRestringido HEREDA todo el comportamiento base de Asesor (solo sus clientes,
+  // sin límite de zona, sus confirmaciones); la restricción extra (no ver a otros
+  // asesores) se aplica donde se consulte `esAsesorRestringido`.
+  const esAsesor = roles.includes("Asesor") || esAsesorRestringido;
   const esGerenteComercial = roles.includes("GerenteComercial");
   const esJefePlanta = roles.includes("JefePlanta");
   const esDosificador = roles.includes("Dosificador");
@@ -92,6 +97,7 @@ export function calcularAlcance(
     esProgramador,
     esDespachador,
     esAsesor,
+    esAsesorRestringido,
     esGerenteComercial,
     esJefePlanta,
     esDosificador,
@@ -162,7 +168,10 @@ export function rolesDeRuta(path: string): Rol[] {
 
 export function puedeAccederRuta(roles: string[], path: string): boolean {
   const permitidos = rolesDeRuta(path);
-  return roles.some((r) => permitidos.includes(r as Rol));
+  // AsesorRestringido accede a las MISMAS rutas que Asesor (la diferencia es qué DATOS
+  // ve dentro de cada pantalla, no a qué pantallas entra).
+  const efectivos = roles.includes("AsesorRestringido") ? [...roles, "Asesor"] : roles;
+  return efectivos.some((r) => permitidos.includes(r as Rol));
 }
 
 // ── Filtros de datos por alcance ─────────────────────────────────────────────
@@ -221,11 +230,11 @@ export function filtroPedidoPorAsesor(usuarioAuthId: string) {
 }
 
 /** Filtro Prisma para `pedidos` visibles por un Laboratorista: solo los PROGRAMAS
- *  (pedidos) que le fueron asignados. El día lo acota la consulta de Despacho por
- *  `hora_solicitada`, así que aquí basta con el dueño de la asignación. */
+ *  (pedidos) donde ESTE laboratorista está entre los asignados (un pedido puede tener
+ *  varios). El día lo acota la consulta por `hora_solicitada`. */
 export function filtroPedidoPorLaboratorista(usuarioAuthId: string) {
   return {
-    asignacion_lab: { is: { laboratorista_id: usuarioAuthId } },
+    asignaciones_lab: { some: { laboratorista_id: usuarioAuthId } },
   };
 }
 

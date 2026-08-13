@@ -62,8 +62,10 @@ export default async function ProgramaSemanaPage({
   //  · Jefe de Planta: solo la zona de su plantel asignado.
   //  · Admin / GerenteComercial: ven todas las zonas.
   const esSoloAsesor = alcance.esAsesor && !alcance.esAdmin && !alcance.esProgramador;
+  // AsesorRestringido: NO ve a otros asesores — solo SUS clientes (no por zona).
+  const esAsesorRestr = alcance.esAsesorRestringido && !alcance.esAdmin && !alcance.esProgramador;
   let zonaAsesor: string | null = null;
-  if (esSoloAsesor) {
+  if (esSoloAsesor && !esAsesorRestr) {
     const yo = await prisma.asesores.findFirst({
       where: { usuario_auth_id: userId },
       select: { zona_asignada: true },
@@ -82,20 +84,25 @@ export default async function ProgramaSemanaPage({
       zonaOperativa = alcance.zona;
     }
   }
-  // Zona a la que se acota la vista (para el filtro/selector de plantas).
-  const zonaVista = zonaOperativa ?? (esSoloAsesor ? zonaAsesor : null);
-  // Filtro de proyecciones. Para Programador/Jefe de Planta, una proyección es "de
-  // su zona" si la atiende una planta de esa zona O si su asesor pertenece a ella.
-  const whereZonaSolicitud = zonaOperativa
-    ? {
-        OR: [
-          { plantel: { zona: zonaOperativa } },
-          { cliente: { asesor: { zona_asignada: zonaOperativa } } },
-        ],
-      }
-    : esSoloAsesor && zonaAsesor
-      ? { cliente: { asesor: { zona_asignada: zonaAsesor } } }
-      : {};
+  // Zona a la que se acota la vista (para el filtro/selector de plantas). El
+  // AsesorRestringido ve solo sus clientes (de cualquier zona), sin límite de zona.
+  const zonaVista = zonaOperativa ?? (esSoloAsesor && !esAsesorRestr ? zonaAsesor : null);
+  // Filtro de proyecciones.
+  //  · AsesorRestringido: EXCLUSIVAMENTE sus propios clientes (no ve a nadie más).
+  //  · Programador/Jefe de Planta: por zona (planta de esa zona O asesor de esa zona).
+  //  · Asesor normal con zona: filas de su misma zona (compañeros incluidos).
+  const whereZonaSolicitud = esAsesorRestr
+    ? { cliente: { asesor: { usuario_auth_id: userId } } }
+    : zonaOperativa
+      ? {
+          OR: [
+            { plantel: { zona: zonaOperativa } },
+            { cliente: { asesor: { zona_asignada: zonaOperativa } } },
+          ],
+        }
+      : esSoloAsesor && zonaAsesor
+        ? { cliente: { asesor: { zona_asignada: zonaAsesor } } }
+        : {};
 
   // Candidatos para "agregar cliente a esta semana": el Asesor solo los suyos; un
   // Programador/Jefe de Planta acotado por zona, solo los de su zona (o sin zona de
@@ -202,6 +209,8 @@ export default async function ProgramaSemanaPage({
       observaciones: s.observaciones ?? "",
       plantelId: s.plantel_id,
       estado: s.estado,
+      creadoEn: s.creado_en ? s.creado_en.toISOString() : null,
+      actualizadoEn: s.actualizado_en ? s.actualizado_en.toISOString() : null,
     });
   }
   const filas = [...filasMap.values()];

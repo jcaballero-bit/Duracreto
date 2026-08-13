@@ -209,6 +209,8 @@ async function ProgramacionSemana({
       observaciones: s.observaciones ?? "",
       plantelId: s.plantel_id,
       estado: s.estado,
+      creadoEn: s.creado_en ? s.creado_en.toISOString() : null,
+      actualizadoEn: s.actualizado_en ? s.actualizado_en.toISOString() : null,
     });
   }
 

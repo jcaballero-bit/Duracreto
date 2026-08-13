@@ -143,3 +143,85 @@ export async function historialEstadoUnidad(
     usuario: r.usuario,
   }));
 }
+
+/**
+ * Asigna (o quita) el MIXER habitual de un operador. FUENTE ÚNICA de la relación
+ * operador↔mixer: la columna `mixers.operador_asignado_id` (NO se guarda un
+ * mixer_id en operadores). Por eso, para asignar el mixer M al operador O:
+ *  1) se limpia O de cualquier OTRO mixer que lo tuviera (un operador = un mixer habitual),
+ *  2) se pone O en el mixer M.
+ * `mixerId = null` deja al operador sin mixer habitual. El motor luego pre-llena el
+ * motorista del viaje leyendo `mixer.operador_asignado_id` (editable en despacho).
+ */
+export async function asignarMixerOperadorAction(
+  operadorId: number,
+  mixerId: number | null,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const g = await exigirGestionFlota();
+  if (!g.ok) return g;
+  if (!Number.isInteger(operadorId) || operadorId <= 0) {
+    return { ok: false, mensaje: "Operador no válido." };
+  }
+
+  const operador = await prisma.operadores.findUnique({
+    where: { id: operadorId },
+    select: { nombre: true },
+  });
+  if (!operador) return { ok: false, mensaje: "Operador no encontrado." };
+
+  // Si se asigna un mixer, validar que exista y que su motorista actual sea otro
+  // (evita marcar como "ya asignado a otro" desde la UI y guardar igual por API).
+  if (mixerId != null) {
+    const m = await prisma.mixers.findUnique({
+      where: { id: mixerId },
+      select: { operador_asignado_id: true },
+    });
+    if (!m) return { ok: false, mensaje: "Mixer no encontrado." };
+    if (m.operador_asignado_id != null && m.operador_asignado_id !== operadorId) {
+      return {
+        ok: false,
+        mensaje: "Ese mixer ya tiene otro motorista habitual. Quítaselo primero.",
+      };
+    }
+  }
+
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // 1) Limpiar a este operador de cualquier mixer previo (menos el nuevo).
+      await tx.mixers.updateMany({
+        where: { operador_asignado_id: operadorId, ...(mixerId != null ? { id: { not: mixerId } } : {}) },
+        data: { operador_asignado_id: null },
+      });
+      // 2) Fijar el nuevo mixer (si hay).
+      if (mixerId != null) {
+        await tx.mixers.update({
+          where: { id: mixerId },
+          data: { operador_asignado_id: operadorId },
+        });
+      }
+    });
+
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "mixers",
+        registro_id: mixerId ?? 0,
+        usuario: quien,
+        campo_modificado: "operador_asignado_id",
+        valor_anterior: null,
+        valor_nuevo:
+          mixerId != null
+            ? `Mixer #${mixerId} -> motorista ${operador.nombre} (#${operadorId})`
+            : `Operador ${operador.nombre} (#${operadorId}) sin mixer habitual`,
+        motivo: "Asignacion de mixer habitual desde Flota > Operadores",
+      },
+    });
+
+    revalidatePath("/flota");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, mensaje: e instanceof Error ? e.message : "Error inesperado." };
+  }
+}
