@@ -737,7 +737,7 @@ function PlantelManualBloque({
                 <thead>
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
                     <th className="px-2 py-2 w-8">#</th>
-                    <th className="px-2 py-2">Cliente / Proyecto</th>
+                    <th className="w-[220px] px-2 py-2">Cliente / Proyecto</th>
                     <th className="px-2 py-2">Mixer</th>
                     <th className="px-2 py-2 w-24">Volumen</th>
                     <th className="px-2 py-2 w-24">
@@ -775,12 +775,24 @@ function PlantelManualBloque({
                           }`}
                         >
                           <td className="px-2 py-1 text-muted">{i + 1}</td>
-                          <td className="px-2 py-1">
-                            <span className="flex items-center gap-1.5">
-                              <span className="inline-block h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: colorPorCliente(f.clienteId) }} />
-                              <span className="truncate">
-                                <span className="font-medium text-ink">{cli?.empresa}</span>
-                                {cli?.proyecto ? <span className="text-muted"> · {cli.proyecto}</span> : ""}
+                          {/* Cliente/proyecto en un ancho ACOTADO: un nombre largo se
+                              parte en varias líneas en vez de estirar la columna y
+                              empujar las horas del ciclo fuera de la pantalla. */}
+                          <td className="w-[220px] max-w-[220px] px-2 py-1 align-top">
+                            <span className="flex items-start gap-1.5">
+                              <span
+                                className="mt-1 inline-block h-3 w-3 shrink-0 rounded-full"
+                                style={{ backgroundColor: colorPorCliente(f.clienteId) }}
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block leading-tight font-medium break-words text-ink">
+                                  {cli?.empresa}
+                                </span>
+                                {cli?.proyecto && (
+                                  <span className="block text-[11px] leading-tight break-words text-muted">
+                                    {cli.proyecto}
+                                  </span>
+                                )}
                               </span>
                             </span>
                             {choca && (
@@ -1628,4 +1640,6 @@ function Campo({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const inCls = "w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-ink outline-none focus:border-accent";
-const selCls = inCls;
+// El selector de mixer necesita un ancho mínimo: con la tabla apretada se encogía
+// tanto que no se alcanzaba a leer el identificador de la unidad.
+const selCls = `${inCls} min-w-[5.5rem]`;
