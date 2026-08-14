@@ -2098,12 +2098,138 @@ export async function generarViajesEnSerie(e: EntradaSerieManual): Promise<{ via
 }
 
 /**
+ * Coloca los viajes de una ADICIÓN al FINAL de la cola de carga de su planta, uno
+ * tras otro, y les asigna un mixer que esté libre en esa ventana.
+ *
+ * Se hace así —y no con `recalcularCascadaPlanta`— porque esto se ejecuta desde
+ * DESPACHO EN VIVO: la cascada es el programador automático y reescribiría las
+ * `hora_*` de los viajes ya programados, moviéndolos de lugar y alterando el
+ * Programa DPCR-08 ya publicado. Una adición se agrega al final; nadie más se mueve.
+ *
+ * Si no hay ningún mixer libre en la ventana, el viaje queda sin mixer y el
+ * despachador lo asigna a mano (la pantalla ya lo permite).
+ */
+async function colocarAdicionesAlFinal(
+  viajeIds: number[],
+  dia: Date,
+  candidatos: { id: number; capacidad_m3: number; plantel_base_id: number; operador_asignado_id: number | null }[],
+  tipoDescarga: string,
+  transporteMin: number,
+  plantelId: number,
+): Promise<void> {
+  if (viajeIds.length === 0) return;
+  const ini = inicioDelDia(dia);
+  const fin = finDelDia(dia);
+
+  const nuevos = await prisma.viajes.findMany({
+    where: { id: { in: viajeIds } },
+    orderBy: { id: "asc" },
+    select: {
+      id: true,
+      planta_id: true,
+      volumen_asignado_m3: true,
+      planta: { select: { capacidad_m3h: true, tiempo_alistamiento_min: true } },
+    },
+  });
+
+  // Ocupación existente del día: hasta cuándo carga cada planta y qué ventana tiene
+  // tomada cada mixer. Se lee UNA vez y se va actualizando en memoria.
+  const existentes = await prisma.viajes.findMany({
+    where: {
+      pedido: { hora_solicitada: { gte: ini, lt: fin } },
+      id: { notIn: viajeIds },
+      estado: { not: "Cancelado" },
+    },
+    select: {
+      planta_id: true,
+      mixer_id: true,
+      hora_inicio_carga: true,
+      hora_fin_carga: true,
+      hora_regreso_planta: true,
+      ts_fin_carga_real: true,
+    },
+  });
+
+  /** Hasta cuándo está ocupada la boca de carga de cada planta. */
+  const libreDesde = new Map<number, number>();
+  /** Ventanas [inicio de carga, regreso) ya tomadas por cada mixer. */
+  const ocupacionMixer = new Map<number, [number, number][]>();
+  for (const v of existentes) {
+    const finCarga = (v.ts_fin_carga_real ?? v.hora_fin_carga)?.getTime();
+    if (v.planta_id != null && finCarga != null) {
+      libreDesde.set(v.planta_id, Math.max(libreDesde.get(v.planta_id) ?? 0, finCarga));
+    }
+    if (v.mixer_id != null && v.hora_inicio_carga && v.hora_regreso_planta) {
+      const arr = ocupacionMixer.get(v.mixer_id) ?? [];
+      arr.push([v.hora_inicio_carga.getTime(), v.hora_regreso_planta.getTime()]);
+      ocupacionMixer.set(v.mixer_id, arr);
+    }
+  }
+
+  for (const v of nuevos) {
+    if (v.planta_id == null || !v.planta) continue;
+    const arranque = Math.max(
+      libreDesde.get(v.planta_id) ?? ini.getTime(),
+      ini.getTime(),
+    );
+    const t = tiemposDeViaje(arranque, {
+      alistamientoMin: v.planta.tiempo_alistamiento_min,
+      capacidadPlantaM3h: v.planta.capacidad_m3h,
+      volumen: v.volumen_asignado_m3,
+      tViajeMin: transporteMin,
+      tRegresoMin: transporteMin,
+      tipoDescarga,
+    });
+
+    // Primer mixer con capacidad suficiente y libre en toda la ventana del ciclo.
+    const elegido = candidatos.find((m) => {
+      if (m.capacidad_m3 < v.volumen_asignado_m3) return false;
+      const ventanas = ocupacionMixer.get(m.id) ?? [];
+      return !ventanas.some(([a, b]) => t.inicioCargaMs < b && a < t.regresoMs);
+    });
+
+    await prisma.viajes.update({
+      where: { id: v.id },
+      data: {
+        mixer_id: elegido?.id ?? null,
+        operador_id: elegido?.operador_asignado_id ?? null,
+        motivo_asignacion: elegido
+          ? elegido.plantel_base_id === plantelId
+            ? "Flota propia"
+            : "Préstamo de zona"
+          : "Sin cubrir",
+        hora_solicitada: new Date(t.llegadaMs),
+        hora_inicio_carga: new Date(t.inicioCargaMs),
+        hora_fin_carga: new Date(t.finCargaMs),
+        hora_salida_planta: new Date(t.salidaMs),
+        hora_llegada_proyecto: new Date(t.llegadaMs),
+        hora_inicio_descarga: new Date(t.inicioDescargaMs),
+        hora_fin_descarga: new Date(t.finDescargaMs),
+        hora_regreso_planta: new Date(t.regresoMs),
+      },
+    });
+
+    // La boca de carga y el mixer quedan ocupados para el siguiente de la tanda.
+    libreDesde.set(v.planta_id, t.finCargaMs);
+    if (elegido) {
+      const arr = ocupacionMixer.get(elegido.id) ?? [];
+      arr.push([t.inicioCargaMs, t.regresoMs]);
+      ocupacionMixer.set(elegido.id, arr);
+    }
+  }
+}
+
+/**
  * Agrega volumen ADICIONAL a un pedido existente creando viajes nuevos con las
  * MISMAS características (cliente, diseño, revenimiento, tipo de descarga, etc. —
  * todo vive en el pedido, no en el viaje). El volumen se suma a `volumen_total_m3`
  * pero NO a `volumen_programado`: así el exceso sobre la línea base se contabiliza
  * como ADICIÓN del día en las métricas comerciales, cargado al asesor dueño del
- * cliente. Reagenda la cascada de la planta ese día. Se usa desde Despacho en vivo.
+ * cliente.
+ *
+ * Los viajes nuevos se colocan al FINAL de la cola de su planta
+ * (`colocarAdicionesAlFinal`); NO se recalcula la cascada, porque esto corre desde
+ * Despacho en vivo y el despacho no reescribe la programación publicada.
  */
 export async function agregarVolumenAlPedido(
   pedidoId: number,
@@ -2123,6 +2249,9 @@ export async function agregarVolumenAlPedido(
       carga_simultanea: true,
       carga_reducida: true,
       estado_pedido: true,
+      tipo_descarga: true,
+      tiempo_transporte_min: true,
+      cliente: { select: { tiempo_viaje_referencia_min: true } },
     },
   });
   if (pedido.estado_pedido === "Cancelado") {
@@ -2159,8 +2288,9 @@ export async function agregarVolumenAlPedido(
   );
 
   let idxPlanta = 0;
+  const idsNuevos: number[] = [];
   for (const vp of plan.viajes) {
-    await prisma.viajes.create({
+    const creado = await prisma.viajes.create({
       data: {
         pedido_id: pedidoId,
         mixer_id: null,
@@ -2172,7 +2302,9 @@ export async function agregarVolumenAlPedido(
         estado_confirmacion: "Pendiente",
         es_adicion: true, // agregado en Despacho -> adición, fuera del DPCR-08
       },
+      select: { id: true },
     });
+    idsNuevos.push(creado.id);
   }
   if (plan.volumenSinCubrir > 0) {
     await prisma.viajes.create({
@@ -2197,10 +2329,21 @@ export async function agregarVolumenAlPedido(
     data: { volumen_total_m3: pedido.volumen_total_m3 + volumenAdicional },
   });
 
-  const viajesRecalculados = await recalcularCascadaPlanta(
-    pedido.planta_id,
-    pedido.hora_solicitada,
+  // Los viajes nuevos se colocan al final de la cola de su planta. NO se recalcula
+  // la cascada: esto corre desde Despacho en vivo y no debe mover la programacion.
+  const [tMinAdicion] = transporteDePedido(
+    pedido.tiempo_transporte_min,
+    pedido.cliente.tiempo_viaje_referencia_min,
   );
+  await colocarAdicionesAlFinal(
+    idsNuevos,
+    pedido.hora_solicitada,
+    candidatos,
+    pedido.tipo_descarga,
+    tMinAdicion,
+    pedido.plantel_id,
+  );
+  const viajesRecalculados: number[] = idsNuevos;
   const volumenSinCubrir = await volumenSinCubrirDePedido(pedidoId);
   const sugerenciasRefuerzo =
     volumenSinCubrir > 0
@@ -2767,7 +2910,13 @@ export async function reasignarMixer(
 
   const viajesAfectados: number[] = [];
   const viajesAgregados: number[] = [];
-  const plantasRecalc = new Set<number>([viaje.pedido.planta_id]);
+  // Plantas que hay que recalcular. Arranca VACÍO a propósito: reasignar un mixer es
+  // una acción de DESPACHO EN VIVO y no debe reescribir los `hora_*` programados. Solo
+  // se recalcula donde quedó algo SIN horario que colocar: los viajes que se liberaron
+  // (porque se les quitó el mixer) y los que se crearon por remanente de capacidad.
+  // Antes esta lista incluía siempre la planta del viaje, así que un simple cambio de
+  // mixer movía la hora de carga de media planta y alteraba el programa publicado.
+  const plantasRecalc = new Set<number>();
 
   // ── Liberar los viajes futuros en conflicto y dejar que el motor los reasigne ──
   for (const o of conflictivos) {
@@ -2852,6 +3001,8 @@ export async function reasignarMixer(
           },
         });
         viajesAgregados.push(nuevo.id);
+        // Este viaje nace sin horario: su planta sí necesita recálculo para colocarlo.
+        plantasRecalc.add(viaje.planta_id!);
       }
       if (plan.volumenSinCubrir > 0.001) {
         await prisma.viajes.create({
@@ -2950,10 +3101,15 @@ export async function cambiarPlantaViaje(
     return { ok: true, alertasMargen: [], plantaAnterior: viaje.planta?.nombre, plantaNueva: destino.nombre };
   }
 
+  // SOLO se cambia la planta. NO se recalcula la cascada: esta acción es de DESPACHO
+  // EN VIVO y el despacho nunca reescribe los `hora_*` programados (línea base del
+  // programa y del DPCR-08). Antes se llamaba a `recalcularCascadaPlanta`, que es el
+  // programador automático: movía la hora de carga de ESTE viaje —con lo que saltaba
+  // de lugar en la lista, que se ordena por hora de carga programada— y además
+  // reescribía las horas de los demás viajes de la planta, alterando el programa ya
+  // publicado. Si el mixer sale de otra planta, la ejecución real se sella en los
+  // `ts_*_real` como en cualquier otro viaje.
   await prisma.viajes.update({ where: { id: viajeId }, data: { planta_id: nuevaPlantaId } });
-  // Recalcula el plantel completo (planta origen que libera el hueco + destino que
-  // acomoda el viaje en su cola, respetando su capacidad m3/h).
-  await recalcularCascadaPlanta(nuevaPlantaId, viaje.pedido.hora_solicitada);
 
   return {
     ok: true,
