@@ -10,6 +10,7 @@ import {
 import { filtroPedidoPorZona, filtroPlantelPorZona } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { compararPlanteles } from "@/lib/planteles-orden";
+import { Lock } from "lucide-react";
 import { Card, PageHeader } from "../components/ui";
 import { AutoRefresh } from "../components/auto-refresh";
 import { Filtros } from "./filtros";
@@ -26,6 +27,8 @@ import {
 import type { ClienteCard, EstadoCliente, PlantaMedidor, PlantelSimple } from "./vista-simple";
 import { calcularHuecos } from "@/lib/motor/organizador";
 import { leerMargenHueco } from "@/lib/motor/config-runtime";
+import { HORA_APERTURA_DEFAULT_MIN, leerAperturasDeDia, textoHoraMin } from "@/lib/motor/apertura";
+import { estadoBloqueoPrograma } from "@/lib/programacion/bloqueo";
 import { PendientesDelDia, type PendienteVista } from "./pendientes-panel";
 import {
   TablaPedidos,
@@ -140,6 +143,14 @@ export default async function ProgramacionPage({
   // el servidor (app/actions.ts autorizarCambioPrograma).
   const programaCongelado = new Date().getTime() >= cierreProgramaDe(ini).getTime();
   const puedeAgregarQuitar = alcance.esAdmin || !programaCongelado;
+
+  // BLOQUEO HORARIO de edicion (config del Admin): pasada la hora de corte, el
+  // Programador y el Jefe de Planta pasan a CONSULTA. El servidor rechaza igual
+  // cualquier escritura; aqui solo se refleja para no ofrecer controles muertos.
+  // No afecta a Despacho en vivo, que es otra pantalla y otras acciones.
+  const bloqueo = await estadoBloqueoPrograma(alcance);
+  const bloqueoMensaje = bloqueo.bloqueado ? (bloqueo.mensaje ?? null) : null;
+  const puedeEditarEfectivo = puedeEditar && !bloqueoMensaje;
 
   const [planteles, clientes, disenos, bombas, asesores, pedidos] = await Promise.all([
     prisma.planteles.findMany({
@@ -672,6 +683,12 @@ export default async function ProgramacionPage({
       }),
       unidadesEnMantenimiento("Mixer", ini),
     ]);
+    // Apertura vigente de cada planta ESE dia: excepcion del dia si la hay, si no el
+    // valor por defecto de Administracion. Solo se usa para avisar, nunca bloquea.
+    const aperturas = await leerAperturasDeDia(
+      planteles.flatMap((pl) => pl.plantas.map((pt) => pt.id)),
+      ini,
+    );
     const filasPorPlantel = new Map<number, PlantelManual["filas"]>();
     for (const p of pedidos) {
       for (const v of p.viajes) {
@@ -692,6 +709,7 @@ export default async function ProgramacionPage({
           tipoDescarga: p.tipo_descarga,
           disenoId: p.diseno_id,
           transporteMin,
+          horaFija: v.hora_fija,
         });
         filasPorPlantel.set(p.plantel_id, arr);
       }
@@ -725,12 +743,17 @@ export default async function ProgramacionPage({
           plantelId: pl.id,
           nombre: pl.nombre,
           zona: pl.zona,
-          plantas: pl.plantas.map((pt) => ({
-            id: pt.id,
-            nombre: pt.nombre,
-            capacidadM3h: pt.capacidad_m3h,
-            alistamientoMin: pt.tiempo_alistamiento_min,
-          })),
+          plantas: pl.plantas.map((pt) => {
+            const ap = aperturas.get(pt.id);
+            return {
+              id: pt.id,
+              nombre: pt.nombre,
+              capacidadM3h: pt.capacidad_m3h,
+              alistamientoMin: pt.tiempo_alistamiento_min,
+              aperturaHHMM: textoHoraMin(ap?.minutos ?? HORA_APERTURA_DEFAULT_MIN),
+              aperturaEsExcepcion: ap?.esExcepcion ?? false,
+            };
+          }),
           mixers,
           mixersPanel,
           filas: filasPorPlantel.get(pl.id) ?? [],
@@ -772,7 +795,18 @@ export default async function ProgramacionPage({
         planteles={planteles.map((p) => ({ id: p.id, nombre: p.nombre, zona: p.zona }))}
       />
 
-      {puedeEditar && (
+      {/* Bloqueo horario del Admin: la programacion pasa a CONSULTA (Despacho sigue). */}
+      {bloqueoMensaje && (
+        <p className="mb-5 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <Lock size={16} className="mt-0.5 shrink-0" />
+          <span>
+            {bloqueoMensaje} Puedes seguir <strong>consultando</strong> el programa con normalidad;
+            el <strong>Despacho en vivo</strong> no se ve afectado.
+          </span>
+        </p>
+      )}
+
+      {puedeEditarEfectivo && (
         <div id="pendientes-por-programar">
           <PendientesDelDia pendientes={pendientes} opciones={opciones} fecha={fecha} />
         </div>
@@ -790,15 +824,15 @@ export default async function ProgramacionPage({
             disenos={disenosManual}
             fecha={fecha}
             margenMin={MARGEN_MINIMO_MIN}
-            puedeEditar={puedeEditar}
+            puedeEditar={puedeEditarEfectivo}
           />
         }
         auto={
       <VistaProgramacion
         plantelesSimple={plantelesSimple}
         fecha={fecha}
-        puedeOrganizar={puedeEditar}
-        puedeReordenar={puedeEditar}
+        puedeOrganizar={puedeEditarEfectivo}
+        puedeReordenar={puedeEditarEfectivo}
         puedeAvanzado
         avanzado={
           <>
@@ -841,8 +875,8 @@ export default async function ProgramacionPage({
                         <TablaPedidos
                           pedidos={g.pedidos}
                           opciones={opciones}
-                          puedeEditar={puedeEditar}
-                          puedeAgregarQuitar={puedeAgregarQuitar}
+                          puedeEditar={puedeEditarEfectivo}
+                          puedeAgregarQuitar={puedeAgregarQuitar && puedeEditarEfectivo}
                           esAdmin={alcance.esAdmin}
                           permitirHoraCargaManual={PERMITIR_HORA_CARGA_MANUAL}
                         />

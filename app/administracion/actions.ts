@@ -2,8 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import bcrypt from "bcryptjs";
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { exigirAdmin } from "@/lib/auth/guard";
+import { CLAVE_HORA_APERTURA, minutosDeTexto } from "@/lib/motor/apertura";
+import { CLAVE_BLOQUEO_ACTIVO, CLAVE_BLOQUEO_HORA } from "@/lib/programacion/bloqueo";
 
 /**
  * Asegura que un usuario con rol Asesor tenga su registro en `asesores` vinculado.
@@ -118,6 +121,108 @@ export async function guardarMargenHuecoAction(
   });
   revalidatePath("/administracion");
   return { ok: true };
+}
+
+/**
+ * Guarda la hora de APERTURA POR DEFECTO de planta (minutos desde medianoche). Es la
+ * hora a partir de la cual se puede cargar cualquier día que no tenga una excepción
+ * propia. Por defecto 7:00 a.m.; se guarda en BD, no fija en el código.
+ */
+export async function guardarHoraAperturaAction(
+  hhmm: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const guard = await exigirAdmin();
+  if (!guard.ok) return guard;
+  const minutos = minutosDeTexto(hhmm);
+  if (minutos == null) {
+    return { ok: false, mensaje: "Hora de apertura inválida (usa HH:MM)." };
+  }
+  const previo = await prisma.configuracion.findUnique({ where: { clave: CLAVE_HORA_APERTURA } });
+  await prisma.configuracion.upsert({
+    where: { clave: CLAVE_HORA_APERTURA },
+    update: { valor_int: minutos },
+    create: { clave: CLAVE_HORA_APERTURA, valor_int: minutos },
+  });
+  await auditarConfig(
+    CLAVE_HORA_APERTURA,
+    previo?.valor_int != null ? String(previo.valor_int) : null,
+    String(minutos),
+    "Hora de apertura de planta por defecto",
+  );
+  revalidatePath("/administracion");
+  return { ok: true };
+}
+
+/**
+ * Guarda la configuración del BLOQUEO HORARIO de edición del programa: si está activo
+ * y a partir de qué hora. Solo el Administrador. Todo cambio queda en bitácora.
+ *
+ * Recordatorio de alcance: el bloqueo afecta a Programador y Jefe de Planta y SOLO a
+ * las acciones de programación — el Despacho en vivo nunca se detiene.
+ */
+export async function guardarBloqueoEdicionAction(
+  activo: boolean,
+  hhmm: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const guard = await exigirAdmin();
+  if (!guard.ok) return guard;
+  const minutos = minutosDeTexto(hhmm);
+  if (minutos == null) {
+    return { ok: false, mensaje: "Hora de corte inválida (usa HH:MM)." };
+  }
+  const previos = await prisma.configuracion.findMany({
+    where: { clave: { in: [CLAVE_BLOQUEO_ACTIVO, CLAVE_BLOQUEO_HORA] } },
+  });
+  const antes = (clave: string) => previos.find((p) => p.clave === clave)?.valor_int ?? null;
+
+  await prisma.configuracion.upsert({
+    where: { clave: CLAVE_BLOQUEO_ACTIVO },
+    update: { valor_int: activo ? 1 : 0 },
+    create: { clave: CLAVE_BLOQUEO_ACTIVO, valor_int: activo ? 1 : 0 },
+  });
+  await prisma.configuracion.upsert({
+    where: { clave: CLAVE_BLOQUEO_HORA },
+    update: { valor_int: minutos },
+    create: { clave: CLAVE_BLOQUEO_HORA, valor_int: minutos },
+  });
+
+  await auditarConfig(
+    CLAVE_BLOQUEO_ACTIVO,
+    antes(CLAVE_BLOQUEO_ACTIVO) === 1 ? "activo" : "inactivo",
+    activo ? "activo" : "inactivo",
+    "Bloqueo horario de edicion del programa",
+  );
+  if (antes(CLAVE_BLOQUEO_HORA) !== minutos) {
+    await auditarConfig(
+      CLAVE_BLOQUEO_HORA,
+      antes(CLAVE_BLOQUEO_HORA) != null ? String(antes(CLAVE_BLOQUEO_HORA)) : null,
+      String(minutos),
+      "Hora de corte del bloqueo de edicion",
+    );
+  }
+  revalidatePath("/administracion");
+  return { ok: true };
+}
+
+/** Deja en bitácora un cambio de configuración del sistema. */
+async function auditarConfig(
+  clave: string,
+  anterior: string | null,
+  nuevo: string,
+  motivo: string,
+): Promise<void> {
+  const sesion = await auth();
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "configuracion",
+      registro_id: 0,
+      usuario: sesion?.user?.name ?? sesion?.user?.email ?? "sistema",
+      campo_modificado: clave,
+      valor_anterior: anterior,
+      valor_nuevo: nuevo,
+      motivo,
+    },
+  });
 }
 
 /** Fija (o limpia) el plantel asignado de un usuario (JefePlanta/Dosificador). */

@@ -12,6 +12,10 @@ import {
   UMBRAL_IMPACTO_INSERCION_MIN,
   cierreProgramaDe,
 } from "@/lib/motor/config";
+import { estadoBloqueoPrograma } from "@/lib/programacion/bloqueo";
+import { ajustarLlegadaManual, fijarHoraViajeManual } from "@/lib/motor/manual-horarios";
+import { minutosDeTexto } from "@/lib/motor/apertura";
+import { inicioDelDia } from "@/lib/motor/tiempos";
 import {
   agregarViajeManual,
   agregarVolumenAlPedido,
@@ -47,6 +51,40 @@ import {
 // ── Autorización server-side (rol + zona + reglas de fecha) ──────────────────
 
 type Permiso = { ok: true } | { ok: false; mensaje: string };
+
+/**
+ * BLOQUEO HORARIO de edición del PROGRAMA (config del Administrador). Pasada la hora
+ * de corte, el Programador y el Jefe de Planta no pueden seguir moviendo la
+ * programación; el Administrador nunca queda bloqueado y la lectura no se toca.
+ *
+ * OJO: este guard va SOLO en las acciones de PROGRAMACIÓN. Las de **Despacho en vivo**
+ * (avanzar estado, corregir hora real, editar volumen, reasignar mixer, adicionar
+ * viaje, cancelar viaje) NO lo llevan: la operación del día no puede detenerse por un
+ * corte administrativo.
+ *
+ * Cada intento rechazado queda en `bitacora_auditoria` para poder revisarlo después.
+ */
+async function autorizarBloqueoPrograma(accion: string): Promise<Permiso> {
+  const alcance = await alcanceActual();
+  if (!alcance) return { ok: false, mensaje: "Sesión no válida." };
+  const estado = await estadoBloqueoPrograma(alcance);
+  if (!estado.bloqueado) return { ok: true };
+
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "desconocido";
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "programacion",
+      registro_id: 0,
+      usuario: quien,
+      campo_modificado: "bloqueo_horario",
+      valor_anterior: null,
+      valor_nuevo: accion,
+      motivo: `Edicion rechazada por bloqueo horario (corte ${estado.cfg.horaCorteMin} min)`,
+    },
+  });
+  return { ok: false, mensaje: estado.mensaje ?? "Edición del programa bloqueada." };
+}
 
 /** ¿El usuario puede operar en la zona/plantel de este plantel? */
 async function autorizarZonaPlantel(plantelId: number): Promise<Permiso> {
@@ -167,13 +205,17 @@ async function autorizarPorViaje(viajeId: number): Promise<Permiso> {
  *  esos roles NO operan pedidos (solo consultan o avanzan estados de SUS viajes). Sin
  *  este gate, un Laboratorista pasaba zona+fecha y podía crear/cancelar/eliminar
  *  cualquier pedido del día en ambas zonas. */
-async function autorizarOperacionPedido(): Promise<Permiso> {
+async function autorizarOperacionPedido(accionPrograma?: string): Promise<Permiso> {
   const a = await alcanceActual();
   if (!a) return { ok: false, mensaje: "Sesión no válida." };
-  if (a.esAdmin || a.esProgramador || a.esDespachador || a.esJefePlanta || a.esDosificador) {
-    return { ok: true };
+  if (!(a.esAdmin || a.esProgramador || a.esDespachador || a.esJefePlanta || a.esDosificador)) {
+    return { ok: false, mensaje: "Tu rol no permite crear ni modificar pedidos." };
   }
-  return { ok: false, mensaje: "Tu rol no permite crear ni modificar pedidos." };
+  // Si la acción edita la PROGRAMACIÓN, además aplica el bloqueo horario del Admin.
+  // Las acciones de Despacho en vivo llaman a este guard SIN nombre de acción y por
+  // eso nunca se bloquean: la operación del día no se detiene.
+  if (accionPrograma) return autorizarBloqueoPrograma(accionPrograma);
+  return { ok: true };
 }
 
 /**
@@ -414,7 +456,7 @@ export async function crearPedidoAction(
   try {
     const { entrada, error } = construirEntrada(formData, "interfaz-prueba");
     if (error) return { ok: false, mensaje: error };
-    const op = await autorizarOperacionPedido();
+    const op = await autorizarOperacionPedido("Crear pedido");
     if (!op.ok) return { ok: false, mensaje: op.mensaje };
     const permiso = await autorizarNuevoPedido(
       entrada!.plantel_id,
@@ -503,7 +545,7 @@ export async function modificarPedidoAction(
   try {
     const { entrada, error } = construirEntrada(formData, "edicion");
     if (error) return { ok: false, mensaje: error };
-    const op = await autorizarOperacionPedido();
+    const op = await autorizarOperacionPedido("Editar pedido");
     if (!op.ok) return { ok: false, mensaje: op.mensaje };
     // Permiso sobre el pedido original y sobre el destino (zona) + fecha.
     const permisoOrigen = await autorizarPorPedido(pedidoId);
@@ -537,7 +579,7 @@ export async function reordenarPedidoAction(
   pedidoId: number,
   nuevoOrden: number,
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const op = await autorizarOperacionPedido();
+  const op = await autorizarOperacionPedido("Reordenar pedidos del dia");
   if (!op.ok) return op;
   const permiso = await autorizarPorPedido(pedidoId);
   if (!permiso.ok) return permiso;
@@ -560,7 +602,7 @@ export async function organizarDiaAction(
   plantelId: number,
   fechaISO: string, // "YYYY-MM-DD"
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const op = await autorizarOperacionPedido();
+  const op = await autorizarOperacionPedido("Organizar el dia");
   if (!op.ok) return op;
   const zona = await autorizarZonaPlantel(plantelId);
   if (!zona.ok) return zona;
@@ -759,7 +801,7 @@ export async function agregarViajeManualAction(input: {
   horaCargaLocal: string; // "YYYY-MM-DDTHH:mm"
   tipoDescarga: string;
 }): Promise<{ ok: boolean; mensaje?: string; viajeId?: number }> {
-  const op = await autorizarOperacionPedido();
+  const op = await autorizarOperacionPedido("Agregar viaje (manual)");
   if (!op.ok) return op;
   const inicio = parseDateTimeLocal(input.horaCargaLocal);
   if (!inicio) return { ok: false, mensaje: "Hora de carga inválida." };
@@ -807,7 +849,7 @@ export async function editarViajeManualAction(
     disenoId?: number;
   },
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const op = await autorizarOperacionPedido();
+  const op = await autorizarOperacionPedido("Editar viaje (manual)");
   if (!op.ok) return op;
   const permiso = await autorizarPorViaje(viajeId);
   if (!permiso.ok) return permiso;
@@ -844,7 +886,7 @@ export async function editarViajeManualAction(
 export async function eliminarViajeManualAction(
   viajeId: number,
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const op = await autorizarOperacionPedido();
+  const op = await autorizarOperacionPedido("Eliminar viaje (manual)");
   if (!op.ok) return op;
   const permiso = await autorizarPorViaje(viajeId);
   if (!permiso.ok) return permiso;
@@ -857,7 +899,7 @@ export async function eliminarViajeManualAction(
 export async function eliminarViajesManualAction(
   ids: number[],
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const op = await autorizarOperacionPedido();
+  const op = await autorizarOperacionPedido("Eliminar viajes (manual)");
   if (!op.ok) return op;
   for (const id of ids) {
     const permiso = await autorizarPorViaje(id);
@@ -882,7 +924,7 @@ export async function generarViajesEnSerieAction(input: {
   horaCargaLocal: string; // "YYYY-MM-DDTHH:mm" del primer viaje
   tipoDescarga: string;
 }): Promise<{ ok: boolean; mensaje?: string; viajeIds?: number[] }> {
-  const op = await autorizarOperacionPedido();
+  const op = await autorizarOperacionPedido("Generar viajes en serie (manual)");
   if (!op.ok) return op;
   const inicio = parseDateTimeLocal(input.horaCargaLocal);
   if (!inicio) return { ok: false, mensaje: "Hora de carga inválida." };
@@ -924,6 +966,112 @@ export async function generarViajesEnSerieAction(input: {
   } catch (e) {
     return { ok: false, mensaje: (e as Error).message };
   }
+}
+
+/**
+ * Server action: fija la hora de LLEGADA a obra de un viaje (modo manual) y reacomoda
+ * la cola de ESE cliente por su frecuencia. Devuelve avisos NO bloqueantes (apertura
+ * de planta, viajes con hora fija que quedaron fuera, carga simultánea imposible).
+ */
+export async function ajustarLlegadaManualAction(
+  viajeId: number,
+  llegadaLocal: string, // "YYYY-MM-DDTHH:mm"
+): Promise<{ ok: boolean; mensaje?: string; avisos?: string[]; movidos?: number }> {
+  const op = await autorizarOperacionPedido("Ajustar hora de llegada (manual)");
+  if (!op.ok) return op;
+  const permiso = await autorizarPorViaje(viajeId);
+  if (!permiso.ok) return permiso;
+  const llegada = parseDateTimeLocal(llegadaLocal);
+  if (!llegada) return { ok: false, mensaje: "Hora de llegada inválida." };
+  try {
+    const res = await ajustarLlegadaManual(viajeId, llegada);
+    if (res.ok) revalidarPantallas();
+    return res;
+  } catch (e) {
+    return { ok: false, mensaje: (e as Error).message };
+  }
+}
+
+/** Server action: marca/desmarca la HORA FIJA de un viaje (queda fuera de los
+ *  reajustes automáticos por frecuencia del modo manual). */
+export async function fijarHoraViajeAction(
+  viajeId: number,
+  fija: boolean,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido("Fijar hora de un viaje (manual)");
+  if (!op.ok) return op;
+  const permiso = await autorizarPorViaje(viajeId);
+  if (!permiso.ok) return permiso;
+  const res = await fijarHoraViajeManual(viajeId, fija);
+  if (res.ok) revalidarPantallas();
+  return res;
+}
+
+/**
+ * Server action: define (o quita) la hora de APERTURA de una planta para UN día
+ * concreto — la excepción para un vaciado que arranca antes de lo normal. Sin fila
+ * para el día rige la apertura por defecto de Administración. Escribe bitácora.
+ */
+export async function fijarAperturaPlantaAction(
+  plantaId: number,
+  fechaISO: string, // "YYYY-MM-DD"
+  hhmm: string | null, // "05:00" | null para volver al valor por defecto
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido("Cambiar apertura de planta");
+  if (!op.ok) return op;
+  const planta = await prisma.plantas.findUnique({
+    where: { id: plantaId },
+    select: { nombre: true, plantel_id: true },
+  });
+  if (!planta) return { ok: false, mensaje: "Planta no encontrada." };
+  const zona = await autorizarZonaPlantel(planta.plantel_id);
+  if (!zona.ok) return zona;
+  const fecha = parseDateTimeLocal(`${fechaISO}T00:00`);
+  if (!fecha) return { ok: false, mensaje: "Fecha inválida." };
+  const fechaGuard = await autorizarFecha(fecha);
+  if (!fechaGuard.ok) return fechaGuard;
+
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+  const dia = inicioDelDia(fecha);
+
+  if (hhmm == null || hhmm.trim() === "") {
+    await prisma.aperturas_planta.deleteMany({ where: { planta_id: plantaId, fecha: dia } });
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "aperturas_planta",
+        registro_id: plantaId,
+        usuario: quien,
+        campo_modificado: "hora_apertura_min",
+        valor_anterior: null,
+        valor_nuevo: null,
+        motivo: `Apertura de ${planta.nombre} el ${fechaISO} vuelve al valor por defecto`,
+      },
+    });
+    revalidarPantallas();
+    return { ok: true };
+  }
+
+  const minutos = minutosDeTexto(hhmm);
+  if (minutos == null) return { ok: false, mensaje: "Hora de apertura inválida (usa HH:MM)." };
+  await prisma.aperturas_planta.upsert({
+    where: { planta_id_fecha: { planta_id: plantaId, fecha: dia } },
+    update: { hora_apertura_min: minutos, creado_por: quien },
+    create: { planta_id: plantaId, fecha: dia, hora_apertura_min: minutos, creado_por: quien },
+  });
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "aperturas_planta",
+      registro_id: plantaId,
+      usuario: quien,
+      campo_modificado: "hora_apertura_min",
+      valor_anterior: null,
+      valor_nuevo: `${planta.nombre} ${fechaISO} -> ${hhmm}`,
+      motivo: "Apertura excepcional de planta para un dia",
+    },
+  });
+  revalidarPantallas();
+  return { ok: true };
 }
 
 /** Server action: reasignación manual de mixer. */
@@ -1093,7 +1241,7 @@ export async function confirmarRefuerzoAction(
   pedidoId: number,
   mixerId: number,
 ): Promise<{ ok: boolean; mensaje?: string }> {
-  const op = await autorizarOperacionPedido();
+  const op = await autorizarOperacionPedido("Confirmar refuerzo");
   if (!op.ok) return op;
   const permiso = await autorizarPorPedido(pedidoId);
   if (!permiso.ok) return permiso;
@@ -1203,7 +1351,7 @@ export async function cancelarPedidoAction(
   detalle?: string,
 ): Promise<{ ok: boolean; mensaje?: string }> {
   try {
-    const op = await autorizarOperacionPedido();
+    const op = await autorizarOperacionPedido("Cancelar pedido");
     if (!op.ok) return op;
     const permiso = await autorizarPorPedido(pedidoId);
     if (!permiso.ok) return permiso;
@@ -1471,7 +1619,7 @@ export async function eliminarPedidoAction(
   pedidoId: number,
 ): Promise<{ ok: boolean; mensaje?: string }> {
   try {
-    const op = await autorizarOperacionPedido();
+    const op = await autorizarOperacionPedido("Eliminar pedido");
     if (!op.ok) return op;
     const permiso = await autorizarPorPedido(pedidoId);
     if (!permiso.ok) return permiso;

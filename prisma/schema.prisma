@@ -165,8 +165,29 @@ model plantas {
   dosificadores User[] @relation("PlantaPredeterminadaUsuario") // Dosificadores cuya planta predeterminada es esta
   asignaciones_lab_planta asignaciones_laboratorista_planta[] // Laboratorista de control de salida
   reasignaciones_dosificador reasignaciones_dosificador_planta[] // reasignaciones de Dosificador a esta planta por día
+  aperturas aperturas_planta[] // apertura excepcional de un dia concreto
 
   @@index([plantel_id])
+}
+
+// ── Apertura de planta por DIA ───────────────────────────────────────────────
+// Hora a partir de la cual esa planta puede empezar a cargar ESE dia. Es una
+// EXCEPCION puntual (p. ej. un vaciado grande que arranca a las 5:00 a.m.); si no
+// hay fila para el dia, rige la apertura por defecto (clave `hora_apertura_min` en
+// `configuracion`, 7:00 a.m.). Se guarda en MINUTOS desde medianoche para poder
+// compararla sin depender de la zona horaria del registro.
+model aperturas_planta {
+  id                Int      @id @default(autoincrement())
+  planta_id         Int
+  fecha             DateTime // dia (medianoche local)
+  hora_apertura_min Int // minutos desde medianoche (300 = 5:00 a.m.)
+  creado_por        String
+  creado_en         DateTime @default(now())
+
+  planta plantas @relation(fields: [planta_id], references: [id], onDelete: Cascade)
+
+  @@unique([planta_id, fecha])
+  @@index([fecha])
 }
 
 // ── Configuración global (clave-valor) editable desde Administración ─────────
@@ -583,6 +604,11 @@ model viajes {
 
   estado               String  @default("Programado") // "Programado" | "En carga" | "En ruta" | "Descargando" | "Regresando" | "Completado" | "Cancelado"
   ajustado_manualmente Boolean @default(false)
+  // true = hora FIJA puesta a mano: este viaje NO se mueve cuando se reajusta la
+  // cola del cliente por frecuencia (el reajuste lo salta y avisa). Es por VIAJE;
+  // `pedidos.hora_bloqueada` es la regla equivalente a nivel de pedido en el motor
+  // automatico.
+  hora_fija            Boolean @default(false)
   // true = viaje de ADICION: agregado con "Agregar viaje" en Despacho a un pedido de
   // programa (o cualquier viaje de un pedido es_adicion). Cuenta como adicion en las
   // metricas (via volumen suministrado) y NO se muestra en el Programa DPCR-08.

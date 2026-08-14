@@ -72,6 +72,38 @@ export function tiemposDeViaje(inicioCargaMs: number, p: ParamsTiempoViaje): Tie
   return { inicioCargaMs, finCargaMs, salidaMs, llegadaMs, inicioDescargaMs, finDescargaMs, regresoMs };
 }
 
+/**
+ * Minutos entre el INICIO DE CARGA y la LLEGADA a obra: alistamiento + dosificación
+ * + preparación de salida + transporte. Es el tramo que hay que "descontar" cuando se
+ * programa desde la hora comprometida con el cliente.
+ */
+export function minutosCargaALlegada(p: ParamsTiempoViaje): number {
+  return (
+    p.alistamientoMin +
+    minutosDeCarga(p.volumen, p.capacidadPlantaM3h) +
+    MIN_SALIDA_TRAS_CARGA +
+    p.tViajeMin
+  );
+}
+
+/**
+ * A qué hora hay que EMPEZAR A CARGAR para llegar a obra a `llegadaMs`. Es el inverso
+ * exacto de `tiemposDeViaje`: se define restando el mismo tramo que aquella suma, así
+ * que ida y vuelta no se pueden desalinear.
+ */
+export function inicioCargaDesdeLlegada(llegadaMs: number, p: ParamsTiempoViaje): number {
+  return llegadaMs - minutosCargaALlegada(p) * 60_000;
+}
+
+/**
+ * Todos los hitos del viaje partiendo de la hora de LLEGADA comprometida con el
+ * cliente ("el concreto tiene que estar en obra a las 8:00"): calcula hacia ATRÁS la
+ * carga y hacia ADELANTE la descarga y el regreso. PURO, sin BD.
+ */
+export function tiemposDesdeLlegada(llegadaMs: number, p: ParamsTiempoViaje): TiemposViaje {
+  return tiemposDeViaje(inicioCargaDesdeLlegada(llegadaMs, p), p);
+}
+
 /** ¿Dos rangos de tiempo [aIni,aFin) y [bIni,bFin) se traslapan? */
 export function seTraslapan(
   aIni: Date,

@@ -11,14 +11,17 @@
 // generar N viajes en serie, y validación de traslape de CARGA en planta.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, Plus, Redo2, Trash2, Truck, Undo2, Wand2, X } from "lucide-react";
+import { AlertTriangle, ChevronRight, Lock, LockOpen, Plus, Redo2, Sunrise, Trash2, Truck, Undo2, Wand2, X } from "lucide-react";
 import {
   agregarViajeManualAction,
+  ajustarLlegadaManualAction,
   editarViajeManualAction,
   eliminarViajesManualAction,
+  fijarAperturaPlantaAction,
+  fijarHoraViajeAction,
   generarViajesEnSerieAction,
 } from "../actions";
-import { tiemposDeViaje } from "@/lib/motor/tiempos";
+import { inicioCargaDesdeLlegada, tiemposDeViaje } from "@/lib/motor/tiempos";
 import {
   capacidadExcedida,
   detectarTraslapesCarga,
@@ -54,6 +57,10 @@ export interface PlantaManual {
   nombre: string;
   capacidadM3h: number;
   alistamientoMin: number;
+  /** Apertura vigente ESE dia, "HH:MM" (excepcion del dia o valor por defecto). */
+  aperturaHHMM: string;
+  /** true si la apertura es una excepcion puesta para ese dia. */
+  aperturaEsExcepcion: boolean;
 }
 export interface FilaManualSrv {
   id: number;
@@ -67,6 +74,8 @@ export interface FilaManualSrv {
   tipoDescarga: string;
   disenoId: number;
   transporteMin: number;
+  /** Hora clavada a mano: el reajuste por frecuencia NO mueve este viaje. */
+  horaFija: boolean;
 }
 /** Mixer para el PANEL lateral (incluye no disponibles, con su estado). */
 export interface MixerPanel {
@@ -139,6 +148,8 @@ export function ManualView({
   const [futuro, setFuturo] = useState<Comando[]>([]);
   const [ocupado, setOcupado] = useState(false);
   const [errorCmd, setErrorCmd] = useState<string | null>(null);
+  // Avisos NO bloqueantes que devuelve el servidor al ajustar horarios.
+  const [avisos, setAvisos] = useState<string[]>([]);
 
   const ejecutar = async (cmd: Comando) => {
     setOcupado(true);
@@ -228,7 +239,6 @@ export function ManualView({
   const etiquetaRehacer = futuro[0]?.etiqueta;
   const hayPasado = pasado.length > 0;
   const hayFuturo = futuro.length > 0;
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -259,6 +269,29 @@ export function ManualView({
       </div>
       {errorCmd && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{errorCmd}</p>}
 
+      {/* Avisos del ultimo ajuste de horarios: nunca bloquean, solo informan. */}
+      {avisos.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="inline-flex items-center gap-1.5 font-semibold">
+              <AlertTriangle size={15} /> Avisos del ajuste
+            </span>
+            <button
+              onClick={() => setAvisos([])}
+              className="rounded p-0.5 text-amber-700 hover:bg-amber-100"
+              aria-label="Cerrar avisos"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <ul className="ml-5 list-disc space-y-0.5">
+            {avisos.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {planteles.map((pl) => (
         <PlantelManualBloque
           key={pl.plantelId}
@@ -270,6 +303,7 @@ export function ManualView({
           puedeEditar={puedeEditar}
           ejecutar={ejecutar}
           ocupado={ocupado}
+          onAvisos={setAvisos}
         />
       ))}
     </div>
@@ -285,6 +319,7 @@ function PlantelManualBloque({
   puedeEditar,
   ejecutar,
   ocupado,
+  onAvisos,
 }: {
   plantel: PlantelManual;
   clientes: ClienteOpcionManual[];
@@ -294,6 +329,8 @@ function PlantelManualBloque({
   puedeEditar: boolean;
   ejecutar: (cmd: Comando) => Promise<void>;
   ocupado: boolean;
+  /** Reporta al padre los avisos NO bloqueantes del ultimo ajuste de horarios. */
+  onAvisos: (avisos: string[]) => void;
 }) {
   const [ov, setOv] = useState<Map<number, { inicioCargaMs?: number; volumen?: number; mixerId?: number | null }>>(new Map());
   const [editandoId, setEditandoId] = useState<number | null>(null);
@@ -330,6 +367,27 @@ function PlantelManualBloque({
       });
     },
     [filaEfectiva, plantaPorId],
+  );
+  /**
+   * Tiempos con los valores TAL COMO ESTAN EN EL SERVIDOR, ignorando el override
+   * optimista de edicion. Es el valor "antes" contra el que hay que comparar al
+   * confirmar: si se compara contra la fila efectiva (que ya trae lo tecleado), el
+   * cambio parece nulo y no se guarda nada.
+   */
+  const calcularServidor = useCallback(
+    (f: FilaManualSrv) => {
+      const planta = plantaPorId.get(f.plantaId);
+      if (!planta) return null;
+      return tiemposDeViaje(f.inicioCargaMs, {
+        alistamientoMin: planta.alistamientoMin,
+        capacidadPlantaM3h: planta.capacidadM3h,
+        volumen: f.volumen,
+        tViajeMin: f.transporteMin,
+        tRegresoMin: f.transporteMin,
+        tipoDescarga: f.tipoDescarga,
+      });
+    },
+    [plantaPorId],
   );
 
   // Viajes para validaciones (todo el plantel).
@@ -417,6 +475,42 @@ function PlantelManualBloque({
       ),
     );
   };
+  /**
+   * Fija la hora de LLEGADA a obra. El servidor calcula hacia atras la carga y hacia
+   * adelante la descarga/regreso, y recorre los demas viajes DE ESE CLIENTE segun su
+   * frecuencia. Devuelve avisos (apertura, hora fija, simultaneidad) que se muestran
+   * arriba sin bloquear.
+   */
+  const commitLlegada = (f: FilaManualSrv, nuevaLlegadaMs: number, llegadaActualMs: number) => {
+    if (nuevaLlegadaMs === llegadaActualMs) return;
+    void ejecutar({
+      etiqueta: `llegada a ${fmtHM(nuevaLlegadaMs)}`,
+      hacer: async () => {
+        const r = await ajustarLlegadaManualAction(f.id, toLocalInput(nuevaLlegadaMs));
+        if (!r.ok) throw new Error(r.mensaje ?? "No se pudo ajustar la llegada.");
+        onAvisos(r.avisos ?? []);
+      },
+      deshacer: async () => {
+        const r = await ajustarLlegadaManualAction(f.id, toLocalInput(llegadaActualMs));
+        onAvisos(r.avisos ?? []);
+      },
+    });
+  };
+
+  /** Clava (o libera) la hora de un viaje: los reajustes por frecuencia lo saltan. */
+  const commitHoraFija = (f: FilaManualSrv, fija: boolean) => {
+    void ejecutar({
+      etiqueta: fija ? "fijar hora del viaje" : "liberar hora del viaje",
+      hacer: async () => {
+        const r = await fijarHoraViajeAction(f.id, fija);
+        if (!r.ok) throw new Error(r.mensaje ?? "No se pudo cambiar la hora fija.");
+      },
+      deshacer: async () => {
+        await fijarHoraViajeAction(f.id, !fija);
+      },
+    });
+  };
+
   const commitVolumen = (f: FilaManualSrv, nuevo: number) => {
     if (!(nuevo > 0) || nuevo === f.volumen) return;
     void ejecutar(cmdEditar(f, { volumen: nuevo }, { volumen: f.volumen }, `volumen ${nuevo} m³`));
@@ -619,14 +713,23 @@ function PlantelManualBloque({
               <h3 className="text-sm font-semibold text-ink">
                 Planta {planta.nombre} <span className="font-normal text-muted">· {planta.capacidadM3h} m³/h</span>
               </h3>
-              {puedeEditar && (
-                <button
-                  onClick={() => setAgregarEn(planta.id)}
-                  className="inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover"
-                >
-                  <Plus size={14} /> Agregar viaje
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                <AperturaPlanta
+                  planta={planta}
+                  fecha={fecha}
+                  puedeEditar={puedeEditar}
+                  ocupado={ocupado}
+                  onAviso={(m) => onAvisos([m])}
+                />
+                {puedeEditar && (
+                  <button
+                    onClick={() => setAgregarEn(planta.id)}
+                    className="inline-flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover"
+                  >
+                    <Plus size={14} /> Agregar viaje
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="overflow-x-auto">
@@ -637,18 +740,23 @@ function PlantelManualBloque({
                     <th className="px-2 py-2">Cliente / Proyecto</th>
                     <th className="px-2 py-2">Mixer</th>
                     <th className="px-2 py-2 w-24">Volumen</th>
-                    <th className="px-2 py-2 w-24">Carga</th>
+                    <th className="px-2 py-2 w-24">
+                      Carga{puedeEditar && <span className="ml-1 normal-case text-[10px] text-accent">editable</span>}
+                    </th>
                     <th className="px-2 py-2">Salida</th>
-                    <th className="px-2 py-2">Llegada</th>
+                    <th className="px-2 py-2 w-24">
+                      Llegada{puedeEditar && <span className="ml-1 normal-case text-[10px] text-accent">editable</span>}
+                    </th>
                     <th className="px-2 py-2">Descarga</th>
                     <th className="px-2 py-2">Regreso</th>
+                    {puedeEditar && <th className="px-2 py-2 w-8" title="Hora fija" />}
                     {puedeEditar && <th className="px-2 py-2 w-8" />}
                   </tr>
                 </thead>
                 <tbody>
                   {filas.length === 0 ? (
                     <tr>
-                      <td colSpan={puedeEditar ? 10 : 9} className="px-2 py-4 text-center text-xs text-muted">
+                      <td colSpan={puedeEditar ? 11 : 9} className="px-2 py-4 text-center text-xs text-muted">
                         Sin viajes en esta planta. Usa <strong>Agregar viaje</strong> o <strong>Generar en serie</strong>.
                       </td>
                     </tr>
@@ -770,9 +878,70 @@ function PlantelManualBloque({
                             )}
                           </td>
                           <td className="px-2 py-1 text-muted">{t ? fmtHM(t.salidaMs) : "—"}</td>
-                          <td className="px-2 py-1 font-medium text-ink">{t ? fmtHM(t.llegadaMs) : "—"}</td>
+                          <td className="px-2 py-1">
+                            {puedeEditar && t ? (
+                              /* Hora comprometida con el cliente: al escribirla, el servidor
+                                 calcula hacia atras la carga y recorre la cola del cliente. */
+                              <input
+                                type="time"
+                                value={hhmmDeMs(t.llegadaMs)}
+                                disabled={ocupado}
+                                onFocus={() => setEditandoId(f.id)}
+                                onChange={(e) => {
+                                  const nuevaLlegada = conNuevaHora(t.llegadaMs, e.target.value);
+                                  const planta = plantaPorId.get(f.plantaId);
+                                  if (nuevaLlegada == null || !planta) return;
+                                  // Vista previa inmediata: se traduce a su hora de carga.
+                                  const inicio = inicioCargaDesdeLlegada(nuevaLlegada, {
+                                    alistamientoMin: planta.alistamientoMin,
+                                    capacidadPlantaM3h: planta.capacidadM3h,
+                                    volumen: ef.volumen,
+                                    tViajeMin: f.transporteMin,
+                                    tRegresoMin: f.transporteMin,
+                                    tipoDescarga: f.tipoDescarga,
+                                  });
+                                  setOv((p) => new Map(p).set(f.id, { ...p.get(f.id), inicioCargaMs: inicio }));
+                                }}
+                                onBlur={(e) => {
+                                  if (escapando.current) {
+                                    escapando.current = false;
+                                    return;
+                                  }
+                                  // La referencia "antes" es la del SERVIDOR: el override
+                                  // optimista ya contiene lo tecleado y compararse contra
+                                  // el haria que el cambio pareciera nulo.
+                                  const base = calcularServidor(f);
+                                  if (!base) return;
+                                  const nuevaLlegada = conNuevaHora(base.llegadaMs, e.target.value);
+                                  if (nuevaLlegada != null) commitLlegada(f, nuevaLlegada, base.llegadaMs);
+                                }}
+                                className={inCls + " w-24 font-medium"}
+                                title="Hora de llegada a obra: se calcula la carga hacia atras"
+                              />
+                            ) : (
+                              <span className="font-medium text-ink">{t ? fmtHM(t.llegadaMs) : "—"}</span>
+                            )}
+                          </td>
                           <td className="px-2 py-1 text-muted">{t ? `${fmtHM(t.inicioDescargaMs)}–${fmtHM(t.finDescargaMs)}` : "—"}</td>
                           <td className="px-2 py-1 text-muted">{t ? fmtHM(t.regresoMs) : "—"}</td>
+                          {puedeEditar && (
+                            <td className="px-2 py-1">
+                              <button
+                                onClick={() => commitHoraFija(f, !f.horaFija)}
+                                disabled={ocupado}
+                                className={`rounded p-1 disabled:opacity-40 ${
+                                  f.horaFija ? "text-accent" : "text-muted hover:bg-content"
+                                }`}
+                                title={
+                                  f.horaFija
+                                    ? "Hora fija: los reajustes por frecuencia no mueven este viaje"
+                                    : "Fijar la hora de este viaje"
+                                }
+                              >
+                                {f.horaFija ? <Lock size={14} /> : <LockOpen size={14} />}
+                              </button>
+                            </td>
+                          )}
                           {puedeEditar && (
                             <td className="px-2 py-1">
                               <button
@@ -904,6 +1073,110 @@ function PlantelManualBloque({
  * disponible, y cuántos viajes ya tiene asignados hoy. Ordena por "quién queda libre
  * más pronto" para ubicar de inmediato con qué mixer contar para el siguiente hueco.
  */
+/**
+ * Hora de APERTURA de la planta para ESTE día. Por defecto rige el valor de
+ * Administración (7:00 a.m.); aquí el Programador puede adelantarla cuando la
+ * operación lo pide (un vaciado que arranca a las 5:00), solo para este día y esta
+ * planta. Es una excepción puntual, no un cambio global que haya que revertir.
+ */
+function AperturaPlanta({
+  planta,
+  fecha,
+  puedeEditar,
+  ocupado,
+  onAviso,
+}: {
+  planta: PlantaManual;
+  fecha: string;
+  puedeEditar: boolean;
+  ocupado: boolean;
+  onAviso: (mensaje: string) => void;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [valor, setValor] = useState(planta.aperturaHHMM);
+  const [guardando, setGuardando] = useState(false);
+
+  const guardar = async (hhmm: string | null) => {
+    setGuardando(true);
+    try {
+      const r = await fijarAperturaPlantaAction(planta.id, fecha, hhmm);
+      if (!r.ok) onAviso(r.mensaje ?? "No se pudo cambiar la apertura.");
+      else {
+        setEditando(false);
+        router.refresh();
+      }
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (!puedeEditar) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted">
+        <Sunrise size={13} /> Apertura {planta.aperturaHHMM}
+      </span>
+    );
+  }
+
+  if (!editando) {
+    return (
+      <button
+        onClick={() => {
+          setValor(planta.aperturaHHMM);
+          setEditando(true);
+        }}
+        disabled={ocupado}
+        title="Hora a partir de la cual esta planta puede cargar este día"
+        className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs disabled:opacity-40 ${
+          planta.aperturaEsExcepcion
+            ? "border-accent text-accent"
+            : "border-border text-muted hover:bg-content"
+        }`}
+      >
+        <Sunrise size={13} /> Apertura {planta.aperturaHHMM}
+        {planta.aperturaEsExcepcion && <span className="font-medium">· este día</span>}
+      </button>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input
+        type="time"
+        value={valor}
+        disabled={guardando}
+        onChange={(e) => setValor(e.target.value)}
+        className="rounded border border-border bg-surface px-1.5 py-1 text-xs text-ink outline-none focus:border-accent"
+      />
+      <button
+        onClick={() => void guardar(valor)}
+        disabled={guardando}
+        className="rounded-lg bg-accent px-2 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+      >
+        Guardar
+      </button>
+      {planta.aperturaEsExcepcion && (
+        <button
+          onClick={() => void guardar(null)}
+          disabled={guardando}
+          title="Volver a la apertura por defecto"
+          className="rounded-lg border border-border px-2 py-1 text-xs text-muted hover:bg-content disabled:opacity-50"
+        >
+          Quitar
+        </button>
+      )}
+      <button
+        onClick={() => setEditando(false)}
+        className="rounded p-1 text-muted hover:bg-content"
+        aria-label="Cancelar"
+      >
+        <X size={13} />
+      </button>
+    </span>
+  );
+}
+
 function PanelMixers({
   mixers,
   info,

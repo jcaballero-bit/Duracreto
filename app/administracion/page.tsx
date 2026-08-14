@@ -11,8 +11,10 @@ import {
 } from "./catalogo-admin";
 import type { Catalogo } from "./catalogos-actions";
 import { UsuariosTabla, type UsuarioAdmin } from "./usuarios-tabla";
-import { AjustesMotor } from "./ajustes-motor";
+import { AjusteApertura, AjusteBloqueoEdicion, AjustesMotor } from "./ajustes-motor";
 import { leerMargenHueco } from "@/lib/motor/config-runtime";
+import { leerAperturaDefault, textoHoraMin } from "@/lib/motor/apertura";
+import { leerConfigBloqueo } from "@/lib/programacion/bloqueo";
 
 export const dynamic = "force-dynamic";
 
@@ -60,6 +62,8 @@ export default async function AdministracionPage({
     opcPlantas,
     opcUsuarios,
     margenHueco: await leerMargenHueco(),
+    horaApertura: textoHoraMin(await leerAperturaDefault()),
+    bloqueo: await leerConfigBloqueo(),
   });
 
   return (
@@ -113,6 +117,9 @@ interface Ctx {
   opcPlantas: { value: string; label: string }[];
   opcUsuarios: { value: string; label: string }[];
   margenHueco: number;
+  /** Hora de apertura de planta por defecto, "HH:MM". */
+  horaApertura: string;
+  bloqueo: { activo: boolean; horaCorteMin: number };
 }
 
 function bloque(
@@ -352,6 +359,25 @@ async function renderTab(tab: string, ctx: Ctx) {
             programación tan apretada que un solo retraso genere una cascada de problemas).
           </p>
           <AjustesMotor margenHueco={ctx.margenHueco} />
+
+          <hr className="my-6 border-border" />
+          <p className="mb-3 text-sm text-muted">
+            <strong>Hora de apertura de planta</strong>: a partir de qué hora se puede empezar a
+            cargar. Rige todos los días; para un vaciado que arranca antes, el Programador puede
+            adelantar la apertura de un día y una planta concretos desde la programación.
+          </p>
+          <AjusteApertura horaApertura={ctx.horaApertura} />
+
+          <hr className="my-6 border-border" />
+          <p className="mb-3 text-sm text-muted">
+            <strong>Bloqueo horario de edición del programa</strong>: a partir de la hora de corte,
+            el Jefe de Planta y el Programador ya no pueden mover la programación (para que el
+            programa del día siguiente no se siga cambiando).
+          </p>
+          <AjusteBloqueoEdicion
+            activo={ctx.bloqueo.activo}
+            horaCorte={textoHoraMin(ctx.bloqueo.horaCorteMin)}
+          />
         </>
       );
     }

@@ -13,13 +13,27 @@ import { useEffect } from "react";
  *
  * Así, cuando un Asesor confirma su programación (u ocurre cualquier cambio en el
  * servidor), el resto de los usuarios lo ven en segundos sin apretar recargar.
+ *
+ * NO refresca mientras el usuario está escribiendo en un campo: un refresco en medio
+ * de una edición reemplaza los datos y descarta lo tecleado (en la tabla del modo
+ * manual se veía como que el valor "se volvía a poner solo"). El siguiente tick lo
+ * hace en cuanto el campo pierde el foco.
  */
+function editandoUnCampo(): boolean {
+  const el = document.activeElement as HTMLElement | null;
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || el.isContentEditable;
+}
+
 export function AutoRefresh({ intervalMs = 15000 }: { intervalMs?: number }) {
   const router = useRouter();
 
   useEffect(() => {
     const refrescarSiVisible = () => {
-      if (document.visibilityState === "visible") router.refresh();
+      if (document.visibilityState !== "visible") return;
+      if (editandoUnCampo()) return; // no pisar una edición en curso
+      router.refresh();
     };
 
     const id = setInterval(refrescarSiVisible, intervalMs);
