@@ -6,9 +6,16 @@
 # El cliente Prisma se regenera en `postinstall` (está gitignored). El build
 # aplica las migraciones pendientes al Postgres de producción y luego compila.
 # Requiere que la variable DATABASE_URL esté configurada en Netlify (ver docs).
+#
+# Las migraciones se aplican con `scripts/migrate-deploy.mjs` en vez de llamar a
+# `prisma migrate deploy` directo: ese comando toma un advisory lock y se rinde a los
+# 10 s (P1002), así que dos despliegues simultáneos —dos commits pusheados seguidos—
+# hacían fallar el segundo build sin que nada estuviera mal. El script reintenta con
+# espera creciente ante fallos transitorios (lock ocupado, Neon despertando) y falla
+# de inmediato si una migración está realmente mal.
 
 [build]
-  command = "npx prisma migrate deploy && npm run build"
+  command = "node scripts/migrate-deploy.mjs && npm run build"
   publish = ".next"
 
 [build.environment]
