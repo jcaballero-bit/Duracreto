@@ -12,7 +12,7 @@ import {
   UMBRAL_IMPACTO_INSERCION_MIN,
   cierreProgramaDe,
 } from "@/lib/motor/config";
-import { estadoBloqueoPrograma } from "@/lib/programacion/bloqueo";
+import { estadoBloqueoPrograma, leerConfigBloqueo, textoHoraCorte } from "@/lib/programacion/bloqueo";
 import { ajustarLlegadaManual, fijarHoraViajeManual } from "@/lib/motor/manual-horarios";
 import { minutosDeTexto } from "@/lib/motor/apertura";
 import { inicioDelDia } from "@/lib/motor/tiempos";
@@ -241,12 +241,21 @@ async function autorizarCambioPrograma(fecha: Date, esAdicion: boolean): Promise
   const a = await alcanceActual();
   if (!a) return { ok: false, mensaje: "Sesión no válida." };
   if (a.esAdmin) return { ok: true }; // el Admin puede aún después del cierre
-  const congelado = new Date().getTime() >= cierreProgramaDe(fecha).getTime();
-  if (congelado) {
+
+  // El congelamiento depende del BLOQUEO HORARIO configurable (Administración). Si el
+  // Administrador lo tiene APAGADO no hay corte: antes esta regla usaba las 4:00 p.m.
+  // fijas en el código, así que el Jefe de Planta y el Programador quedaban bloqueados
+  // pasadas las 4 aunque el interruptor estuviera desactivado.
+  const cfg = await leerConfigBloqueo();
+  if (!cfg.activo) return { ok: true };
+
+  const cierre = cierreProgramaDe(fecha, cfg.horaCorteMin);
+  if (new Date().getTime() >= cierre.getTime()) {
     return {
       ok: false,
       mensaje:
-        "El Programa DPCR-08 de esa fecha ya está cerrado (pasadas las 4:00 p.m. del día anterior). Solo un Administrador puede agregar o quitar pedidos del programa.",
+        `El Programa DPCR-08 de esa fecha ya está cerrado (pasadas las ${textoHoraCorte(cfg.horaCorteMin)} ` +
+        "del día anterior). Solo un Administrador puede agregar o quitar pedidos del programa.",
     };
   }
   return { ok: true };

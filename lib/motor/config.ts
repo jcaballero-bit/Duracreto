@@ -66,13 +66,18 @@ export const HORA_CIERRE_PROGRAMA = 16; // 4:00 PM del día anterior
  * `HORA_CIERRE_PROGRAMA` horas del día ANTERIOR. Regla pura (sin BD) para decidir
  * si una cancelación debe o no retirar al cliente del documento congelado.
  */
-export function cierreProgramaDe(fecha: Date): Date {
+export function cierreProgramaDe(fecha: Date, horaCorteMin?: number): Date {
+  // Por defecto rige `HORA_CIERRE_PROGRAMA` (semántica del DOCUMENTO publicado: a
+  // partir de aquí una cancelación ya no saca al cliente del DPCR-08). El parámetro
+  // opcional lo usa el PERMISO de edición, que sigue la hora de corte configurable
+  // del bloqueo horario en Administración.
+  const min = horaCorteMin ?? HORA_CIERRE_PROGRAMA * 60;
   return new Date(
     fecha.getFullYear(),
     fecha.getMonth(),
     fecha.getDate() - 1,
-    HORA_CIERRE_PROGRAMA,
-    0,
+    Math.floor(min / 60),
+    min % 60,
     0,
     0,
   );

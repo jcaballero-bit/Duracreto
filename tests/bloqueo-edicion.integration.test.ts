@@ -10,7 +10,9 @@ import { agregarViajeManual } from "@/lib/motor/asignacion";
 import { crearCliente, crearDiseno, crearMixers, crearPlantel, limpiarBD } from "./helpers";
 
 // Sesión simulada: el rol se cambia por prueba con `sesionDe`.
-let rolActual: "Administrador" | "Programador" | "Despachador" = "Programador";
+let rolActual: "Administrador" | "Programador" | "Despachador" | "JefePlanta" = "Programador";
+// Jefe de Planta: se le asignan TODOS los planteles del escenario (M2M).
+let plantelesJefe: number[] = [];
 const sesionDe = (rol: typeof rolActual) => {
   rolActual = rol;
 };
@@ -19,8 +21,8 @@ vi.mock("@/auth", () => ({
   auth: async () => ({ user: { id: "u1", name: "Usuario Prueba", email: "u1@test.com" } }),
 }));
 vi.mock("@/lib/auth/guard", () => ({
-  alcanceActual: async () => calcularAlcance([rolActual], "Norte"),
-  requerirAcceso: async () => calcularAlcance([rolActual], "Norte"),
+  alcanceActual: async () => calcularAlcance([rolActual], "Norte", null, null, plantelesJefe),
+  requerirAcceso: async () => calcularAlcance([rolActual], "Norte", null, null, plantelesJefe),
   exigirAdmin: async () => ({ ok: true, userId: "u1" }),
   exigirGestionFlota: async () => ({ ok: true, userId: "u1" }),
   requerirPasswordAlDia: async () => {},
@@ -76,6 +78,7 @@ const localInput = (d: Date) => {
 beforeEach(async () => {
   await limpiarBD();
   await prisma.configuracion.deleteMany({});
+  plantelesJefe = [];
 });
 
 describe("bloqueo horario en la server action", () => {
@@ -155,5 +158,68 @@ describe("bloqueo horario en la server action", () => {
     const nueva = new Date(s.horaCarga.getTime() + 30 * 60_000);
     const res = await editarViajeManualAction(s.viajeId, { horaCargaLocal: localInput(nueva) });
     expect(res.ok).toBe(true);
+  });
+});
+
+describe("congelamiento del DPCR-08 sujeto al interruptor", () => {
+  // Un pedido para MAÑANA: su cierre seria HOY a la hora de corte, asi que pasada esa
+  // hora la regla vieja (4:00 p.m. fijas) bloqueaba al Jefe de Planta aunque el
+  // interruptor estuviera apagado. `eliminarPedidoAction` pasa por el mismo guard
+  // (`autorizarCambioPrograma`) que crear y cancelar.
+  async function pedidoDeManana() {
+    const { plantelId, plantaId } = await crearPlantel({ nombre: "SM Corte", zona: "Norte", esHub: true });
+    await crearMixers(plantelId, [[11, 2]]);
+    const clienteId = await crearCliente(true, 30, 30);
+    const disenoId = await crearDiseno();
+    const mixers = await prisma.mixers.findMany({ where: { plantel_base_id: plantelId }, orderBy: { id: "asc" } });
+    plantelesJefe = [plantelId];
+
+    const manana = new Date();
+    manana.setDate(manana.getDate() + 1);
+    manana.setHours(9, 0, 0, 0);
+    const { viajeId } = await agregarViajeManual({
+      cliente_id: clienteId,
+      diseno_id: disenoId,
+      plantel_id: plantelId,
+      planta_id: plantaId,
+      mixer_id: mixers[0].id,
+      volumen: 9,
+      inicio_carga: manana,
+      tipo_descarga: "Canal directo",
+      creado_por: "test",
+    });
+    const v = await prisma.viajes.findUniqueOrThrow({ where: { id: viajeId }, select: { pedido_id: true } });
+    return v.pedido_id;
+  }
+
+  it("con el bloqueo DESACTIVADO, el Jefe de Planta cambia el programa aunque pasen de las 4 p.m.", async () => {
+    const pedidoId = await pedidoDeManana();
+    sesionDe("JefePlanta");
+    await configurarBloqueo(false, -600); // apagado; "el corte" quedo muy atras
+
+    const { eliminarPedidoAction } = await import("@/app/actions");
+    const res = await eliminarPedidoAction(pedidoId);
+    expect(res.ok, res.mensaje ?? "").toBe(true);
+  });
+
+  it("con el bloqueo ACTIVADO y el corte pasado, el Jefe de Planta ya no puede", async () => {
+    const pedidoId = await pedidoDeManana();
+    sesionDe("JefePlanta");
+    await configurarBloqueo(true, -30);
+
+    const { eliminarPedidoAction } = await import("@/app/actions");
+    const res = await eliminarPedidoAction(pedidoId);
+    expect(res.ok).toBe(false);
+    expect(res.mensaje).toMatch(/cerrado|bloquead/i);
+  });
+
+  it("el Administrador puede aunque el bloqueo este activo y el corte pasado", async () => {
+    const pedidoId = await pedidoDeManana();
+    sesionDe("Administrador");
+    await configurarBloqueo(true, -30);
+
+    const { eliminarPedidoAction } = await import("@/app/actions");
+    const res = await eliminarPedidoAction(pedidoId);
+    expect(res.ok, res.mensaje ?? "").toBe(true);
   });
 });

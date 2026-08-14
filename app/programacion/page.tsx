@@ -137,13 +137,6 @@ export default async function ProgramacionPage({
   const ini = new Date(y, m - 1, d, 0, 0, 0, 0);
   const fin = new Date(y, m - 1, d + 1, 0, 0, 0, 0);
 
-  // Congelamiento del Programa DPCR-08 (4:00 p.m. del día anterior): pasado el cierre,
-  // solo el Admin puede AGREGAR o QUITAR pedidos del programa. Los demás roles pueden
-  // seguir EDITando/reordenando, pero no añadir ni cancelar/eliminar. Se refuerza en
-  // el servidor (app/actions.ts autorizarCambioPrograma).
-  const programaCongelado = new Date().getTime() >= cierreProgramaDe(ini).getTime();
-  const puedeAgregarQuitar = alcance.esAdmin || !programaCongelado;
-
   // BLOQUEO HORARIO de edicion (config del Admin): pasada la hora de corte, el
   // Programador y el Jefe de Planta pasan a CONSULTA. El servidor rechaza igual
   // cualquier escritura; aqui solo se refleja para no ofrecer controles muertos.
@@ -151,6 +144,17 @@ export default async function ProgramacionPage({
   const bloqueo = await estadoBloqueoPrograma(alcance);
   const bloqueoMensaje = bloqueo.bloqueado ? (bloqueo.mensaje ?? null) : null;
   const puedeEditarEfectivo = puedeEditar && !bloqueoMensaje;
+
+  // Congelamiento del Programa DPCR-08: pasado el cierre (la hora de corte del día
+  // anterior) solo el Admin puede AGREGAR o QUITAR pedidos del programa; los demás
+  // roles siguen pudiendo editar/reordenar. Depende del MISMO interruptor: con el
+  // bloqueo horario desactivado no hay corte (antes usaba las 4:00 p.m. fijas del
+  // código y bloqueaba aunque el interruptor estuviera apagado). Se refuerza en el
+  // servidor (app/actions.ts autorizarCambioPrograma).
+  const programaCongelado =
+    bloqueo.cfg.activo &&
+    new Date().getTime() >= cierreProgramaDe(ini, bloqueo.cfg.horaCorteMin).getTime();
+  const puedeAgregarQuitar = alcance.esAdmin || !programaCongelado;
 
   const [planteles, clientes, disenos, bombas, asesores, pedidos] = await Promise.all([
     prisma.planteles.findMany({
