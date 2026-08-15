@@ -209,3 +209,71 @@ describe("Despacho: las demás acciones tampoco tocan el programa", () => {
     expect(horasCambiadas(antes, await fotoPrograma())).toEqual([]);
   });
 });
+
+describe("caso La Ceiba: plantel SIN mixers propios (todo es préstamo del hub)", () => {
+  /** Hub con flota + plantel dependiente sin mixers propios, como La Ceiba. */
+  async function ceiba() {
+    const hub = await crearPlantel({ nombre: "Santa Marta Hub", zona: "Norte", esHub: true });
+    await crearMixers(hub.plantelId, [[11, 3]]); // la flota vive en el hub
+    const dep = await crearPlantel({ nombre: "La Ceiba", zona: "Norte", hubId: hub.plantelId });
+    const clienteA = await crearCliente(true, 30, 30);
+    const clienteB = await crearCliente(true, 30, 30);
+    const disenoId = await crearDiseno();
+    const mixers = await prisma.mixers.findMany({
+      where: { plantel_base_id: hub.plantelId },
+      orderBy: { id: "asc" },
+    });
+
+    const viaje = async (clienteId: number, hora: string, mixerIdx: number) =>
+      (
+        await agregarViajeManual({
+          cliente_id: clienteId,
+          diseno_id: disenoId,
+          plantel_id: dep.plantelId,
+          planta_id: dep.plantaId,
+          mixer_id: mixers[mixerIdx].id,
+          volumen: 9,
+          inicio_carga: d(hora),
+          tipo_descarga: "Canal directo",
+          creado_por: "test",
+        })
+      ).viajeId;
+
+    return {
+      plantelId: dep.plantelId,
+      plantaId: dep.plantaId,
+      mixers,
+      v1: await viaje(clienteA, "07:00", 0),
+      v2: await viaje(clienteB, "08:00", 1),
+      v3: await viaje(clienteA, "09:00", 2),
+    };
+  }
+
+  it("cambiar el mixer a uno YA OCUPADO no mueve los horarios de la programación", async () => {
+    const s = await ceiba();
+    const antes = await fotoPrograma();
+
+    // El mixer del viaje 2 se le da al viaje 1: sus ciclos se traslapan, así que el
+    // viaje 2 pierde su mixer. Ese es el caso normal en un plantel de puro préstamo.
+    const res = await reasignarMixer(s.v1, s.mixers[1].id);
+    expect(res.ok).toBe(true);
+
+    const despues = await fotoPrograma();
+    expect(despues.get(s.v1)!.mixerId).toBe(s.mixers[1].id);
+    // Ningún horario programado se movió — ni el del viaje que quedó sin mixer.
+    expect(horasCambiadas(antes, despues)).toEqual([]);
+  });
+
+  it("el viaje que perdió el mixer conserva su horario y queda para reasignar a mano", async () => {
+    const s = await ceiba();
+    const antes = await fotoPrograma();
+
+    await reasignarMixer(s.v1, s.mixers[1].id);
+
+    const v2 = await prisma.viajes.findUniqueOrThrow({ where: { id: s.v2 } });
+    // Conserva su hora de carga programada (no se recalcula nada).
+    expect(v2.hora_inicio_carga!.getTime()).toBe(
+      antes.get(s.v2)!.horas.split("|").map(Number)[1],
+    );
+  });
+});

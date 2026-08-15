@@ -131,3 +131,62 @@ describe("la hora de llegada que se teclea se MANTIENE", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe("cambiar el horario en un plantel SIN mixers propios (La Ceiba)", () => {
+  /** Hub con la flota + plantel dependiente (todos los mixers son préstamo). */
+  async function ceiba() {
+    const hub = await crearPlantel({ nombre: "SM Hub Roles", zona: "Norte", esHub: true });
+    await crearMixers(hub.plantelId, [[11, 3]]);
+    const dep = await crearPlantel({ nombre: "La Ceiba Roles", zona: "Norte", hubId: hub.plantelId });
+    const clienteId = await crearCliente(true, 30, 30);
+    const disenoId = await crearDiseno();
+    const mixers = await prisma.mixers.findMany({
+      where: { plantel_base_id: hub.plantelId },
+      orderBy: { id: "asc" },
+    });
+    plantelDelJefe = [dep.plantelId];
+    const { viajeId } = await agregarViajeManual({
+      cliente_id: clienteId,
+      diseno_id: disenoId,
+      plantel_id: dep.plantelId,
+      planta_id: dep.plantaId,
+      mixer_id: mixers[0].id,
+      volumen: 9,
+      inicio_carga: hoyA(8, 0),
+      tipo_descarga: "Canal directo",
+      creado_por: "test",
+    });
+    return { viajeId, mixers };
+  }
+
+  it("el Jefe de Planta cambia la hora de CARGA de un viaje con mixer prestado", async () => {
+    const s = await ceiba();
+    rolActual = "JefePlanta";
+    const { editarViajeManualAction } = await import("@/app/actions");
+
+    const r = await editarViajeManualAction(s.viajeId, { horaCargaLocal: localInput(hoyA(10, 15)) });
+    expect(r.ok, r.mensaje ?? "").toBe(true);
+    const v = await prisma.viajes.findUniqueOrThrow({ where: { id: s.viajeId } });
+    expect(hhmm(v.hora_inicio_carga)).toBe("10:15");
+  });
+
+  it("el Jefe de Planta cambia la hora de LLEGADA en ese mismo plantel", async () => {
+    const s = await ceiba();
+    rolActual = "JefePlanta";
+    const r = await ajustarLlegadaManualAction(s.viajeId, localInput(hoyA(12, 30)));
+    expect(r.ok, r.mensaje ?? "").toBe(true);
+    expect(await llegadaDe(s.viajeId)).toBe("12:30");
+  });
+
+  it("un viaje que YA INICIÓ carga en Despacho no se puede reprogramar (y lo dice)", async () => {
+    const s = await ceiba();
+    await prisma.viajes.update({
+      where: { id: s.viajeId },
+      data: { ts_inicio_carga_real: hoyA(8, 3) },
+    });
+    rolActual = "JefePlanta";
+    const r = await ajustarLlegadaManualAction(s.viajeId, localInput(hoyA(12, 30)));
+    expect(r.ok).toBe(false);
+    expect(r.mensaje).toContain("ya inició");
+  });
+});

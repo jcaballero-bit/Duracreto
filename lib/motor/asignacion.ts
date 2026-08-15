@@ -2098,6 +2098,61 @@ export async function generarViajesEnSerie(e: EntradaSerieManual): Promise<{ via
 }
 
 /**
+ * Le busca a un viaje OTRO mixer que esté libre durante su ciclo, CONSERVANDO su
+ * horario programado. Se usa cuando a un viaje le quitaron su mixer para dárselo a
+ * otro: el viaje no se reprograma (su hueco en la planta sigue siendo suyo), solo
+ * cambia de unidad. Si no hay ninguna libre queda sin mixer y el despachador la
+ * asigna a mano — es preferible a mover la programación de todo el día.
+ */
+async function reemplazarMixerConservandoHora(
+  viajeId: number,
+  plantelId: number,
+  hubId: number | null,
+  dia: Date,
+): Promise<void> {
+  const v = await prisma.viajes.findUnique({
+    where: { id: viajeId },
+    select: {
+      id: true,
+      volumen_asignado_m3: true,
+      hora_inicio_carga: true,
+      hora_regreso_planta: true,
+    },
+  });
+  if (!v?.hora_inicio_carga || !v.hora_regreso_planta) return;
+  const desde = v.hora_inicio_carga.getTime();
+  const hasta = v.hora_regreso_planta.getTime();
+
+  const candidatos = await candidatosDePlanta(plantelId, hubId, dia);
+  const ocupados = await prisma.viajes.findMany({
+    where: {
+      id: { not: viajeId },
+      mixer_id: { not: null },
+      estado: { not: "Cancelado" },
+      hora_inicio_carga: { lt: new Date(hasta) },
+      hora_regreso_planta: { gt: new Date(desde) },
+    },
+    select: { mixer_id: true },
+  });
+  const tomados = new Set(ocupados.map((o) => o.mixer_id));
+
+  const libre = candidatos.find(
+    (m) => !tomados.has(m.id) && m.capacidad_m3 >= v.volumen_asignado_m3,
+  );
+  if (!libre) return; // sin unidad libre: queda para asignar a mano
+
+  await prisma.viajes.update({
+    where: { id: viajeId },
+    data: {
+      mixer_id: libre.id,
+      operador_id: libre.operador_asignado_id,
+      capacidad_asignada_m3: libre.capacidad_m3,
+      motivo_asignacion: libre.plantel_base_id === plantelId ? "Flota propia" : "Préstamo de zona",
+    },
+  });
+}
+
+/**
  * Coloca los viajes de una ADICIÓN al FINAL de la cola de carga de su planta, uno
  * tras otro, y les asigna un mixer que esté libre en esa ventana.
  *
@@ -2910,34 +2965,27 @@ export async function reasignarMixer(
 
   const viajesAfectados: number[] = [];
   const viajesAgregados: number[] = [];
-  // Plantas que hay que recalcular. Arranca VACÍO a propósito: reasignar un mixer es
-  // una acción de DESPACHO EN VIVO y no debe reescribir los `hora_*` programados. Solo
-  // se recalcula donde quedó algo SIN horario que colocar: los viajes que se liberaron
-  // (porque se les quitó el mixer) y los que se crearon por remanente de capacidad.
-  // Antes esta lista incluía siempre la planta del viaje, así que un simple cambio de
-  // mixer movía la hora de carga de media planta y alteraba el programa publicado.
-  const plantasRecalc = new Set<number>();
 
-  // ── Liberar los viajes futuros en conflicto y dejar que el motor los reasigne ──
+  // ── Los viajes en conflicto pierden el mixer pero CONSERVAN su horario ──
+  // Antes se les borraban todas las horas para que la cascada los recolocara, lo que
+  // reprogramaba la planta entera. Como esto corre desde Despacho en vivo, el horario
+  // programado no se toca: al viaje solo se le busca OTRA unidad libre en su mismo
+  // hueco; si no hay, queda sin mixer para que el despachador lo asigne a mano.
+  const hubDelPlantel = conflictivos.length
+    ? (
+        await prisma.planteles.findUnique({
+          where: { id: viaje.pedido.plantel_id },
+          select: { hub_id: true },
+        })
+      )?.hub_id ?? null
+    : null;
   for (const o of conflictivos) {
     await prisma.viajes.update({
       where: { id: o.id },
-      data: {
-        mixer_id: null,
-        ajustado_manualmente: false, // que la cascada le busque otro mixer
-        operador_id: null,
-        motivo_asignacion: "Flota propia", // tentativo; la cascada recomputa
-        hora_inicio_carga: null,
-        hora_fin_carga: null,
-        hora_salida_planta: null,
-        hora_llegada_proyecto: null,
-        hora_inicio_descarga: null,
-        hora_fin_descarga: null,
-        hora_regreso_planta: null,
-      },
+      data: { mixer_id: null, operador_id: null },
     });
+    await reemplazarMixerConservandoHora(o.id, viaje.pedido.plantel_id, hubDelPlantel, dia);
     viajesAfectados.push(o.id);
-    plantasRecalc.add(o.pedido.planta_id);
   }
 
   // ── Recalcular volumen del pedido si el cambio de capacidad dejó remanente ──
@@ -3001,8 +3049,6 @@ export async function reasignarMixer(
           },
         });
         viajesAgregados.push(nuevo.id);
-        // Este viaje nace sin horario: su planta sí necesita recálculo para colocarlo.
-        plantasRecalc.add(viaje.planta_id!);
       }
       if (plan.volumenSinCubrir > 0.001) {
         await prisma.viajes.create({
@@ -3021,10 +3067,37 @@ export async function reasignarMixer(
     }
   }
 
-  // ── Recalcular la cascada de todas las plantas afectadas (target primero, para
-  //    que la ocupación del mixer fijado se propague al resto). ──
-  for (const pid of plantasRecalc) {
-    await recalcularCascadaPlanta(pid, dia);
+  // ── Colocar los viajes que nacieron del remanente, sin tocar el resto ──
+  // Se agregan al FINAL de la cola de su planta (igual que una adición). NO se
+  // recalcula la cascada: esto corre desde Despacho en vivo y la programación
+  // publicada no se reescribe.
+  if (viajesAgregados.length > 0) {
+    const [tMinRem] = transporteDePedido(
+      viaje.pedido.tiempo_transporte_min,
+      (
+        await prisma.clientes.findUnique({
+          where: { id: viaje.pedido.cliente_id },
+          select: { tiempo_viaje_referencia_min: true },
+        })
+      )?.tiempo_viaje_referencia_min ?? null,
+    );
+    await colocarAdicionesAlFinal(
+      viajesAgregados,
+      dia,
+      await candidatosDePlanta(
+        viaje.pedido.plantel_id,
+        (
+          await prisma.planteles.findUnique({
+            where: { id: viaje.pedido.plantel_id },
+            select: { hub_id: true },
+          })
+        )?.hub_id ?? null,
+        dia,
+      ),
+      viaje.pedido.tipo_descarga,
+      tMinRem,
+      viaje.pedido.plantel_id,
+    );
   }
 
   // Volumen sin cubrir tras todo (target + viajes liberados de otros pedidos).
