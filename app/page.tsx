@@ -12,6 +12,10 @@ export const dynamic = "force-dynamic";
 async function resumen(incluirFlota: boolean, alcance: Alcance | null) {
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
+  // "Próximo día programado" = el siguiente día CON pedidos, a partir de MAÑANA. El
+  // día de hoy no cuenta: ese ya se está despachando y se ve en Despacho en vivo; lo
+  // que la tarjeta debe anticipar es lo que viene.
+  const manana = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1);
 
   // El volumen del próximo día se acota a la zona/plantel del usuario (un
   // Programador/Despachador/JefePlanta no ve el volumen de la otra zona).
@@ -24,13 +28,13 @@ async function resumen(incluirFlota: boolean, alcance: Alcance | null) {
     incluirFlota ? prisma.mixers.count({ where: { estado: "Disponible" } }) : Promise.resolve(null),
     incluirFlota ? prisma.mixers.count() : Promise.resolve(null),
     prisma.pedidos.findMany({
-      where: { hora_solicitada: { gte: hoy }, estado_pedido: "Activo", ...scope },
+      where: { hora_solicitada: { gte: manana }, estado_pedido: "Activo", ...scope },
       orderBy: { hora_solicitada: "asc" },
       select: { hora_solicitada: true, volumen_total_m3: true },
     }),
   ]);
 
-  // Volumen del próximo día con pedidos.
+  // Volumen del próximo día con pedidos (el primero de la lista ya es >= mañana).
   let volProx = 0;
   let fechaProx: Date | null = null;
   if (prox.length > 0) {
