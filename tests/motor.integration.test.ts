@@ -562,10 +562,12 @@ describe("cancelar pedido — recalcula la cascada (hueco 1)", () => {
     const r2 = await programarPedido(base);
 
     const viaje2 = r2.viajes.find((v) => v.mixerId != null)!;
-    // hora_solicitada es la LLEGADA deseada. El segundo pedido llega DESPUÉS del
-    // primero (que llega a la hora de inicio de jornada = 08:00).
+    // hora_solicitada es la LLEGADA deseada. Agregar un cliente NO reprograma a
+    // nadie: el segundo se queda en la hora que pidió (08:00, misma que el primero)
+    // y el motor AVISA del choque en vez de correrlo detrás del primero.
     const antes = await prisma.viajes.findUniqueOrThrow({ where: { id: viaje2.id } });
-    expect(antes.hora_llegada_proyecto!.getTime()).toBeGreaterThan(DIA.getTime());
+    expect(Math.abs(antes.hora_llegada_proyecto!.getTime() - DIA.getTime())).toBeLessThan(1000);
+    expect(r2.avisosChoque?.length ?? 0).toBeGreaterThan(0);
 
     // Cancelar el primer pedido → recalcula la cascada de la planta.
     await cancelarPedido(r1.pedidoId);

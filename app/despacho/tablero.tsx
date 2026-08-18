@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { Fragment, useState, useTransition } from "react";
-import { Ban, Check, ChevronRight, Lock, Pencil, Plus, RefreshCw } from "lucide-react";
+import { Ban, Check, ChevronRight, Lock, MessageSquare, Pencil, Plus, RefreshCw } from "lucide-react";
 import {
   avanzarEstadoAction,
   cambiarOperadorAction,
@@ -54,6 +54,8 @@ export interface ViajeDespacho {
   hieloTxt: string;
   volumen: number;
   volumenEditable: boolean;
+  /** El viaje ya salió de planta y quien edita es el Admin: es una CORRECCIÓN. */
+  volumenCorreccionAdmin: boolean;
   volumenBloqueoMsg: string | null;
   mixerId: number;
   mixerLabel: string;
@@ -79,10 +81,15 @@ export interface ViajeDespacho {
   // Preguntas generales ya guardadas del pedido (o null) + m³ sugerido (despachado).
   generalCalidad: GeneralCalidad | null;
   m3SugeridoCalidad: number;
+  /** Observación del pedido (vacía = no se muestra nada). Se muestra una sola vez,
+   *  antes del PRIMER viaje de ese cliente en la lista. */
+  observaciones: string;
 }
 export interface GrupoDespacho {
   plantelNombre: string;
   zona: string;
+  /** Nota operativa del plantel para el día (vacía = no se muestra). */
+  observaciones: string;
   viajes: ViajeDespacho[];
 }
 export interface MixerOpcion {
@@ -179,15 +186,33 @@ export function TableroDespacho({
     <div className="space-y-6">
       {grupos.map((g) => (
         <div key={g.plantelNombre}>
-          <div className="mb-2 flex items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
             <h3 className="font-semibold text-ink">{g.plantelNombre}</h3>
             <span className="text-sm text-muted">({g.zona})</span>
             <span className="text-xs text-muted">· {g.viajes.length} viaje(s)</span>
+            {/* Nota del plantel del día, al lado del nombre (la deja la Programación). */}
+            {g.observaciones && (
+              <span className="ml-auto inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900">
+                <MessageSquare size={13} /> {g.observaciones}
+              </span>
+            )}
           </div>
           <div className="space-y-3">
-            {g.viajes.map((v) => (
+            {g.viajes.map((v, i) => (
+              <div key={v.id}>
+              {/* Observación del pedido: una sola vez, justo antes del PRIMER viaje
+                  de ese cliente en la lista. */}
+              {v.observaciones &&
+                g.viajes.findIndex((x) => x.pedidoId === v.pedidoId) === i && (
+                  <p className="mb-2 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                    <MessageSquare size={15} className="mt-0.5 shrink-0" />
+                    <span>
+                      <span className="font-semibold">Observaciones: </span>
+                      {v.observaciones}
+                    </span>
+                  </p>
+                )}
               <FilaViaje
-                key={v.id}
                 v={v}
                 mixers={mixersUsables}
                 operadores={operadoresUsables}
@@ -198,6 +223,7 @@ export function TableroDespacho({
                 puedeCapturarCalidad={puedeCapturarCalidad}
                 esAdmin={esAdmin}
               />
+              </div>
             ))}
           </div>
         </div>
@@ -370,6 +396,7 @@ function FilaViaje({
             viajeId={v.id}
             volumen={v.volumen}
             editable={v.volumenEditable}
+            correccionAdmin={v.volumenCorreccionAdmin}
             bloqueoMsg={v.volumenBloqueoMsg}
             soloLectura={soloLectura}
             esAdmin={esAdmin}
@@ -479,6 +506,7 @@ function CampoVolumen({
   viajeId,
   volumen,
   editable,
+  correccionAdmin,
   bloqueoMsg,
   soloLectura,
   esAdmin,
@@ -486,6 +514,7 @@ function CampoVolumen({
   viajeId: number;
   volumen: number;
   editable: boolean;
+  correccionAdmin: boolean;
   bloqueoMsg: string | null;
   soloLectura: boolean;
   esAdmin: boolean;
@@ -536,8 +565,14 @@ function CampoVolumen({
       {editable ? (
         <button
           onClick={() => setEditando(true)}
-          title="Editar volumen"
-          className="text-muted hover:text-accent"
+          title={
+            correccionAdmin
+              ? "Corregir volumen (el viaje ya salió de planta)"
+              : "Editar volumen"
+          }
+          className={
+            correccionAdmin ? "text-amber-600 hover:text-amber-700" : "text-muted hover:text-accent"
+          }
         >
           <Pencil size={12} />
         </button>

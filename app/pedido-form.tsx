@@ -64,7 +64,7 @@ export interface ValoresPedido {
   frecuencia_entre_camiones_min: number | null;
   tiempo_transporte_min: number | null;
   elemento: string | null;
-  ubicacion_detalle: string | null;
+  observaciones: string | null;
 }
 
 /** Pre-llenado para modo CREACIÓN (p. ej. al convertir una solicitud anticipada). */
@@ -133,14 +133,10 @@ export function PedidoForm({
 
   const [estado, formAction, pendiente] = useActionState(accion, estadoInicial);
 
-  // Confirmación de impacto (punto 6): si insertar el pedido retrasa a un cliente
-  // ya programado, el servidor revierte y pide confirmación. Al aceptar, se reenvía
-  // el formulario con `confirmar_impacto=1` (input oculto activado por este estado).
+  // Agregar un cliente ya NO reprograma a los que estaban, así que no hay
+  // confirmación de impacto que pedir: si el pedido nuevo se encima con otro, el
+  // servidor lo guarda igual y devuelve el choque en `resultado.avisosChoque`.
   const formRef = useRef<HTMLFormElement>(null);
-  const [forzarImpacto, setForzarImpacto] = useState(false);
-  useEffect(() => {
-    if (forzarImpacto) formRef.current?.requestSubmit();
-  }, [forzarImpacto]);
 
   // Cliente y asesor son controlados: al elegir cliente se PRECARGA su asesor
   // dueño, pero el usuario puede cambiarlo (no es de solo lectura).
@@ -349,7 +345,6 @@ export function PedidoForm({
         {preset?.solicitud_id != null && (
           <input type="hidden" name="solicitud_id" value={preset.solicitud_id} />
         )}
-        {forzarImpacto && <input type="hidden" name="confirmar_impacto" value="1" />}
         {esAdicion && <input type="hidden" name="es_adicion" value="1" />}
         <Campo label="Cliente">
           <select
@@ -700,12 +695,12 @@ export function PedidoForm({
           />
         </Campo>
 
-        <Campo label="Ubicación (detalle)">
+        <Campo label="Observaciones">
           <input
-            name="ubicacion_detalle"
+            name="observaciones"
             className={inputCls}
-            defaultValue={valores?.ubicacion_detalle ?? ""}
-            placeholder="Opcional"
+            defaultValue={valores?.observaciones ?? ""}
+            placeholder="Opcional — se ven en Despacho en vivo y en el Programa DPCR-08"
           />
         </Campo>
 
@@ -728,30 +723,10 @@ export function PedidoForm({
 
       {analisisFreq && analisisFreq.ok && <AvisoFrecuencia a={analisisFreq} />}
 
-      {estado.requiereConfirmacion ? (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900">
-          <p className="mb-2">⚠️ {estado.mensaje}</p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setForzarImpacto(true)}
-              disabled={pendiente}
-              className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
-            >
-              Continuar de todos modos
-            </button>
-            <span className="self-center text-xs text-amber-700">
-              O ajusta la hora/planta y vuelve a intentar.
-            </span>
-          </div>
-        </div>
-      ) : (
-        estado.mensaje &&
-        !estado.ok && (
-          <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-            {estado.mensaje}
-          </p>
-        )
+      {estado.mensaje && !estado.ok && (
+        <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+          {estado.mensaje}
+        </p>
       )}
 
       {estado.ok && estado.resultado && <ResultadoPanel r={estado.resultado} />}
@@ -775,6 +750,23 @@ function ResultadoPanel({
           ⚠️ Quedan <strong>{r.volumenSinCubrir} m³</strong> sin cubrir con flota
           propia + préstamo de zona. Revisa las sugerencias de refuerzo.
         </p>
+      )}
+
+      {!!r.avisosChoque?.length && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <p className="font-semibold">
+            ⚠️ Este cliente se encima con otro que ya estaba programado
+          </p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5">
+            {r.avisosChoque.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs text-amber-700">
+            No se movió a nadie: los clientes ya programados conservan su horario. Si
+            quieres separarlos, edita la hora de llegada o cambia de planta.
+          </p>
+        </div>
       )}
 
       {r.avisoSimultaneidad && (

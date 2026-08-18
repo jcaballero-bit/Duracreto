@@ -291,7 +291,7 @@ export async function ajustarLlegadaManual(
  *  · **Mixer**: el mismo mixer no puede estar en dos suministros a la vez (su ciclo va
  *    del inicio de carga al regreso a planta).
  */
-async function detectarChoques(pedidoId: number, viajeIds: number[]): Promise<string[]> {
+export async function detectarChoques(pedidoId: number, viajeIds: number[]): Promise<string[]> {
   if (viajeIds.length === 0) return [];
   const avisos: string[] = [];
 

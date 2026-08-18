@@ -59,6 +59,7 @@ model planteles {
   usuarios_asignados User[] @relation("PlantelAsignadoUsuario")
   jefes         jefes_planta_planteles[] // Jefes de Planta asignados a este plantel (M2M)
   operadores_asignados operadores[] @relation("OperadorPlantel") // motoristas cuyo plantel habitual es este
+  observaciones_dia observaciones_plantel[] // nota operativa del plantel por dia
 
   @@index([zona])
 }
@@ -132,6 +133,24 @@ model asignaciones_laboratorista_planta {
   @@unique([planta_id, fecha, laboratorista_id])
   @@index([planta_id, fecha])
   @@index([laboratorista_id])
+}
+
+// Observacion del PLANTEL para un DIA: nota operativa que el Programador / Jefe de
+// Planta / Admin escriben junto al plantel en la programacion manual (por ejemplo
+// "Enviar 5 mixers a Choloma"). Se muestra al lado del nombre del plantel en Despacho
+// en vivo y en el Programa DPCR-08. Sin fila para el dia, no se muestra nada.
+model observaciones_plantel {
+  id         Int      @id @default(autoincrement())
+  plantel_id Int
+  fecha      DateTime // dia (medianoche local)
+  texto      String
+  creado_por String
+  creado_en  DateTime @default(now())
+
+  plantel planteles @relation(fields: [plantel_id], references: [id], onDelete: Cascade)
+
+  @@unique([plantel_id, fecha])
+  @@index([fecha])
 }
 
 // Reasignación TEMPORAL (por día) de un Dosificador a otra planta. La crea el Jefe de
@@ -496,7 +515,10 @@ model pedidos {
   // pedido. Null = usa el tiempo del cliente (o el default si el cliente no tiene).
   tiempo_transporte_min Int?
   elemento          String? // elemento estructural (losa, columna, zapata, …)
-  ubicacion_detalle String?
+  // Observaciones del pedido que escribe el Programador / Jefe de Planta / Admin.
+  // Se muestran en Despacho en vivo (antes del primer viaje del cliente) y al pie del
+  // bloque del cliente en el Programa DPCR-08. Antes este campo era "ubicacion_detalle".
+  observaciones String?
   // Volumen ORIGINAL programado (snapshot al crear/reprogramar). Sirve para medir
   // "adiciones de volumen" en el día: si lo despachado supera este valor, la
   // diferencia es adición al programa. Backfill = volumen_total_m3 al migrar.

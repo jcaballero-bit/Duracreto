@@ -27,6 +27,7 @@ import {
   PERMITIR_HORA_CARGA_MANUAL,
   SECUENCIA_ESTADOS_VIAJE,
 } from "./config";
+import { detectarChoques } from "./manual-horarios";
 import { planificarCombinacion, unidadLibreEnVentana } from "./planificador";
 import type { VentanaViaje } from "./planificador";
 import { analizarFrecuencia, type ResultadoFrecuencia } from "./frecuencia";
@@ -68,7 +69,7 @@ export interface EntradaPedido {
   frecuencia_entre_camiones_min?: number | null; // min entre llegadas de camión
   tiempo_transporte_min?: number | null; // override de transporte (ida); null = usa el del cliente
   elemento?: string | null;
-  ubicacion_detalle?: string | null;
+  observaciones?: string | null;
   creado_por: string;
 }
 
@@ -83,6 +84,13 @@ export interface ResultadoProgramacion {
   // (estaba ocupada), avisa cuál planta arrancó más tarde y por cuántos minutos. El
   // Programador decide si espera o continúa sin simultaneidad. null = arrancaron juntas.
   avisoSimultaneidad?: { plantaTarde: string; minutosDiferencia: number } | null;
+  /**
+   * Choques con clientes que YA estaban programados (misma boca de carga o mismo
+   * mixer), en texto legible. Se llenan al AGREGAR un cliente nuevo: el motor no
+   * mueve a nadie para acomodarlo, así que si se encima lo AVISA y el Programador
+   * decide (cambiar la hora, otra planta, o dejarlo así). Vacío = no choca con nadie.
+   */
+  avisosChoque?: string[];
 }
 
 export interface ViajeResumen {
@@ -256,6 +264,16 @@ async function candidatosDePlanta(
 export async function recalcularCascadaPlanta(
   plantaId: number,
   dia: Date,
+  /**
+   * MODO AISLADO. Si viene un id de pedido, la cascada agenda ÚNICAMENTE los viajes
+   * de ESE pedido y deja a todos los demás EXACTAMENTE como están (no reescribe sus
+   * horarios ni sus mixers). Los otros pedidos solo se leen para saber qué mixers ya
+   * están comprometidos, y así no doblar una unidad. Se usa al AGREGAR un cliente
+   * nuevo: meter un pedido no debe correrle la hora a los que ya estaban
+   * programados; si el nuevo se encima con otro, se AVISA (ver `choquesDePedido`) en
+   * vez de mover a nadie.
+   */
+  soloPedidoId?: number,
 ): Promise<number[]> {
   const planta = await prisma.plantas.findUniqueOrThrow({
     where: { id: plantaId },
@@ -270,11 +288,11 @@ export async function recalcularCascadaPlanta(
   // entre las plantas (evita que una acapare los mixers y la otra espere).
   const cambios =
     plantas.length <= 1
-      ? await cascadaDeUnaPlanta(plantas[0]?.id ?? plantaId, dia)
-      : await cascadaMultiPlanta(planta.plantel_id, dia);
+      ? await cascadaDeUnaPlanta(plantas[0]?.id ?? plantaId, dia, soloPedidoId)
+      : await cascadaMultiPlanta(planta.plantel_id, dia, soloPedidoId);
   // Post-paso TEMPORAL/REVERSIBLE: reubica los pedidos con hora de carga fijada por
   // el Admin. No modifica la cascada; con el flag apagado no hace nada.
-  await aplicarHoraCargaManual(planta.plantel_id, dia);
+  await aplicarHoraCargaManual(planta.plantel_id, dia, soloPedidoId);
   return cambios;
 }
 
@@ -286,11 +304,17 @@ export async function recalcularCascadaPlanta(
  * traslapes con otros pedidos (es justo lo que el Admin pidió permitir). No toca la
  * lógica de la cascada; si el flag está apagado, retorna de inmediato.
  */
-async function aplicarHoraCargaManual(plantelId: number, dia: Date): Promise<void> {
+async function aplicarHoraCargaManual(
+  plantelId: number,
+  dia: Date,
+  soloPedidoId?: number,
+): Promise<void> {
   if (!PERMITIR_HORA_CARGA_MANUAL) return;
   const pedidos = await prisma.pedidos.findMany({
     where: {
       plantel_id: plantelId,
+      // En modo aislado solo se reubica el pedido en curso (a los demás no se les toca).
+      ...(soloPedidoId != null ? { id: soloPedidoId } : {}),
       estado_pedido: "Activo",
       hora_carga_manual: { not: null },
       hora_solicitada: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
@@ -405,6 +429,7 @@ function elegirMixerDisponible(
 async function cascadaDeUnaPlanta(
   plantaId: number,
   dia: Date,
+  soloPedidoId?: number,
 ): Promise<number[]> {
   const planta = await prisma.plantas.findUniqueOrThrow({
     where: { id: plantaId },
@@ -430,7 +455,7 @@ async function cascadaDeUnaPlanta(
     metaTodos.set(m.id, m);
   }
 
-  const viajes = await prisma.viajes.findMany({
+  const todosLosViajes = await prisma.viajes.findMany({
     where: {
       estado: { not: "Cancelado" },
       // Los placeholders "Sin cubrir" no ocupan tiempo de planta.
@@ -444,6 +469,15 @@ async function cascadaDeUnaPlanta(
     },
     include: { pedido: { include: { cliente: true } } },
   });
+  // MODO AISLADO: la cola se reduce al pedido pedido; los demás quedan INTACTOS.
+  const viajes =
+    soloPedidoId == null
+      ? todosLosViajes
+      : todosLosViajes.filter((v) => v.pedido_id === soloPedidoId);
+  const ajenos =
+    soloPedidoId == null
+      ? []
+      : todosLosViajes.filter((v) => v.pedido_id !== soloPedidoId);
 
   // La cola de la planta se ordena por el ORDEN DE ATENCIÓN del pedido
   // (orden_dia), no por la hora solicitada. Desempate: hora solicitada, luego id.
@@ -480,6 +514,18 @@ async function cascadaDeUnaPlanta(
       if (fin == null) continue;
       dispEnMs.set(o.mixer_id, Math.max(dispEnMs.get(o.mixer_id) ?? 0, fin));
     }
+  }
+
+  // MODO AISLADO: los pedidos que ya estaban programados en esta planta no se tocan,
+  // pero SÍ ocupan sus mixers: se siembra el reloj de esas unidades para que el
+  // pedido nuevo no se lleve un mixer que está a medio ciclo. Su ocupación de la
+  // BAHÍA a propósito NO se siembra: si el nuevo cliente cae encima de otro, se
+  // avisa (`choquesDePedido`) en vez de correrle la hora a nadie.
+  for (const v of ajenos) {
+    if (v.mixer_id == null) continue;
+    const fin = (v.hora_regreso_planta ?? v.hora_fin_carga)?.getTime();
+    if (fin == null) continue;
+    dispEnMs.set(v.mixer_id, Math.max(dispEnMs.get(v.mixer_id) ?? 0, fin));
   }
 
   const cambios: number[] = [];
@@ -767,7 +813,11 @@ async function cascadaDeUnaPlanta(
  * vez de una planta completa y luego la otra). Los planteles de 1 planta siguen usando
  * `cascadaDeUnaPlanta` sin cambios.
  */
-async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[]> {
+async function cascadaMultiPlanta(
+  plantelId: number,
+  dia: Date,
+  soloPedidoId?: number,
+): Promise<number[]> {
   const plantel = await prisma.planteles.findUniqueOrThrow({
     where: { id: plantelId },
     select: { id: true, hub_id: true },
@@ -813,7 +863,7 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
   // Cola (ordenada por orden_dia) y estado por planta.
   const estados = await Promise.all(
     plantasDb.map(async (planta) => {
-      const viajes = await prisma.viajes.findMany({
+      const enLaPlanta = await prisma.viajes.findMany({
         where: {
           estado: { not: "Cancelado" },
           motivo_asignacion: { not: "Sin cubrir" },
@@ -822,6 +872,16 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
         },
         include: { pedido: { include: { cliente: true } } },
       });
+      // MODO AISLADO: la cola se reduce al pedido pedido (ver recalcularCascadaPlanta);
+      // los ajenos solo sirven para saber qué mixers están comprometidos.
+      const viajes =
+        soloPedidoId == null
+          ? enLaPlanta
+          : enLaPlanta.filter((v) => v.pedido_id === soloPedidoId);
+      const ajenos =
+        soloPedidoId == null
+          ? []
+          : enLaPlanta.filter((v) => v.pedido_id !== soloPedidoId);
       viajes.sort((a, b) => {
         const oa = a.pedido.orden_dia ?? Number.MAX_SAFE_INTEGER;
         const ob = b.pedido.orden_dia ?? Number.MAX_SAFE_INTEGER;
@@ -832,11 +892,22 @@ async function cascadaMultiPlanta(plantelId: number, dia: Date): Promise<number[
       const jornadaLlegadaMs = viajes.length
         ? Math.min(...viajes.map((v) => v.pedido.hora_solicitada.getTime()))
         : 0;
-      return { planta, viajes, ptr: 0, plantaLibreEn: null as Date | null, jornadaLlegadaMs };
+      return { planta, viajes, ajenos, ptr: 0, plantaLibreEn: null as Date | null, jornadaLlegadaMs };
     }),
   );
   type EstadoPlanta = (typeof estados)[number];
   type ViajeCola = EstadoPlanta["viajes"][number];
+
+  // MODO AISLADO: sembrar los mixers que ya usan los pedidos ajenos de estas plantas
+  // (no se doblan unidades), sin sembrar su ocupación de bahía (los choques se avisan).
+  for (const e of estados) {
+    for (const v of e.ajenos) {
+      if (v.mixer_id == null) continue;
+      const fin = (v.hora_regreso_planta ?? v.hora_fin_carga)?.getTime();
+      if (fin == null) continue;
+      dispEnMs.set(v.mixer_id, Math.max(dispEnMs.get(v.mixer_id) ?? 0, fin));
+    }
+  }
 
   const cambios: number[] = [];
   // LLEGADA del último viaje por pedido (cadencia de frecuencia sobre la llegada).
@@ -1680,12 +1751,13 @@ export async function programarPedido(
       frecuencia_entre_camiones_min: entrada.frecuencia_entre_camiones_min ?? null,
       tiempo_transporte_min: entrada.tiempo_transporte_min ?? null,
       elemento: entrada.elemento ?? null,
-      ubicacion_detalle: entrada.ubicacion_detalle ?? null,
+      observaciones: entrada.observaciones ?? null,
       creado_por: entrada.creado_por,
     },
   });
 
-  return asignarViajesDePedido(pedido.id, entrada);
+  // Cliente NUEVO: se agenda SOLO este pedido (los ya programados no se mueven).
+  return asignarViajesDePedido(pedido.id, entrada, true);
 }
 
 /**
@@ -1741,7 +1813,7 @@ export async function modificarPedido(
       frecuencia_entre_camiones_min: entrada.frecuencia_entre_camiones_min ?? null,
       tiempo_transporte_min: entrada.tiempo_transporte_min ?? null,
       elemento: entrada.elemento ?? null,
-      ubicacion_detalle: entrada.ubicacion_detalle ?? null,
+      observaciones: entrada.observaciones ?? null,
     },
   });
 
@@ -2549,6 +2621,13 @@ async function repartirPlantas(
 async function asignarViajesDePedido(
   pedidoId: number,
   entrada: EntradaPedido,
+  /**
+   * true = AGENDAR SOLO ESTE PEDIDO. Los clientes que ya estaban programados no se
+   * mueven ni un minuto; si el pedido nuevo se encima con alguno, se devuelve el
+   * choque en `avisosChoque` para que el Programador decida. Lo usa `programarPedido`
+   * (agregar un cliente nuevo). `modificarPedido` sigue recalculando la planta.
+   */
+  aislado = false,
 ): Promise<ResultadoProgramacion> {
   const plantel = await prisma.planteles.findUniqueOrThrow({
     where: { id: entrada.plantel_id },
@@ -2623,11 +2702,27 @@ async function asignarViajesDePedido(
     });
   }
 
-  // Cascada de horarios + asignación de mixers de toda la planta ese día.
+  // Cascada de horarios + asignación de mixers. En modo AISLADO solo se agenda este
+  // pedido: los que ya estaban programados conservan su horario exacto.
   const viajesRecalculados = await recalcularCascadaPlanta(
     entrada.planta_id,
     entrada.hora_solicitada,
+    aislado ? pedidoId : undefined,
   );
+
+  // Choques con clientes ya programados (misma boca de carga o mismo mixer). Solo se
+  // AVISA: no se corrige nada, porque corregir significaría mover a otro cliente.
+  const avisosChoque = aislado
+    ? await detectarChoques(
+        pedidoId,
+        (
+          await prisma.viajes.findMany({
+            where: { pedido_id: pedidoId, mixer_id: { not: null } },
+            select: { id: true },
+          })
+        ).map((v) => v.id),
+      )
+    : [];
 
   const volumenSinCubrir = await volumenSinCubrirDePedido(pedidoId);
   const sugerenciasRefuerzo =
@@ -2655,6 +2750,7 @@ async function asignarViajesDePedido(
     alertasMargen,
     viajesRecalculados,
     avisoSimultaneidad,
+    avisosChoque,
   };
 }
 
@@ -3726,6 +3822,14 @@ export async function editarVolumenViaje(
   viajeId: number,
   nuevoVolumen: number,
   usuario: string,
+  /**
+   * SOLO ADMINISTRADOR. Deja corregir el volumen aunque el viaje ya haya salido de
+   * planta (o esté Completado): sirve para dejar registrado lo que REALMENTE se
+   * cargó cuando el dato se capturó mal y el camión ya se fue. No mueve horarios ni
+   * la programación: solo el volumen del viaje. El tope físico del mixer se mantiene
+   * (una unidad no puede haber llevado más de lo que le cabe).
+   */
+  permitirTrasSalida = false,
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const viaje = await prisma.viajes.findUniqueOrThrow({
     where: { id: viajeId },
@@ -3733,10 +3837,14 @@ export async function editarVolumenViaje(
   });
 
   const editable =
-    (viaje.estado === "Programado" || viaje.estado === "En carga") &&
-    viaje.ts_fin_carga_real == null;
+    permitirTrasSalida ||
+    ((viaje.estado === "Programado" || viaje.estado === "En carga") &&
+      viaje.ts_fin_carga_real == null);
   if (!editable) {
     return { ok: false, mensaje: "No editable: la carga ya finalizó." };
+  }
+  if (viaje.estado === "Cancelado") {
+    return { ok: false, mensaje: "El viaje está cancelado." };
   }
   if (!(nuevoVolumen > 0)) {
     return { ok: false, mensaje: "El volumen debe ser mayor que 0." };
@@ -3765,7 +3873,11 @@ export async function editarVolumenViaje(
       campo_modificado: "volumen_asignado_m3",
       valor_anterior: String(anterior),
       valor_nuevo: String(nuevoVolumen),
-      motivo: "Ajuste de volumen de último momento (despacho)",
+      // El motivo distingue la correccion del Admin sobre un viaje ya despachado
+      // (dato historico) del ajuste normal antes de que termine la carga.
+      motivo: permitirTrasSalida
+        ? "Correccion de volumen por el Administrador (viaje ya despachado)"
+        : "Ajuste de volumen de último momento (despacho)",
     },
   });
   return { ok: true };

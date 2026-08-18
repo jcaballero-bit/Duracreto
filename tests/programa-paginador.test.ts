@@ -48,13 +48,19 @@ function pedido(cliente: string, filas: FilaSnap[], extra: Partial<PedidoSnap> =
     revenimiento: '5"',
     totalM3: filas.filter((f) => f.tipo === "viaje").length * 9,
     bombaCodigo: null,
+    observaciones: "",
     bombaColor: null,
     filas,
     ...extra,
   };
 }
 
-function snapshot(planteles: SnapshotPrograma["planteles"]): SnapshotPrograma {
+type PlantelPrueba = Omit<SnapshotPrograma["planteles"][number], "observaciones"> & {
+  observaciones?: string;
+};
+
+function snapshot(entrada: PlantelPrueba[]): SnapshotPrograma {
+  const planteles = entrada.map((pl) => ({ observaciones: "", ...pl }));
   return {
     formato: 1,
     fecha: "2026-08-14",

@@ -287,6 +287,16 @@ export default async function DespachoPage({
     arr.forEach((x, i) => numViajeCliente.set(x.viajeId, { num: i + 1, total: arr.length }));
   }
 
+  // Nota operativa de cada plantel ese dia (la deja la Programacion; vacia = nada).
+  const obsPlantel = new Map(
+    (
+      await prisma.observaciones_plantel.findMany({
+        where: { fecha: ini },
+        select: { plantel_id: true, texto: true },
+      })
+    ).map((o) => [o.plantel_id, o.texto]),
+  );
+
   // Agrupar viajes (con mixer) por plantel.
   const gruposMap = new Map<number, GrupoDespacho>();
   const filasTimeline = new Map<number, FilaMixer>();
@@ -337,10 +347,16 @@ export default async function DespachoPage({
         p.tipo_descarga !== "Canal directo" && p.bomba
           ? p.bomba.identificador
           : p.tipo_descarga;
-      // Volumen editable solo antes de que la carga finalice físicamente.
-      const volumenEditable =
+      // Volumen editable solo antes de que la carga finalice físicamente… salvo para
+      // el Administrador, que puede corregirlo aunque el camión ya haya salido (para
+      // dejar registrado lo que realmente se cargó). El servidor aplica la misma regla.
+      const editableNormal =
         (v.estado === "Programado" || v.estado === "En carga") &&
         v.ts_fin_carga_real == null;
+      const volumenEditable = alcance.esAdmin || editableNormal;
+      // El Admin está corrigiendo un viaje que ya salió: la interfaz lo dice, para
+      // que quede claro que es una corrección de registro y no una programación.
+      const volumenCorreccionAdmin = volumenEditable && !editableNormal;
 
       const numInfo = numViajeCliente.get(v.id);
       const fila: ViajeDespacho = {
@@ -363,6 +379,7 @@ export default async function DespachoPage({
         hieloTxt: textoHielo(p.sacos_hielo_por_m3),
         volumen: v.volumen_asignado_m3,
         volumenEditable,
+        volumenCorreccionAdmin,
         volumenBloqueoMsg: volumenEditable ? null : "No editable: carga ya finalizada",
         mixerId: v.mixer.id,
         mixerLabel: v.mixer.identificador ?? `#${v.mixer.id}`,
@@ -395,10 +412,16 @@ export default async function DespachoPage({
         esUltimoDelPedido: v.id === ultimoViajePedidoId,
         generalCalidad,
         m3SugeridoCalidad,
+        observaciones: p.observaciones ?? "",
       };
       const g =
         gruposMap.get(p.plantel_id) ??
-        { plantelNombre: p.plantel.nombre, zona: p.plantel.zona, viajes: [] };
+        {
+          plantelNombre: p.plantel.nombre,
+          zona: p.plantel.zona,
+          observaciones: obsPlantel.get(p.plantel_id) ?? "",
+          viajes: [],
+        };
       g.viajes.push(fila);
       gruposMap.set(p.plantel_id, g);
 
@@ -428,9 +451,18 @@ export default async function DespachoPage({
     compararPlanteles(a.plantelNombre, b.plantelNombre),
   );
   for (const g of grupos) {
-    // Orden FIJO por hora de carga programada. Los viajes NO se reordenan al
-    // despacharse (antes los ya salidos bajaban al final; ya no).
-    g.viajes.sort((a, b) => a.ordenCargaMs - b.ordenCargaMs);
+    // Orden AGRUPADO POR CLIENTE (petición del despachador): antes las tarjetas iban
+    // en fila cronológica, así que los viajes de un cliente quedaban intercalados
+    // entre los de otro y costaba encontrarlos. Ahora todos los viajes de un mismo
+    // cliente van juntos, con los clientes en orden DESCENDENTE por nombre, y dentro
+    // de cada cliente se conserva el orden PROGRAMADO de carga (los viajes no se
+    // reordenan al despacharse).
+    g.viajes.sort(
+      (a, b) =>
+        b.cliente.localeCompare(a.cliente, "es", { sensitivity: "base" }) ||
+        a.ordenCargaMs - b.ordenCargaMs ||
+        a.id - b.id,
+    );
   }
 
   // Clientes en ATENCIÓN ahora: pedidos con al menos un viaje iniciado (no

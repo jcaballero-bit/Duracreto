@@ -122,6 +122,19 @@ const s = StyleSheet.create({
     paddingHorizontal: 6,
   },
   tituloPlantelTexto: { fontFamily: "Helvetica-Bold", fontSize: 9 },
+  // Nota operativa del plantel, a la DERECHA de su nombre ("Enviar 5 mixer a Choloma").
+  notaPlantelTexto: { flexGrow: 1, textAlign: "right", fontSize: 7.5, color: "#92400e" },
+  // Fila de observaciones del cliente: va pegada al pie de su bloque.
+  observacionFila: {
+    backgroundColor: "#fffbeb",
+    borderRightWidth: 0.5,
+    borderBottomWidth: 0.5,
+    borderColor: GRIS_SUAVE,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    justifyContent: "center",
+  },
+  observacionTexto: { fontSize: 7.5, color: "#78350f", lineHeight: 1.25 },
   banda: {
     backgroundColor: "#f1f5f9",
     borderRightWidth: 0.5,
@@ -423,12 +436,27 @@ function renderItem(item: ItemPagina, i: number): ReactElement | null {
       return (
         <View key={i} style={[s.tablaBorde, s.tituloPlantel, { height: item.alto, width: ANCHO_UTIL }]}>
           <Text style={s.tituloPlantelTexto}>{item.nombre}</Text>
+          {!!item.observaciones && (
+            <Text style={s.notaPlantelTexto}>{item.observaciones}</Text>
+          )}
         </View>
       );
     case "sinPedidos":
       return (
         <View key={i} style={[s.tablaBorde, s.celda, { height: item.alto, width: ANCHO_UTIL, justifyContent: "center" }]}>
           <Text style={{ textAlign: "center", color: "#94a3b8" }}>Sin pedidos programados.</Text>
+        </View>
+      );
+    case "observacionCliente":
+      return (
+        <View
+          key={i}
+          style={[s.tablaBorde, s.observacionFila, { height: item.alto, width: ANCHO_UTIL }]}
+        >
+          <Text style={s.observacionTexto}>
+            <Text style={s.negrita}>Observaciones: </Text>
+            {item.texto}
+          </Text>
         </View>
       );
     case "bloqueCliente":

@@ -79,6 +79,8 @@ export interface PedidoSnap {
   totalM3: number;
   bombaCodigo: string | null;
   bombaColor: string | null;
+  /** Observaciones del pedido; van al PIE del bloque del cliente. Vacío = no se imprime. */
+  observaciones: string;
   filas: FilaSnap[];
 }
 
@@ -86,6 +88,8 @@ export interface PlantelSnap {
   id: number;
   nombre: string;
   totalM3: number;
+  /** Nota del plantel para el día; va junto al nombre. Vacío = no se imprime. */
+  observaciones: string;
   pedidos: PedidoSnap[];
 }
 
@@ -185,7 +189,7 @@ export async function construirSnapshot({
   const fin = new Date(ini.getFullYear(), ini.getMonth(), ini.getDate() + 1);
   const cierrePrograma = cierreProgramaDe(ini);
 
-  const [planteles, pedidos] = await Promise.all([
+  const [planteles, pedidos, obsPlantelRaw] = await Promise.all([
     prisma.planteles.findMany({
       where: { zona },
       include: { plantas: { select: { id: true } } },
@@ -218,7 +222,13 @@ export async function construirSnapshot({
       },
       orderBy: [{ orden_dia: "asc" }, { hora_solicitada: "asc" }],
     }),
+    // Nota operativa de cada plantel para ese día (vacía = no se imprime).
+    prisma.observaciones_plantel.findMany({
+      where: { fecha: ini },
+      select: { plantel_id: true, texto: true },
+    }),
   ]);
+  const obsPlantel = new Map(obsPlantelRaw.map((o) => [o.plantel_id, o.texto]));
 
   // Color por bomba (una tonalidad por bomba en toda la zona/día).
   const colorBomba = new Map<number, string>();
@@ -245,6 +255,7 @@ export async function construirSnapshot({
       id: pl.id,
       nombre: pl.nombre,
       totalM3,
+      observaciones: obsPlantel.get(pl.id) ?? "",
       pedidos: ordenados.map((p) => pedidoASnap(p, mostrarPlanta, colorBomba, codigoBomba)),
     };
   });
@@ -361,6 +372,7 @@ function pedidoASnap(
     totalM3: p.volumen_programado ?? p.volumen_total_m3,
     bombaCodigo: p.bomba_id != null ? (codigoBomba.get(p.bomba_id) ?? null) : null,
     bombaColor: p.bomba_id != null ? (colorBomba.get(p.bomba_id) ?? null) : null,
+    observaciones: p.observaciones ?? "",
     filas,
   };
 }

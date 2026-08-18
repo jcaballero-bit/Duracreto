@@ -51,6 +51,10 @@ export const HORA_APERTURA_POR_DEFECTO = 7;
  * programada: si el recálculo retrasa la llegada esperada de algún cliente ya
  * programado MÁS que esto, se pide confirmación antes de guardar. Configurable.
  */
+// NOTA: ya no se aplica al crear un pedido. Agregar un cliente nuevo dejó de
+// reprogramar a los que ya estaban (el motor agenda solo el pedido nuevo y AVISA si
+// se encima), así que no hay retraso que medir ni confirmación que pedir. Se conserva
+// como parámetro afinable por si vuelve a hacer falta medir impacto en otro flujo.
 export const UMBRAL_IMPACTO_INSERCION_MIN = 15;
 
 /**

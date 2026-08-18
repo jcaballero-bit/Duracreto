@@ -382,7 +382,7 @@ export default async function ProgramacionPage({
         frecuencia_entre_camiones_min: p.frecuencia_entre_camiones_min,
         tiempo_transporte_min: p.tiempo_transporte_min,
         elemento: p.elemento,
-        ubicacion_detalle: p.ubicacion_detalle,
+        observaciones: p.observaciones,
       },
     };
 
@@ -693,6 +693,15 @@ export default async function ProgramacionPage({
       planteles.flatMap((pl) => pl.plantas.map((pt) => pt.id)),
       ini,
     );
+    // Nota operativa de cada plantel ese día (vacía = no se muestra en ningún lado).
+    const obsPlantel = new Map(
+      (
+        await prisma.observaciones_plantel.findMany({
+          where: { fecha: ini },
+          select: { plantel_id: true, texto: true },
+        })
+      ).map((o) => [o.plantel_id, o.texto]),
+    );
     const filasPorPlantel = new Map<number, PlantelManual["filas"]>();
     for (const p of pedidos) {
       for (const v of p.viajes) {
@@ -747,6 +756,7 @@ export default async function ProgramacionPage({
           plantelId: pl.id,
           nombre: pl.nombre,
           zona: pl.zona,
+          observaciones: obsPlantel.get(pl.id) ?? "",
           plantas: pl.plantas.map((pt) => {
             const ap = aperturas.get(pt.id);
             return {

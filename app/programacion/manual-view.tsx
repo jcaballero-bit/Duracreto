@@ -11,7 +11,7 @@
 // generar N viajes en serie, y validación de traslape de CARGA en planta.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ChevronRight, Lock, LockOpen, Plus, Redo2, Sunrise, Trash2, Truck, Undo2, Wand2, X } from "lucide-react";
+import { AlertTriangle, ChevronRight, Lock, LockOpen, MessageSquare, Plus, Redo2, Sunrise, Trash2, Truck, Undo2, Wand2, X } from "lucide-react";
 import {
   agregarViajeManualAction,
   ajustarLlegadaManualAction,
@@ -20,6 +20,7 @@ import {
   fijarAperturaPlantaAction,
   fijarHoraViajeAction,
   generarViajesEnSerieAction,
+  guardarObservacionPlantelAction,
 } from "../actions";
 import { inicioCargaDesdeLlegada, tiemposDeViaje } from "@/lib/motor/tiempos";
 import {
@@ -90,6 +91,8 @@ export interface PlantelManual {
   plantelId: number;
   nombre: string;
   zona: string;
+  /** Nota operativa del plantel para ese dia (vacia = no se muestra en ningun lado). */
+  observaciones: string;
   plantas: PlantaManual[];
   mixers: MixerOpcionManual[]; // seleccionables (Disponibles, sin mantenimiento)
   mixersPanel: MixerPanel[]; // TODOS los del plantel+hub, para el panel lateral
@@ -687,9 +690,16 @@ function PlantelManualBloque({
   return (
     <div className="rounded-xl border border-border bg-surface p-4">
       <div className="mb-3 flex items-center justify-between">
-        <div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <span className="text-lg font-semibold text-ink">{plantel.nombre}</span>{" "}
           <span className="text-sm text-muted">({plantel.zona})</span>
+          <ObservacionPlantel
+            plantelId={plantel.plantelId}
+            fecha={fecha}
+            texto={plantel.observaciones}
+            puedeEditar={puedeEditar}
+            ocupado={ocupado}
+          />
         </div>
         {puedeEditar && (
           <button
@@ -1085,6 +1095,106 @@ function PlantelManualBloque({
  * disponible, y cuántos viajes ya tiene asignados hoy. Ordena por "quién queda libre
  * más pronto" para ubicar de inmediato con qué mixer contar para el siguiente hueco.
  */
+/**
+ * Nota operativa del PLANTEL para el día (p. ej. "Enviar 5 mixers a Choloma"). La
+ * escriben el Programador / Jefe de Planta / Admin aquí; se muestra al lado del nombre
+ * del plantel en Despacho en vivo y en el Programa DPCR-08. Vacía = no se muestra nada
+ * en ninguna pantalla.
+ */
+function ObservacionPlantel({
+  plantelId,
+  fecha,
+  texto,
+  puedeEditar,
+  ocupado,
+}: {
+  plantelId: number;
+  fecha: string;
+  texto: string;
+  puedeEditar: boolean;
+  ocupado: boolean;
+}) {
+  const router = useRouter();
+  const [editando, setEditando] = useState(false);
+  const [valor, setValor] = useState(texto);
+  const [guardando, setGuardando] = useState(false);
+
+  const guardar = async () => {
+    setGuardando(true);
+    try {
+      const r = await guardarObservacionPlantelAction(plantelId, fecha, valor);
+      if (!r.ok) alert(r.mensaje ?? "No se pudo guardar la observación.");
+      else {
+        setEditando(false);
+        router.refresh();
+      }
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (!puedeEditar) {
+    // Sin permiso de edición: solo se muestra si hay algo escrito.
+    return texto ? (
+      <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-xs text-amber-900">
+        <MessageSquare size={12} /> {texto}
+      </span>
+    ) : null;
+  }
+
+  if (!editando) {
+    return (
+      <button
+        onClick={() => {
+          setValor(texto);
+          setEditando(true);
+        }}
+        disabled={ocupado}
+        title="Nota del plantel para este día (se ve en Despacho y en el DPCR-08)"
+        className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs disabled:opacity-40 ${
+          texto
+            ? "bg-amber-50 text-amber-900 hover:bg-amber-100"
+            : "border border-dashed border-border text-muted hover:text-accent"
+        }`}
+      >
+        <MessageSquare size={12} /> {texto || "Observaciones"}
+      </button>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input
+        type="text"
+        value={valor}
+        autoFocus
+        disabled={guardando}
+        placeholder="Ej. enviar 5 mixers a Choloma"
+        onChange={(e) => setValor(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void guardar();
+          if (e.key === "Escape") setEditando(false);
+        }}
+        className="w-64 rounded border border-border bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent"
+      />
+      <button
+        onClick={() => void guardar()}
+        disabled={guardando}
+        className="rounded-lg bg-accent px-2 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+      >
+        Guardar
+      </button>
+      <button
+        onClick={() => setEditando(false)}
+        className="rounded p-1 text-muted hover:bg-content"
+        aria-label="Cancelar"
+      >
+        <X size={13} />
+      </button>
+    </span>
+  );
+}
+
 /**
  * Hora de APERTURA de la planta para ESTE día. Por defecto rige el valor de
  * Administración (7:00 a.m.); aquí el Programador puede adelantarla cuando la

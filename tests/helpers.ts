@@ -19,6 +19,10 @@ export async function limpiarBD() {
   await prisma.disenos_mezcla.deleteMany();
   await prisma.planteles.updateMany({ data: { hub_id: null } });
   await prisma.planteles.deleteMany();
+  // Ajustes del motor (bloqueo horario, margen de hueco, apertura…): son globales y
+  // no cuelgan de ningún plantel, así que si un archivo de pruebas los deja puestos
+  // se filtran al siguiente. Se limpian para que cada prueba arranque en el default.
+  await prisma.configuracion.deleteMany();
 }
 
 export interface OpcionesPlantel {

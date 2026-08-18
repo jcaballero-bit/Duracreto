@@ -9,7 +9,6 @@ import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
 import { validarVolumenPorRol } from "@/lib/volumen";
 import {
   PERMITIR_HORA_CARGA_MANUAL,
-  UMBRAL_IMPACTO_INSERCION_MIN,
   cierreProgramaDe,
 } from "@/lib/motor/config";
 import { estadoBloqueoPrograma, leerConfigBloqueo, textoHoraCorte } from "@/lib/programacion/bloqueo";
@@ -33,7 +32,6 @@ import {
   corregirHoraReal,
   editarVolumenViaje,
   huecosDePlanta,
-  llegadasPorPlanta,
   mantenimientoDeUnidad,
   modificarPedido,
   organizarDia,
@@ -319,8 +317,9 @@ async function viajeEsDeLaboratorista(viajeId: number, userId: string): Promise<
 export interface EstadoFormulario {
   ok: boolean;
   mensaje?: string;
-  // El pedido retrasaría a un cliente ya programado más del umbral: se revirtió y
-  // se pide confirmación explícita para continuar (reenviar con confirmar_impacto).
+  // Reservado: ya no lo usa `crearPedidoAction` (agregar un cliente nuevo ya no
+  // reprograma a nadie, así que no hay nada que confirmar; los choques se avisan
+  // DESPUÉS, en `resultado.avisosChoque`).
   requiereConfirmacion?: boolean;
   resultado?: {
     pedidoId: number;
@@ -355,6 +354,10 @@ export interface EstadoFormulario {
     // Carga simultánea: si una planta no pudo arrancar a la vez (ocupada), avisa
     // cuál y por cuántos minutos. null/undefined = arrancaron juntas o no aplica.
     avisoSimultaneidad?: { plantaTarde: string; minutosDiferencia: number } | null;
+    // Choques con clientes ya programados (misma boca de carga o mismo mixer). El
+    // motor NO mueve a nadie para acomodar al cliente nuevo: avisa y el Programador
+    // decide. Vacío = el pedido entró sin encimarse con nadie.
+    avisosChoque?: string[];
   };
 }
 
@@ -409,7 +412,7 @@ function construirEntrada(
       tiempo_transporte_min:
         Number(formData.get("tiempo_transporte_min")) || null,
       elemento: String(formData.get("elemento") || "") || null,
-      ubicacion_detalle: String(formData.get("ubicacion_detalle") || "") || null,
+      observaciones: String(formData.get("observaciones") || "") || null,
       creado_por: creadoPor,
     },
   };
@@ -448,6 +451,7 @@ function mapResultado(r: ResultadoProgramacion): EstadoFormulario["resultado"] {
     })),
     recalculados: r.viajesRecalculados,
     avisoSimultaneidad: r.avisoSimultaneidad ?? null,
+    avisosChoque: r.avisosChoque ?? [],
   };
 }
 
@@ -481,45 +485,11 @@ export async function crearPedidoAction(
     const errBomba = await validarBombaMantenimiento(entrada!);
     if (errBomba) return { ok: false, mensaje: errBomba };
 
-    // Impacto sobre la cola ya programada: snapshot de las llegadas ANTES de insertar.
-    const llegadasAntes = await llegadasPorPlanta(
-      entrada!.planta_id,
-      entrada!.hora_solicitada,
-    );
-
+    // Agregar un cliente NUEVO no reprograma a nadie: `programarPedido` agenda solo
+    // este pedido y deja intactos los que ya estaban (ver el modo aislado de
+    // `recalcularCascadaPlanta`). Si el nuevo se encima con alguno, el motor lo
+    // reporta en `avisosChoque` y el Programador decide qué hacer.
     const r = await programarPedido(entrada!);
-
-    // Si insertar este pedido retrasa la LLEGADA esperada de algún cliente ya
-    // programado más que el umbral, se REVIERTE y se pide confirmación explícita.
-    // Los pedidos con hora fija (hora_bloqueada) no se mueven, así que no disparan
-    // la advertencia. El Programador puede reenviar con confirmar_impacto=1.
-    const confirmarImpacto = !!formData.get("confirmar_impacto");
-    if (!confirmarImpacto) {
-      const llegadasDespues = await llegadasPorPlanta(
-        entrada!.planta_id,
-        entrada!.hora_solicitada,
-      );
-      let peor: { cliente: string; delta: number } | null = null;
-      for (const [pid, antes] of llegadasAntes) {
-        const despues = llegadasDespues.get(pid);
-        if (!despues) continue;
-        const delta = Math.round((despues.ms - antes.ms) / 60000);
-        if (delta > UMBRAL_IMPACTO_INSERCION_MIN && (!peor || delta > peor.delta)) {
-          peor = { cliente: antes.cliente, delta };
-        }
-      }
-      if (peor) {
-        // Revertir la inserción (aún no se confirma) y restaurar la cascada.
-        await prisma.viajes.deleteMany({ where: { pedido_id: r.pedidoId } });
-        await prisma.pedidos.delete({ where: { id: r.pedidoId } });
-        await recalcularCascadaPlanta(entrada!.planta_id, entrada!.hora_solicitada);
-        return {
-          ok: false,
-          requiereConfirmacion: true,
-          mensaje: `Insertar este pedido va a retrasar la llegada a ${peor.cliente} en aproximadamente ${peor.delta} minutos. ¿Deseas continuar?`,
-        };
-      }
-    }
 
     // Si el pedido nació de una solicitud anticipada (proyección semanal),
     // vincularla y marcarla como Programado (deja de estar Pendiente).
@@ -1083,6 +1053,60 @@ export async function fijarAperturaPlantaAction(
   return { ok: true };
 }
 
+/**
+ * Server action: guarda (o borra) la OBSERVACIÓN de un plantel para un día — la nota
+ * operativa que el Programador / Jefe de Planta / Admin dejan junto al plantel en la
+ * programación manual (p. ej. "Enviar 5 mixers a Choloma"). Se muestra al lado del
+ * nombre del plantel en Despacho en vivo y en el Programa DPCR-08. Texto vacío = se
+ * borra y no se muestra nada.
+ */
+export async function guardarObservacionPlantelAction(
+  plantelId: number,
+  fechaISO: string, // "YYYY-MM-DD"
+  texto: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido("Observacion del plantel");
+  if (!op.ok) return op;
+  const zona = await autorizarZonaPlantel(plantelId);
+  if (!zona.ok) return zona;
+  const fecha = parseDateTimeLocal(`${fechaISO}T00:00`);
+  if (!fecha) return { ok: false, mensaje: "Fecha inválida." };
+  const permisoFecha = await autorizarFecha(fecha);
+  if (!permisoFecha.ok) return permisoFecha;
+
+  const sesion = await auth();
+  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+  const dia = inicioDelDia(fecha);
+  const limpio = texto.trim();
+  const plantel = await prisma.planteles.findUnique({
+    where: { id: plantelId },
+    select: { nombre: true },
+  });
+
+  if (limpio === "") {
+    await prisma.observaciones_plantel.deleteMany({ where: { plantel_id: plantelId, fecha: dia } });
+  } else {
+    await prisma.observaciones_plantel.upsert({
+      where: { plantel_id_fecha: { plantel_id: plantelId, fecha: dia } },
+      update: { texto: limpio, creado_por: quien },
+      create: { plantel_id: plantelId, fecha: dia, texto: limpio, creado_por: quien },
+    });
+  }
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "observaciones_plantel",
+      registro_id: plantelId,
+      usuario: quien,
+      campo_modificado: "texto",
+      valor_anterior: null,
+      valor_nuevo: limpio || null,
+      motivo: `Observacion de ${plantel?.nombre ?? "plantel"} para el ${fechaISO}`,
+    },
+  });
+  revalidarPantallas();
+  return { ok: true };
+}
+
 /** Server action: reasignación manual de mixer. */
 export async function reasignarMixerAction(
   viajeId: number,
@@ -1240,7 +1264,16 @@ export async function editarVolumenAction(
   if (!ed.ok) return ed;
   const vol = await autorizarVolumen(nuevoVolumen);
   if (!vol.ok) return vol;
-  const res = await editarVolumenViaje(viajeId, nuevoVolumen, "despachador");
+  // El Administrador puede corregir el volumen aunque el camion ya haya salido
+  // (dato historico mal capturado); los demas roles, solo hasta que termina la carga.
+  const alcance = await alcanceActual();
+  const esAdmin = alcance?.esAdmin ?? false;
+  const res = await editarVolumenViaje(
+    viajeId,
+    nuevoVolumen,
+    (await auth())?.user?.name ?? (esAdmin ? "administrador" : "despachador"),
+    esAdmin,
+  );
   if (res.ok) revalidarPantallas();
   return res;
 }

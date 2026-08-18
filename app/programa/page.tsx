@@ -6,6 +6,7 @@
 // mismo contenido del snapshot en una tabla continua, sin cortes de página ni CSS de
 // impresión (por eso aquí sí se puede usar un `rowSpan` grande por cliente).
 
+import { Fragment } from "react";
 import { auth } from "@/auth";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { filtroPorRol, zonasParaPrograma } from "@/lib/programa/acceso";
@@ -184,7 +185,15 @@ function FilasPlantel({ plantel }: { plantel: SnapshotPrograma["planteles"][numb
     <>
       <tr className="bg-slate-100">
         <td colSpan={10} className="border border-slate-300 px-3 py-1.5 text-sm font-bold text-slate-800">
-          {plantel.nombre}
+          <span className="flex items-center gap-3">
+            {plantel.nombre}
+            {/* Nota del plantel a la DERECHA del nombre; vacía = no se muestra. */}
+            {!!plantel.observaciones && (
+              <span className="ml-auto text-[11px] font-medium text-amber-800">
+                {plantel.observaciones}
+              </span>
+            )}
+          </span>
         </td>
       </tr>
 
@@ -195,7 +204,29 @@ function FilasPlantel({ plantel }: { plantel: SnapshotPrograma["planteles"][numb
           </td>
         </tr>
       ) : (
-        plantel.pedidos.map((p, i) => <FilasPedido key={`${p.id}-${i}`} pedido={p} />)
+        plantel.pedidos.map((p, i) => (
+          <Fragment key={`${p.id}-${i}`}>
+            <FilasPedido pedido={p} />
+            {/* Observaciones del cliente: pegadas al pie de su bloque. */}
+            {!!p.observaciones && (
+              <tr>
+                <td
+                  colSpan={10}
+                  className="border border-slate-300 bg-amber-50 px-2 py-1 text-left text-[11px] text-amber-900"
+                >
+                  <span className="font-semibold">Observaciones: </span>
+                  {p.observaciones}
+                </td>
+              </tr>
+            )}
+            {/* Fila en blanco entre un cliente y otro (no tras el último). */}
+            {i < plantel.pedidos.length - 1 && (
+              <tr>
+                <td colSpan={10} className="h-2" />
+              </tr>
+            )}
+          </Fragment>
+        ))
       )}
 
       <tr className="bg-slate-100 font-bold text-slate-800">

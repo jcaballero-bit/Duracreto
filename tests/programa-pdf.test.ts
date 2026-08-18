@@ -62,7 +62,7 @@ function viaje(n: number, motorista = "Jose Antonio Hernandez Martinez"): FilaSn
   };
 }
 
-function pedido(cliente: string, filas: FilaSnap[]): PedidoSnap {
+function pedido(cliente: string, filas: FilaSnap[], observaciones = ""): PedidoSnap {
   return {
     id: 1,
     cliente,
@@ -77,6 +77,7 @@ function pedido(cliente: string, filas: FilaSnap[]): PedidoSnap {
     totalM3: filas.filter((f) => f.tipo === "viaje").length * 11,
     bombaCodigo: "SM-B2",
     bombaColor: "#1F4E79",
+    observaciones,
     filas,
   };
 }
@@ -96,6 +97,7 @@ function snapshotDePrueba(): SnapshotPrograma {
         id: 1,
         nombre: "Santa Marta",
         totalM3: 1000,
+        observaciones: "",
         pedidos: [
           pedido("PAVIMENTOS DEL CARIBE", Array.from({ length: 60 }, (_, i) => viaje(i + 1))),
           pedido("CONSTRUCTORA DEL VALLE", [
@@ -105,12 +107,22 @@ function snapshotDePrueba(): SnapshotPrograma {
             ...Array.from({ length: 6 }, (_, i) => viaje(i + 7)),
           ]),
           pedido("W&M INGENIEROS", [viaje(1), viaje(2), viaje(3)]),
-          pedido("SERPIC", [viaje(1)]),
+          pedido(
+            "SERPIC",
+            [viaje(1)],
+            "Entrar por el porton trasero; el cliente pide llamar 20 minutos antes de llegar.",
+          ),
         ],
       },
-      { id: 2, nombre: "Choloma", totalM3: 80, pedidos: [pedido("CARGO EXPRESO", Array.from({ length: 9 }, (_, i) => viaje(i + 1)))] },
-      { id: 3, nombre: "Villanueva", totalM3: 0, pedidos: [] },
-      { id: 4, nombre: "La Ceiba", totalM3: 0, pedidos: [] },
+      {
+        id: 2,
+        nombre: "Choloma",
+        totalM3: 80,
+        observaciones: "Enviar 5 mixer a Choloma",
+        pedidos: [pedido("CARGO EXPRESO", Array.from({ length: 9 }, (_, i) => viaje(i + 1)))],
+      },
+      { id: 3, nombre: "Villanueva", totalM3: 0, observaciones: "", pedidos: [] },
+      { id: 4, nombre: "La Ceiba", totalM3: 0, observaciones: "", pedidos: [] },
     ],
     totalZona: 1080,
   };
@@ -161,5 +173,35 @@ describe("PDF del Programa DPCR-08", () => {
     // recorte con puntos suspensivos (0x85 en WinAnsi, o el caracter Unicode).
     const ELIPSIS = new RegExp(String.fromCharCode(0x85) + "|" + String.fromCharCode(0x2026));
     expect(texto).not.toMatch(ELIPSIS);
+  }, 60_000);
+
+  it("imprime las observaciones: la del plantel junto a su nombre y la del cliente al pie de su bloque", async () => {
+    const snap = snapshotDePrueba();
+    const paginas = paginarPrograma(snap);
+    const buf = Buffer.from(await renderToBuffer(ProgramaPdf({ snap, paginas })));
+    const plano = textoDelPdf(buf).split(String.fromCharCode(10)).join("");
+
+    // Nota del plantel (va a la derecha del nombre, en la misma franja).
+    expect(plano).toContain("Enviar 5 mixer a Choloma");
+    // Observaciones del cliente, con su rótulo.
+    expect(plano).toContain("Observaciones:");
+    expect(plano).toContain("el cliente pide llamar 20 minutos antes de llegar");
+
+    // Solo el cliente que tiene observaciones las lleva: una sola fila en todo el
+    // documento (los demás pedidos no imprimen nada).
+    const conObs = snap.planteles.flatMap((pl) => pl.pedidos).filter((p) => p.observaciones);
+    expect(conObs).toHaveLength(1);
+    const filasObs = paginas
+      .flatMap((pg) => pg.items)
+      .filter((it) => it.tipo === "observacionCliente");
+    expect(filasObs).toHaveLength(1);
+
+    // Va INMEDIATAMENTE después del último sub-bloque de ese cliente (antes de la
+    // línea en blanco que separa un cliente del siguiente).
+    const items = paginas.flatMap((pg) => pg.items);
+    const idxObs = items.findIndex((it) => it.tipo === "observacionCliente");
+    const previo = items[idxObs - 1];
+    expect(previo.tipo).toBe("bloqueCliente");
+    expect(previo.tipo === "bloqueCliente" && previo.pedido.cliente).toBe("SERPIC");
   }, 60_000);
 });

@@ -66,6 +66,8 @@ export interface Geometria {
   altoTituloPlantel: number;
   altoTotalPlantel: number;
   altoSinPedidos: number;
+  /** Alto de UNA línea de la fila de observaciones del cliente. */
+  altoLineaObs: number;
   altoSeparadorCliente: number;
   altoSeparadorPlantel: number;
   altoTotalZona: number;
@@ -73,6 +75,8 @@ export interface Geometria {
   charsMotorista: number;
   charsCliente: number;
   charsTipo: number;
+  /** Caracteres por línea de una fila que ocupa todo el ancho (observaciones). */
+  charsAncho: number;
 }
 
 export const GEOMETRIA: Geometria = {
@@ -83,6 +87,7 @@ export const GEOMETRIA: Geometria = {
   altoTituloPlantel: 18,
   altoTotalPlantel: 16,
   altoSinPedidos: 16,
+  altoLineaObs: 10,
   altoSeparadorCliente: 6,
   altoSeparadorPlantel: 10,
   altoTotalZona: 22,
@@ -92,6 +97,8 @@ export const GEOMETRIA: Geometria = {
   charsMotorista: 18,
   charsCliente: 25,
   charsTipo: 20,
+  // Fila a todo el ancho (576 pt menos el sangrado del rótulo) a 7.5 pt.
+  charsAncho: 128,
 };
 
 // ── Qué puede ir en una hoja ─────────────────────────────────────────────────
@@ -113,7 +120,8 @@ export interface BloqueCliente {
 }
 
 export type ItemPagina =
-  | { tipo: "tituloPlantel"; nombre: string; alto: number }
+  | { tipo: "tituloPlantel"; nombre: string; observaciones: string; alto: number }
+  | { tipo: "observacionCliente"; cliente: string; texto: string; alto: number }
   | { tipo: "sinPedidos"; alto: number }
   | BloqueCliente
   | { tipo: "totalPlantel"; nombre: string; totalM3: number; alto: number }
@@ -177,6 +185,12 @@ export function altoCeldaTipo(
   return lineas * g.altoLinea + g.padCelda;
 }
 
+/** Alto de la fila de observaciones de un cliente (crece con el largo del texto). */
+export function altoObservacion(texto: string, g: Geometria = GEOMETRIA): number {
+  const lineas = Math.max(1, lineasDeTexto(texto, g.charsAncho));
+  return lineas * g.altoLineaObs + g.padCelda;
+}
+
 /**
  * Alto de un sub-bloque: el MÁXIMO entre la suma de sus filas y lo que necesitan sus
  * celdas combinadas. Un cliente de un solo viaje ocupa el alto de su celda de datos,
@@ -233,7 +247,12 @@ export function paginarPrograma(
   snap.planteles.forEach((pl, plIdx) => {
     // El título del plantel necesita espacio para él MÁS algo de contenido debajo.
     asegurar(g.altoTituloPlantel + g.altoSinPedidos);
-    agregar({ tipo: "tituloPlantel", nombre: pl.nombre, alto: g.altoTituloPlantel });
+    agregar({
+      tipo: "tituloPlantel",
+      nombre: pl.nombre,
+      observaciones: pl.observaciones,
+      alto: g.altoTituloPlantel,
+    });
 
     if (pl.pedidos.length === 0) {
       // Plantel sin pedidos: aparece igual, con su total en 0.00 m³.
@@ -242,6 +261,18 @@ export function paginarPrograma(
     } else {
       pl.pedidos.forEach((p, idx) => {
         paginarPedido(p, g, { libre, nuevaHoja, agregar, hojaVacia: () => actual.length === 0 });
+        // Observaciones del cliente: INMEDIATAMENTE después de su bloque (antes de la
+        // línea en blanco). Si no hay, no se imprime nada.
+        if (p.observaciones) {
+          const alto = altoObservacion(p.observaciones, g);
+          asegurar(alto);
+          agregar({
+            tipo: "observacionCliente",
+            cliente: p.cliente,
+            texto: p.observaciones,
+            alto,
+          });
+        }
         // Línea en blanco entre cliente y cliente (no tras el último).
         if (idx < pl.pedidos.length - 1 && g.altoSeparadorCliente <= libre()) {
           agregar({ tipo: "separador", alto: g.altoSeparadorCliente });
