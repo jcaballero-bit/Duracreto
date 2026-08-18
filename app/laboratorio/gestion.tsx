@@ -2,8 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Clock, Plus, X } from "lucide-react";
-import { guardarLaboratoristasAction } from "./actions";
+import { AlertTriangle, Clock, FlaskConical, Plus, X } from "lucide-react";
+import { guardarLaboratoristasAction, guardarMuestreoPedidoAction } from "./actions";
+import { MAX_MUESTRAS, UBICACIONES_MUESTRAS, textoMuestreo } from "@/lib/calidad/muestreo";
 
 export interface LaboratoristaOpc {
   id: string;
@@ -19,6 +20,10 @@ export interface ProgramaDia {
   ventanaTxt: string | null;
   labIds: string[]; // uno o varios laboratoristas; vacío = Ninguno
   enConflicto: boolean;
+  /** Dónde se elaboran los testigos: "En obra" | "En planta" | "" (sin definir). */
+  muestrasUbicacion: string;
+  /** Cuántos cilindros hay que elaborar (null = sin definir). */
+  muestrasCantidad: number | null;
 }
 
 /** Lista de programas del día (pedidos) en orden de programación; en cada uno se
@@ -147,10 +152,11 @@ function FilaPrograma({
 
   return (
     <li
-      className={`flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-start sm:justify-between ${
+      className={`rounded-lg border p-3 ${
         p.enConflicto ? "border-amber-300 bg-amber-50" : "border-border bg-surface"
       }`}
     >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
         <div className="flex items-baseline gap-2">
           <span className="text-xs text-muted">{indice}.</span>
@@ -226,6 +232,107 @@ function FilaPrograma({
           </div>
         )}
       </div>
+      </div>
+
+      <MuestreoPrograma p={p} soloLectura={soloLectura} onCambiar={onCambiar} />
     </li>
+  );
+}
+
+/**
+ * Instrucciones de MUESTREO del programa: dónde se elaboran los testigos y cuántos
+ * cilindros hay que hacer. Las llena el Jefe de Laboratorio / Gerente de Control de
+ * Calidad / Admin; el Laboratorista asignado las ve en solo lectura.
+ */
+function MuestreoPrograma({
+  p,
+  soloLectura,
+  onCambiar,
+}: {
+  p: ProgramaDia;
+  soloLectura: boolean;
+  onCambiar: () => void;
+}) {
+  const [pendiente, startTransition] = useTransition();
+  const [ubicacion, setUbicacion] = useState(p.muestrasUbicacion);
+  const [cantidad, setCantidad] = useState(
+    p.muestrasCantidad != null ? String(p.muestrasCantidad) : "",
+  );
+
+  const guardar = (nuevaUbicacion: string, nuevaCantidad: string) => {
+    const n = nuevaCantidad.trim() === "" ? null : Number(nuevaCantidad);
+    if (n != null && (!Number.isInteger(n) || n < 0 || n > MAX_MUESTRAS)) {
+      alert(`La cantidad debe ser un número entero entre 0 y ${MAX_MUESTRAS}.`);
+      return;
+    }
+    startTransition(async () => {
+      const res = await guardarMuestreoPedidoAction(p.pedidoId, nuevaUbicacion, n);
+      if (res.ok) onCambiar();
+      else {
+        alert(res.mensaje ?? "No se pudo guardar el muestreo.");
+        setUbicacion(p.muestrasUbicacion);
+        setCantidad(p.muestrasCantidad != null ? String(p.muestrasCantidad) : "");
+      }
+    });
+  };
+
+  // El Laboratorista solo consulta lo que le indicaron.
+  if (soloLectura) {
+    return (
+      <div className="mt-3 flex items-center gap-2 border-t border-border/60 pt-2 text-xs">
+        <FlaskConical size={13} className="shrink-0 text-muted" />
+        <span className="text-muted">Muestras:</span>
+        <span className="font-medium text-ink">
+          {textoMuestreo(p.muestrasUbicacion || null, p.muestrasCantidad)}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-border/60 pt-2">
+      <label className="text-xs">
+        <span className="mb-1 flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted">
+          <FlaskConical size={12} /> Ubicación de las muestras
+        </span>
+        <select
+          value={ubicacion}
+          disabled={pendiente}
+          onChange={(e) => {
+            setUbicacion(e.target.value);
+            guardar(e.target.value, cantidad);
+          }}
+          className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent disabled:opacity-50"
+        >
+          <option value="">Sin definir</option>
+          {UBICACIONES_MUESTRAS.map((u) => (
+            <option key={u} value={u}>
+              {u}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="text-xs">
+        <span className="mb-1 block text-[10px] uppercase tracking-wide text-muted">
+          Cilindros a elaborar
+        </span>
+        <input
+          type="number"
+          min="0"
+          max={MAX_MUESTRAS}
+          step="1"
+          value={cantidad}
+          disabled={pendiente}
+          placeholder="0"
+          onChange={(e) => setCantidad(e.target.value)}
+          onBlur={(e) => {
+            const actual = p.muestrasCantidad != null ? String(p.muestrasCantidad) : "";
+            if (e.target.value !== actual) guardar(ubicacion, e.target.value);
+          }}
+          className="w-24 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent disabled:opacity-50"
+        />
+      </label>
+    </div>
   );
 }

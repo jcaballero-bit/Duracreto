@@ -3,6 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  MAX_MUESTRAS,
+  esCantidadMuestrasValida,
+  esUbicacionMuestrasValida,
+} from "@/lib/calidad/muestreo";
 import { alcanceActual } from "@/lib/auth/guard";
 import type { Alcance } from "@/lib/auth/acceso";
 import {
@@ -163,18 +168,21 @@ export async function guardarLaboratoristasAction(
 }
 
 /**
- * Asigna (o cambia) el Laboratorista que controla la calidad a la SALIDA de una
- * PLANTA en un DÍA. Distinta de la asignación por proyecto: NO valida traslapes (es
- * "quién está en esta planta ahora") y una nueva asignación REEMPLAZA la de esa
- * planta/fecha. `laboratoristaId` vacío = quitar. Reglas:
- *  · Solo la gestiona el Jefe de Laboratorio / Gerente de Control de Calidad / Admin.
- *  · Un JefeLaboratorio solo puede asignar plantas de SU zona.
- *  · La planta debe ser de la zona del laboratorista (control de calidad por zona).
+ * Fija QUIÉNES controlan la calidad a la SALIDA de una planta en un DÍA, y la
+ * observación del turno. `laboratoristaIds` es el conjunto COMPLETO que queda
+ * asignado (lista vacía = nadie). Una planta puede tener VARIOS laboratoristas el
+ * mismo día (turnos o apoyo). Reglas:
+ *  · Solo lo gestiona el Jefe de Laboratorio / Gerente de Control de Calidad / Admin.
+ *  · Un JefeLaboratorio solo asigna plantas de SU zona.
+ *  · Cada laboratorista debe ser de la zona de la planta (si tiene zona asignada).
+ *  · La observación queda en TODAS las filas de esa planta/fecha: es la indicación del
+ *    turno y la ve cada laboratorista asignado junto con su planta.
  */
-export async function asignarLaboratoristaPlantaAction(
+export async function guardarLaboratoristasPlantaAction(
   plantaId: number,
   fechaISO: string, // "YYYY-MM-DD"
-  laboratoristaId: string,
+  laboratoristaIds: string[],
+  observaciones: string,
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const g = await autorizar();
   if (!g.ok) return g;
@@ -195,43 +203,43 @@ export async function asignarLaboratoristaPlantaAction(
     return { ok: false, mensaje: "Solo puedes asignar plantas de tu zona." };
   }
 
-  // Quitar la asignación de esa planta/fecha.
-  if (!laboratoristaId) {
-    await prisma.asignaciones_laboratorista_planta.deleteMany({
-      where: { planta_id: plantaId, fecha },
+  const ids = [...new Set(laboratoristaIds.filter((x) => x))];
+  const nota = observaciones.trim() === "" ? null : observaciones.trim();
+
+  if (ids.length > 0) {
+    const validos = await prisma.user.findMany({
+      where: { id: { in: ids }, activo: true, roles: { some: { rol: "Laboratorista" } } },
+      select: { id: true, zona: true },
     });
-    await prisma.bitacora_auditoria.create({
-      data: {
-        tabla_afectada: "asignaciones_laboratorista_planta",
-        registro_id: plantaId,
-        usuario: g.quien,
-        campo_modificado: "laboratorista",
-        valor_anterior: null,
-        valor_nuevo: null,
-        motivo: `Planta ${planta.nombre} sin laboratorista (${fechaISO})`,
-      },
-    });
-    revalidatePath("/laboratorio");
-    return { ok: true };
+    if (validos.length !== ids.length) {
+      return { ok: false, mensaje: "Alguno de los seleccionados no es un Laboratorista activo." };
+    }
+    // Cada laboratorista debe poder cubrir la zona de la planta.
+    const deOtraZona = validos.find((v) => v.zona && v.zona !== planta.plantel.zona);
+    if (deOtraZona) {
+      return {
+        ok: false,
+        mensaje: "Uno de los laboratoristas es de otra zona; no puede cubrir esta planta.",
+      };
+    }
   }
 
-  const lab = await prisma.user.findUnique({
-    where: { id: laboratoristaId },
-    select: { activo: true, zona: true, roles: { where: { rol: "Laboratorista" }, select: { id: true } } },
+  // Reemplaza el conjunto de la planta/fecha (borra y vuelve a crear con la nota).
+  await prisma.asignaciones_laboratorista_planta.deleteMany({
+    where: { planta_id: plantaId, fecha },
   });
-  if (!lab || !lab.activo || lab.roles.length === 0) {
-    return { ok: false, mensaje: "El usuario seleccionado no es un Laboratorista activo." };
-  }
-  // La planta debe ser de la zona del laboratorista (si tiene zona asignada).
-  if (lab.zona && lab.zona !== planta.plantel.zona) {
-    return { ok: false, mensaje: "Ese laboratorista es de otra zona; no puede cubrir esta planta." };
+  if (ids.length > 0) {
+    await prisma.asignaciones_laboratorista_planta.createMany({
+      data: ids.map((labId) => ({
+        planta_id: plantaId,
+        fecha,
+        laboratorista_id: labId,
+        observaciones: nota,
+        creado_por: g.quien,
+      })),
+    });
   }
 
-  await prisma.asignaciones_laboratorista_planta.upsert({
-    where: { planta_id_fecha: { planta_id: plantaId, fecha } },
-    update: { laboratorista_id: laboratoristaId, creado_por: g.quien },
-    create: { planta_id: plantaId, fecha, laboratorista_id: laboratoristaId, creado_por: g.quien },
-  });
   await prisma.bitacora_auditoria.create({
     data: {
       tabla_afectada: "asignaciones_laboratorista_planta",
@@ -239,8 +247,75 @@ export async function asignarLaboratoristaPlantaAction(
       usuario: g.quien,
       campo_modificado: "laboratorista",
       valor_anterior: null,
-      valor_nuevo: `planta=${plantaId} laboratorista=${laboratoristaId} (${fechaISO})`,
-      motivo: `Laboratorista de salida en planta ${planta.nombre}`,
+      valor_nuevo:
+        ids.length > 0
+          ? `planta=${plantaId} laboratoristas=${ids.join(",")} (${fechaISO})${nota ? " con observacion" : ""}`
+          : null,
+      motivo:
+        ids.length > 0
+          ? `Laboratorista(s) de salida en planta ${planta.nombre}`
+          : `Planta ${planta.nombre} sin laboratorista (${fechaISO})`,
+    },
+  });
+
+  revalidatePath("/laboratorio");
+  return { ok: true };
+}
+
+/**
+ * Guarda las INSTRUCCIONES DE MUESTREO de un programa (pedido): dónde se elaboran los
+ * testigos ("En obra" / "En planta") y cuántos cilindros hay que hacer. Las llena el
+ * Jefe de Laboratorio / Gerente de Control de Calidad / Admin; el Laboratorista
+ * asignado solo las consulta. Vacío = sin definir (se limpia el campo).
+ */
+export async function guardarMuestreoPedidoAction(
+  pedidoId: number,
+  ubicacion: string,
+  cantidad: number | null,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const g = await autorizar();
+  if (!g.ok) return g;
+
+  if (!esUbicacionMuestrasValida(ubicacion)) {
+    return { ok: false, mensaje: "Ubicación de muestras no válida." };
+  }
+  if (!esCantidadMuestrasValida(cantidad)) {
+    return { ok: false, mensaje: `La cantidad debe ser un entero entre 0 y ${MAX_MUESTRAS}.` };
+  }
+
+  const pedido = await prisma.pedidos.findUnique({
+    where: { id: pedidoId },
+    select: {
+      muestras_ubicacion: true,
+      muestras_cantidad: true,
+      cliente: { select: { empresa: true } },
+      plantel: { select: { zona: true } },
+    },
+  });
+  if (!pedido) return { ok: false, mensaje: "Programa no encontrado." };
+
+  // Límite por zona (JefeLaboratorio → solo programas de su zona).
+  const zonaLimit = zonaLimiteGestor(g.alcance);
+  if (zonaLimit && pedido.plantel.zona !== zonaLimit) {
+    return { ok: false, mensaje: "Ese programa es de otra zona; no puedes gestionarlo." };
+  }
+
+  await prisma.pedidos.update({
+    where: { id: pedidoId },
+    data: {
+      muestras_ubicacion: ubicacion === "" ? null : ubicacion,
+      muestras_cantidad: cantidad,
+    },
+  });
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "pedidos",
+      registro_id: pedidoId,
+      usuario: g.quien,
+      campo_modificado: "muestreo",
+      valor_anterior: `${pedido.muestras_ubicacion ?? "-"} / ${pedido.muestras_cantidad ?? "-"}`,
+      valor_nuevo: `${ubicacion || "-"} / ${cantidad ?? "-"}`,
+      motivo: `Instrucciones de muestreo de ${pedido.cliente.empresa}`,
     },
   });
 

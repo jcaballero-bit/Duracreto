@@ -78,6 +78,8 @@ export default async function LaboratorioPage({
         cliente: { select: { empresa: true, proyecto: true } },
         plantel: { select: { nombre: true, zona: true } },
         asignaciones_lab: { select: { laboratorista_id: true } },
+        muestras_ubicacion: true,
+        muestras_cantidad: true,
         viajes: { where: { mixer_id: { not: null } }, select: SELECT_VIAJE_VENTANA },
       },
     }),
@@ -92,7 +94,12 @@ export default async function LaboratorioPage({
     // Asignaciones de laboratorista de salida de ese día.
     prisma.asignaciones_laboratorista_planta.findMany({
       where: { fecha: { gte: ini, lt: fin } },
-      select: { planta_id: true, laboratorista_id: true },
+      select: {
+        planta_id: true,
+        laboratorista_id: true,
+        observaciones: true,
+        planta: { select: { nombre: true, plantel: { select: { nombre: true, zona: true } } } },
+      },
     }),
   ]);
 
@@ -102,15 +109,37 @@ export default async function LaboratorioPage({
     zona: u.zona,
   }));
 
-  // Filas de plantas para el control de calidad de salida (con su asignación actual).
-  const labPorPlanta = new Map(asigsPlanta.map((a) => [a.planta_id, a.laboratorista_id]));
+  // Filas de plantas para el control de calidad de salida. Una planta puede tener
+  // VARIOS laboratoristas el mismo día; la observación del turno es de la planta/día
+  // (se guarda igual en cada fila, así que basta tomar la primera).
+  const labsPorPlanta = new Map<number, string[]>();
+  const notaPorPlanta = new Map<number, string>();
+  for (const a of asigsPlanta) {
+    labsPorPlanta.set(a.planta_id, [...(labsPorPlanta.get(a.planta_id) ?? []), a.laboratorista_id]);
+    if (a.observaciones && !notaPorPlanta.has(a.planta_id)) {
+      notaPorPlanta.set(a.planta_id, a.observaciones);
+    }
+  }
   const plantasAsignables: PlantaAsignable[] = plantasRaw.map((p) => ({
     id: p.id,
     nombre: p.nombre,
     plantelNombre: p.plantel.nombre,
     zona: p.plantel.zona,
-    labId: labPorPlanta.get(p.id) ?? "",
+    labIds: labsPorPlanta.get(p.id) ?? [],
+    observaciones: notaPorPlanta.get(p.id) ?? "",
   }));
+
+  // Turno de salida de planta del LABORATORISTA que está viendo la pantalla: qué planta
+  // le toca hoy y la observación que le dejaron. Él no ve la sección del gestor.
+  const misTurnosPlanta = soloLectura
+    ? asigsPlanta
+        .filter((a) => a.laboratorista_id === userId)
+        .map((a) => ({
+          planta: `${a.planta.plantel.nombre} · ${a.planta.nombre}`,
+          zona: a.planta.plantel.zona,
+          observaciones: a.observaciones ?? "",
+        }))
+    : [];
 
   // Una fila por programa (pedido) con su ventana; orden = hora programada (llegada).
   const filas = pedidos
@@ -124,6 +153,8 @@ export default async function LaboratorioPage({
         plantel: p.plantel.nombre,
         zona: p.plantel.zona,
         labIds: p.asignaciones_lab.map((a) => a.laboratorista_id),
+        muestrasUbicacion: p.muestras_ubicacion ?? "",
+        muestrasCantidad: p.muestras_cantidad,
         ventana,
         ventanaTxt: ventana ? formatearVentana(ventana) : null,
         inicioMs: ventana ? ventana.inicioMs : Number.MAX_SAFE_INTEGER,
@@ -170,6 +201,8 @@ export default async function LaboratorioPage({
     ventanaTxt: f.ventanaTxt,
     labIds: f.labIds,
     enConflicto: conConflicto.has(f.pedidoId),
+    muestrasUbicacion: f.muestrasUbicacion,
+    muestrasCantidad: f.muestrasCantidad,
   }));
 
   return (
@@ -191,6 +224,36 @@ export default async function LaboratorioPage({
           soloLectura={soloLectura}
         />
       </Card>
+      {/* Turno de salida de planta del propio Laboratorista: qué planta le toca hoy y
+          la observación que le dejó el Jefe de Laboratorio. Solo lectura. */}
+      {soloLectura && misTurnosPlanta.length > 0 && (
+        <Card className="mt-5 p-5">
+          <h3 className="mb-1 text-sm font-semibold text-ink">
+            Control de calidad a la salida de planta
+          </h3>
+          <p className="mb-3 text-xs text-muted">
+            Planta que tienes asignada hoy para el control de salida, con las indicaciones
+            del turno.
+          </p>
+          <ul className="space-y-2">
+            {misTurnosPlanta.map((t, i) => (
+              <li key={i} className="rounded-lg border border-border bg-surface p-3">
+                <div className="font-medium text-ink">{t.planta}</div>
+                <div className="text-[11px] text-muted">{t.zona}</div>
+                {t.observaciones ? (
+                  <p className="mt-2 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-2 text-sm text-sky-900">
+                    <span className="font-semibold">Observación: </span>
+                    {t.observaciones}
+                  </p>
+                ) : (
+                  <p className="mt-2 text-xs text-muted">Sin observaciones para el turno.</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
       {esGestor && (
         <Card className="mt-5 p-5">
           <AsignacionPlantas

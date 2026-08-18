@@ -109,21 +109,28 @@ model jefes_planta_planteles {
 // Asignacion de un Laboratorista a la SALIDA de una PLANTA (control de calidad a la
 // salida de la planta), por DIA. Es DISTINTA de `asignaciones_laboratorista` (que es
 // por proyecto/pedido, control en obra). La gestiona el Jefe de Laboratorio (o el
-// Gerente de Control de Calidad / Admin) y puede cambiarse varias veces el mismo dia:
-// una nueva asignacion REEMPLAZA la de esa planta/fecha (unique planta_id+fecha), sin
-// validacion de traslape (es "quien esta en esta planta ahora").
+// Gerente de Control de Calidad / Admin) y puede cambiarse varias veces el mismo dia.
+// Admite VARIOS laboratoristas por planta y dia (turnos o apoyo) y lleva la
+// observacion del turno. Sin validacion de traslape: es "quien esta en esta planta
+// ahora".
 model asignaciones_laboratorista_planta {
   id               Int      @id @default(autoincrement())
   laboratorista_id String
   planta_id        Int
   fecha            DateTime // dia (medianoche local)
+  // Indicaciones del Jefe de Laboratorio / Gerente de Control de Calidad / Admin para
+  // el turno en esa planta. El laboratorista asignado las VE (junto con su planta).
+  observaciones    String?
   creado_por       String
   creado_en        DateTime @default(now())
 
   laboratorista User    @relation("LaboratoristaPlanta", fields: [laboratorista_id], references: [id], onDelete: Cascade)
   planta        plantas @relation(fields: [planta_id], references: [id], onDelete: Cascade)
 
-  @@unique([planta_id, fecha])
+  // Una planta puede tener VARIOS laboratoristas el mismo dia (turnos, apoyo); lo que
+  // no se repite es la misma persona dos veces en la misma planta y dia.
+  @@unique([planta_id, fecha, laboratorista_id])
+  @@index([planta_id, fecha])
   @@index([laboratorista_id])
 }
 
@@ -445,6 +452,11 @@ model pedidos {
   // -> códigos que empiezan con C/Pre; Servicio de Construcción -> códigos con Ser).
   tipo_servicio     String?
   sacos_hielo_por_m3 Int    @default(0) // control de temperatura (0 = sin control; 1-10)
+  // ── Instrucciones de MUESTREO del laboratorio (las fija el Jefe de Laboratorio /
+  //    Gerente de Control de Calidad / Admin desde /laboratorio; el Laboratorista
+  //    asignado solo las consulta).
+  muestras_ubicacion String? // "En obra" | "En planta": donde se elaboran los testigos
+  muestras_cantidad  Int? // cuantos cilindros/muestras hay que elaborar
   asesor_id         Int? // asesor que gestiona el pedido (precargado del cliente, editable)
   // Orden de atención del pedido DENTRO de su plantel+fecha (1 = primero). Es la
   // base de la cola para la cascada de horarios; se asigna MAX+1 al crear y el
