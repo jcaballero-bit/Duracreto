@@ -14,6 +14,7 @@ import {
   ESTADOS_LABORATORISTA,
 } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
+import { ordenarViajesDespacho } from "@/lib/despacho/orden";
 import { compararPlanteles } from "@/lib/planteles-orden";
 import { Card, PageHeader } from "../components/ui";
 import { AutoRefresh } from "../components/auto-refresh";
@@ -368,6 +369,12 @@ export default async function DespachoPage({
         // Orden cronológico FIJO por la hora PROGRAMADA de carga (no la real): así
         // el orden no cambia cuando el viaje se despacha o se registra su hora real.
         ordenCargaMs: (v.hora_inicio_carga ?? p.hora_solicitada).getTime(),
+        // Llegada a obra PROGRAMADA: ordena los bloques igual que el DPCR-08.
+        ordenLlegadaMs: (
+          v.hora_llegada_proyecto ??
+          v.hora_inicio_carga ??
+          p.hora_solicitada
+        ).getTime(),
         horaProgTxt: fmtHM(v.hora_inicio_carga ?? p.hora_solicitada),
         cliente: p.cliente.empresa,
         proyecto: p.cliente.proyecto ?? "",
@@ -450,19 +457,17 @@ export default async function DespachoPage({
   const grupos = [...gruposMap.values()].sort((a, b) =>
     compararPlanteles(a.plantelNombre, b.plantelNombre),
   );
+  // Orden de las tarjetas: EL MISMO DEL PROGRAMA DPCR-08, pero sin partir a un
+  // cliente. Antes iban en fila cronológica pura, así que los viajes de un cliente
+  // quedaban intercalados entre los de otro y costaba encontrarlos. Ahora:
+  //  1. los viajes se agrupan por PEDIDO (el suministro de un cliente va seguido);
+  //  2. los bloques van por la LLEGADA a obra del primer viaje del pedido — la misma
+  //     clave que ordena el DPCR-08 (`primeraLlegadaMs` en lib/programa/snapshot.ts),
+  //     no el alfabeto: Inversiones Fama (7:00) va completo antes que Terravista (8:00);
+  //  3. dentro del bloque se conserva el orden PROGRAMADO de carga, así que despachar
+  //     un viaje no lo mueve de lugar.
   for (const g of grupos) {
-    // Orden AGRUPADO POR CLIENTE (petición del despachador): antes las tarjetas iban
-    // en fila cronológica, así que los viajes de un cliente quedaban intercalados
-    // entre los de otro y costaba encontrarlos. Ahora todos los viajes de un mismo
-    // cliente van juntos, con los clientes en orden DESCENDENTE por nombre, y dentro
-    // de cada cliente se conserva el orden PROGRAMADO de carga (los viajes no se
-    // reordenan al despacharse).
-    g.viajes.sort(
-      (a, b) =>
-        b.cliente.localeCompare(a.cliente, "es", { sensitivity: "base" }) ||
-        a.ordenCargaMs - b.ordenCargaMs ||
-        a.id - b.id,
-    );
+    g.viajes = ordenarViajesDespacho(g.viajes);
   }
 
   // Clientes en ATENCIÓN ahora: pedidos con al menos un viaje iniciado (no

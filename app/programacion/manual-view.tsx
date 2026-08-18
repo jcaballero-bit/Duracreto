@@ -1306,7 +1306,10 @@ function PanelMixers({
   mixers: MixerPanel[];
   info: Map<number, { viajes: number; libreMs: number | null }>;
 }) {
-  const [abierto, setAbierto] = useState(true);
+  // Arranca MINIMIZADO: es un panel de consulta ("¿qué mixer queda libre y cuándo?"),
+  // no algo que se necesite todo el tiempo, y abierto le come ancho a la tabla. El
+  // Programador / Jefe de Planta / Admin lo abre con la pestaña lateral cuando lo pide.
+  const [abierto, setAbierto] = useState(false);
 
   const disponibleHoy = (m: MixerPanel) => m.estado === "Disponible" && !m.enMantenimiento;
   const libreMsDe = (m: MixerPanel) => info.get(m.id)?.libreMs ?? null;

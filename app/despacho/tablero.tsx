@@ -43,6 +43,9 @@ export interface ViajeDespacho {
   numClienteDia: number; // número de viaje del cliente ESE DÍA (1..N, dinámico)
   totalClienteDia: number; // total de viajes del cliente ese día
   ordenCargaMs: number; // clave de orden cronológico (hora de carga real o programada)
+  // Llegada a obra programada del viaje: con ella se ordenan los bloques de cliente
+  // igual que en el Programa DPCR-08 (el suministro de un cliente no se parte).
+  ordenLlegadaMs: number;
   horaProgTxt: string;
   cliente: string;
   proyecto: string;
