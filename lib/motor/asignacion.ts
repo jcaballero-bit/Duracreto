@@ -1768,6 +1768,13 @@ export async function programarPedido(
 export async function modificarPedido(
   pedidoId: number,
   entrada: EntradaPedido,
+  /**
+   * true = re-agendar SOLO este pedido, sin tocar a los demás (lo usa la edición
+   * hecha desde el Modo Manual, donde el sistema nunca reprograma a terceros: si el
+   * pedido editado queda encima de otro se AVISA). false = comportamiento histórico
+   * del modo Automático: se recalcula la cascada de la planta.
+   */
+  aislado = false,
 ): Promise<ResultadoProgramacion> {
   const anterior = await prisma.pedidos.findUniqueOrThrow({
     where: { id: pedidoId },
@@ -1825,7 +1832,7 @@ export async function modificarPedido(
     await recalcularCascadaPlanta(anterior.planta_id, anterior.hora_solicitada);
   }
 
-  return asignarViajesDePedido(pedidoId, entrada);
+  return asignarViajesDePedido(pedidoId, entrada, aislado);
 }
 
 // ── MODO MANUAL: escritura directa de viajes SIN cascada ─────────────────────

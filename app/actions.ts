@@ -538,7 +538,9 @@ export async function modificarPedidoAction(
     if (!vol.ok) return { ok: false, mensaje: vol.mensaje };
     const errBomba = await validarBombaMantenimiento(entrada!);
     if (errBomba) return { ok: false, mensaje: errBomba };
-    const r = await modificarPedido(pedidoId, entrada!);
+    // Editado desde el Modo Manual: se re-agenda SOLO este pedido (los demás
+    // clientes conservan su horario y los choques se avisan).
+    const r = await modificarPedido(pedidoId, entrada!, !!formData.get("aislado"));
     revalidarPantallas();
     return { ok: true, resultado: mapResultado(r) };
   } catch (e) {

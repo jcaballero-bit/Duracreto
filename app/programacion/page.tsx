@@ -394,6 +394,10 @@ export default async function ProgramacionPage({
     grupos.set(p.plantel_id, g);
   }
   const totalGeneral = pedidos.reduce((s, p) => s + p.volumen_total_m3, 0);
+  // Todas las vistas de pedido del día, planas: el Modo Manual las usa para las
+  // acciones de pedido (editar / cancelar con motivo / eliminar) en la cabecera de
+  // cada cliente. Son las MISMAS que alimentan la tabla del modo Avanzado.
+  const pedidosVista = [...grupos.values()].flatMap((g) => g.pedidos);
 
   // Proyecciones (Programa Semana) pendientes de este día → panel para convertir.
   // Solo Admin/Programador/JefePlanta operan aquí (la ruta ya está limitada a esos
@@ -713,6 +717,8 @@ export default async function ProgramacionPage({
         arr.push({
           id: v.id,
           plantaId: v.planta_id,
+          pedidoId: p.id,
+          ordenDia: p.orden_dia,
           clienteId: p.cliente_id,
           empresa: p.cliente.empresa,
           proyecto: p.cliente.proyecto ?? "",
@@ -839,6 +845,9 @@ export default async function ProgramacionPage({
             fecha={fecha}
             margenMin={MARGEN_MINIMO_MIN}
             puedeEditar={puedeEditarEfectivo}
+            pedidos={pedidosVista}
+            opciones={opciones}
+            puedeAgregarQuitar={puedeAgregarQuitar && puedeEditarEfectivo}
           />
         }
         auto={

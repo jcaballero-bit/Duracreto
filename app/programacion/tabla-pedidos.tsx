@@ -218,7 +218,7 @@ export function TablaPedidos({
 }
 
 /** Numeral del orden de atención. Editable por el Programador (reacomoda la cola). */
-function OrdenNumeral({
+export function OrdenNumeral({
   orden,
   puedeEditar,
   onReordenar,
@@ -660,16 +660,19 @@ function DetalleViajes({ viajes }: { viajes: ViajeVista[] }) {
   );
 }
 
-function ModalEdicion({
+export function ModalEdicion({
   pedido,
   opciones,
   onCerrar,
   onExito,
+  aislado = false,
 }: {
   pedido: PedidoVista;
   opciones: OpcionesModal;
   onCerrar: () => void;
   onExito: () => void;
+  /** true = edición desde el Modo Manual: re-agenda solo este pedido (ver PedidoForm). */
+  aislado?: boolean;
 }) {
   return (
     <div
@@ -695,6 +698,7 @@ function ModalEdicion({
             {...opciones}
             pedidoId={pedido.id}
             valores={pedido.valores}
+            aislado={aislado}
             onExito={onExito}
           />
         </div>

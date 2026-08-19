@@ -101,6 +101,7 @@ export function PedidoForm({
   preset,
   esAdicion = false,
   esAdmin = false,
+  aislado = false,
   onExito,
 }: {
   clientes: ClienteOpcion[];
@@ -119,6 +120,9 @@ export function PedidoForm({
   // Solo el Admin puede ingresar volúmenes que NO sean múltiplos de 0.5 m³ (step
   // libre); los demás roles quedan con paso 0.5. Se refuerza en el servidor.
   esAdmin?: boolean;
+  // true = la edición viene del Modo Manual: el motor re-agenda SOLO este pedido y no
+  // le mueve el horario a ningún otro cliente (los choques se avisan, no se corrigen).
+  aislado?: boolean;
   onExito?: () => void;
 }) {
   const esEdicion = pedidoId != null;
@@ -346,6 +350,8 @@ export function PedidoForm({
           <input type="hidden" name="solicitud_id" value={preset.solicitud_id} />
         )}
         {esAdicion && <input type="hidden" name="es_adicion" value="1" />}
+        {/* Edición desde el Modo Manual: re-agendar solo este pedido. */}
+        {aislado && <input type="hidden" name="aislado" value="1" />}
         <Campo label="Cliente">
           <select
             name="cliente_id"

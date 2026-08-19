@@ -9,14 +9,16 @@
 // Productividad (mejoras): Deshacer/Rehacer de la sesión (Ctrl+Z / Ctrl+Shift+Z),
 // navegación tipo hoja de cálculo (Enter/flechas/Escape) + pegar desde Excel/Sheets,
 // generar N viajes en serie, y validación de traslape de CARGA en planta.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ChevronRight, Lock, LockOpen, MessageSquare, Plus, Redo2, Sunrise, Trash2, Truck, Undo2, Wand2, X } from "lucide-react";
+import { AlertTriangle, Ban, ChevronDown, ChevronRight, Lock, LockOpen, MessageSquare, Pencil, Plus, Redo2, Sunrise, Trash2, Truck, Undo2, Wand2, X } from "lucide-react";
 import {
   agregarViajeManualAction,
   ajustarLlegadaManualAction,
   editarViajeManualAction,
+  eliminarPedidoAction,
   eliminarViajesManualAction,
+  reordenarPedidoAction,
   fijarAperturaPlantaAction,
   fijarHoraViajeAction,
   generarViajesEnSerieAction,
@@ -33,6 +35,10 @@ import {
   margenApretado,
   type ViajeManual,
 } from "@/lib/motor/validacion-manual";
+import { agruparFilasPorPedido } from "@/lib/programacion/agrupar-manual";
+import { CancelarPedidoModal } from "../components/cancelar-pedido-modal";
+import { ModalEdicion, OrdenNumeral, type OpcionesModal, type PedidoVista } from "./tabla-pedidos";
+import { Badge } from "../components/ui";
 import { colorPorCliente } from "@/lib/color-cliente";
 import { parsePortapapeles } from "@/lib/portapapeles";
 import { GanttManual, type SeccionGanttM } from "./gantt-manual";
@@ -66,6 +72,11 @@ export interface PlantaManual {
 export interface FilaManualSrv {
   id: number;
   plantaId: number;
+  /** Pedido al que pertenece: los viajes se agrupan por cliente con esta clave. */
+  pedidoId: number;
+  /** Orden de atencion del pedido en el plantel+dia: ordena los bloques igual que el
+   *  modo Automatico / Avanzado (la columna "#" de la tabla de Programacion). */
+  ordenDia: number | null;
   clienteId: number;
   empresa: string;
   proyecto: string;
@@ -135,6 +146,9 @@ export function ManualView({
   fecha,
   margenMin,
   puedeEditar,
+  pedidos = [],
+  opciones,
+  puedeAgregarQuitar = true,
 }: {
   planteles: PlantelManual[];
   clientes: ClienteOpcionManual[];
@@ -142,6 +156,15 @@ export function ManualView({
   fecha: string; // "YYYY-MM-DD"
   margenMin: number;
   puedeEditar: boolean;
+  // Pedidos del día (los mismos del modo Avanzado): traen los valores para el
+  // formulario de edición y la etiqueta del modal de cancelación.
+  pedidos?: PedidoVista[];
+  // Catálogos del formulario de pedido (clientes, diseños, planteles, bombas…).
+  opciones?: OpcionesModal;
+  // ¿Puede AGREGAR o QUITAR pedidos del programa? Tras el cierre del DPCR-08 solo el
+  // Admin puede: a los demás se les ocultan Cancelar y Eliminar (el servidor lo
+  // refuerza igual). Editar sigue disponible con `puedeEditar`.
+  puedeAgregarQuitar?: boolean;
 }) {
   const router = useRouter();
   // Pilas de deshacer/rehacer en ESTADO (el render las lee de forma reactiva). Los
@@ -304,6 +327,9 @@ export function ManualView({
           fecha={fecha}
           margenMin={margenMin}
           puedeEditar={puedeEditar}
+          pedidos={pedidos}
+          opciones={opciones}
+          puedeAgregarQuitar={puedeAgregarQuitar}
           ejecutar={ejecutar}
           ocupado={ocupado}
           onAvisos={setAvisos}
@@ -320,6 +346,9 @@ function PlantelManualBloque({
   fecha,
   margenMin,
   puedeEditar,
+  pedidos,
+  opciones,
+  puedeAgregarQuitar,
   ejecutar,
   ocupado,
   onAvisos,
@@ -330,13 +359,56 @@ function PlantelManualBloque({
   fecha: string;
   margenMin: number;
   puedeEditar: boolean;
+  pedidos: PedidoVista[];
+  opciones?: OpcionesModal;
+  puedeAgregarQuitar: boolean;
   ejecutar: (cmd: Comando) => Promise<void>;
   ocupado: boolean;
   /** Reporta al padre los avisos NO bloqueantes del ultimo ajuste de horarios. */
   onAvisos: (avisos: string[]) => void;
 }) {
+  const router = useRouter();
   const [ov, setOv] = useState<Map<number, { inicioCargaMs?: number; volumen?: number; mixerId?: number | null }>>(new Map());
   const [editandoId, setEditandoId] = useState<number | null>(null);
+  // Bloques de cliente MINIMIZADOS (por pedido). Vacio = todos expandidos, que es como
+  // arranca la pantalla: se ve el dia completo y se minimiza lo que ya no se revisa.
+  const [colapsados, setColapsados] = useState<Set<number>>(new Set());
+  // Acciones de PEDIDO (las mismas del modo Avanzado): editar, cancelar con motivo y
+  // eliminar. Se aplican al cliente completo, no a un viaje, así que viven en la
+  // cabecera del bloque. `editando`/`cancelando` guardan el pedido en curso.
+  const pedidoPorId = useMemo(() => new Map(pedidos.map((x) => [x.id, x])), [pedidos]);
+  const [editandoPedido, setEditandoPedido] = useState<PedidoVista | null>(null);
+  const [cancelandoPedido, setCancelandoPedido] = useState<PedidoVista | null>(null);
+  // Cambiar la POSICIÓN del cliente en la cola (igual que el modo Avanzado). Ojo: el
+  // servidor renumera la cola y vuelve a agendar el día del plantel, así que los
+  // horarios que se hayan puesto a mano se recalculan — se avisa antes de hacerlo.
+  const reordenarPedido = (pedidoId: number, nuevo: number) => {
+    const p = pedidoPorId.get(pedidoId);
+    if (!p || nuevo === p.orden || !Number.isFinite(nuevo) || nuevo < 1) return;
+    if (
+      !confirm(
+        `Mover ${p.empresa} a la posición ${nuevo} reacomoda la cola del plantel y vuelve a ` +
+          "calcular los horarios del día (se pierden los ajustes hechos a mano). ¿Continuar?",
+      )
+    ) {
+      return;
+    }
+    void (async () => {
+      const res = await reordenarPedidoAction(pedidoId, nuevo);
+      if (res.ok) router.refresh();
+      else alert(res.mensaje ?? "No se pudo cambiar la posición.");
+    })();
+  };
+
+  const eliminarPedido = (p: PedidoVista) => {
+    const etq = p.proyecto ? `${p.empresa} — ${p.proyecto}` : p.empresa;
+    if (!confirm(`¿Eliminar el pedido de ${etq} y todos sus viajes?`)) return;
+    void (async () => {
+      const res = await eliminarPedidoAction(p.id);
+      if (res.ok) router.refresh();
+      else alert(res.mensaje ?? "No se pudo eliminar.");
+    })();
+  };
   const [agregarEn, setAgregarEn] = useState<number | null>(null);
   const [serieAbierta, setSerieAbierta] = useState(false);
   const celdas = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -714,12 +786,23 @@ function PlantelManualBloque({
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
         <div className="min-w-0 flex-1">
       {plantel.plantas.map((planta) => {
-        const filas = [...plantel.filas]
-          .filter((f) => f.plantaId === planta.id)
-          .sort((a, b) => filaEfectiva(a).inicioCargaMs - filaEfectiva(b).inicioCargaMs);
+        // Bloques por cliente, ordenados por la hora de LLEGADA del primer mixer (la
+        // que se le prometio a la obra). `filas` son las VISIBLES (un bloque minimizado
+        // no cuenta) porque de su posicion dependen la navegacion con teclado y el
+        // pegado desde Excel.
+        const grupos = agruparFilasPorPedido(
+          plantel.filas.filter((f) => f.plantaId === planta.id),
+          (f) => filaEfectiva(f).inicioCargaMs,
+          (f) => filaEfectiva(f).volumen,
+          (f) => calcular(f)?.llegadaMs ?? filaEfectiva(f).inicioCargaMs,
+        );
+        const filas = grupos.filter((g) => !colapsados.has(g.pedidoId)).flatMap((g) => g.filas);
+        const indiceVisible = new Map(filas.map((f, i) => [f.id, i]));
         return (
-          <div key={planta.id} className="mb-5">
-            <div className="mb-2 flex items-center justify-between">
+          <div key={planta.id} className="mb-5 overflow-hidden rounded-lg border border-border">
+            {/* Franja de la planta (mismo lenguaje visual que el plantel en el modo
+                Avanzado): título a la izquierda, controles del día a la derecha. */}
+            <div className="flex items-center justify-between gap-3 bg-content px-3 py-2">
               <h3 className="text-sm font-semibold text-ink">
                 Planta {planta.nombre} <span className="font-normal text-muted">· {planta.capacidadM3h} m³/h</span>
               </h3>
@@ -742,20 +825,20 @@ function PlantelManualBloque({
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto bg-surface">
               <table className="w-full min-w-[820px] text-sm">
                 <thead>
-                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                    <th className="px-2 py-2 w-8">#</th>
-                    <th className="w-[220px] px-2 py-2">Cliente / Proyecto</th>
+                  <tr className="border-b border-border bg-content/30 text-left text-[11px] uppercase tracking-wide text-muted">
+                    <th className="w-8 px-2 py-2">#</th>
+                    <th className="w-[110px] px-2 py-2">Viaje</th>
                     <th className="px-2 py-2">Mixer</th>
-                    <th className="px-2 py-2 w-24">Volumen</th>
-                    <th className="px-2 py-2 w-24">
-                      Carga{puedeEditar && <span className="ml-1 normal-case text-[10px] text-accent">editable</span>}
+                    <th className="w-24 px-2 py-2">Vol.</th>
+                    <th className="w-24 px-2 py-2">
+                      Carga{puedeEditar && <span className="ml-1 text-accent" title="Editable">•</span>}
                     </th>
                     <th className="px-2 py-2">Salida</th>
-                    <th className="px-2 py-2 w-24">
-                      Llegada{puedeEditar && <span className="ml-1 normal-case text-[10px] text-accent">editable</span>}
+                    <th className="w-24 px-2 py-2">
+                      Llega{puedeEditar && <span className="ml-1 text-accent" title="Editable">•</span>}
                     </th>
                     <th className="px-2 py-2">Descarga</th>
                     <th className="px-2 py-2">Regreso</th>
@@ -764,46 +847,161 @@ function PlantelManualBloque({
                   </tr>
                 </thead>
                 <tbody>
-                  {filas.length === 0 ? (
+                  {grupos.length === 0 ? (
                     <tr>
                       <td colSpan={puedeEditar ? 11 : 9} className="px-2 py-4 text-center text-xs text-muted">
                         Sin viajes en esta planta. Usa <strong>Agregar viaje</strong> o <strong>Generar en serie</strong>.
                       </td>
                     </tr>
                   ) : (
-                    filas.map((f, i) => {
+                    grupos.map((g) => (
+                    <Fragment key={g.pedidoId}>
+                    {/* FRANJA DEL CLIENTE: misma información y jerarquía visual que la
+                        fila de pedido del modo Avanzado (numeral de orden, llegada,
+                        cliente/proyecto, mezcla, elemento, descarga, hielo, total y
+                        acciones). Se minimiza con el chevron. */}
+                    <tr className="border-y border-border bg-content/60">
+                      <td colSpan={puedeEditar ? 11 : 9} className="px-2 py-2">
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() =>
+                              setColapsados((prev) => {
+                                const n = new Set(prev);
+                                if (n.has(g.pedidoId)) n.delete(g.pedidoId);
+                                else n.add(g.pedidoId);
+                                return n;
+                              })
+                            }
+                            className="shrink-0 rounded p-0.5 text-muted hover:bg-content hover:text-ink"
+                            title={colapsados.has(g.pedidoId) ? "Mostrar los viajes" : "Minimizar este cliente"}
+                            aria-label={colapsados.has(g.pedidoId) ? "Mostrar los viajes" : "Minimizar este cliente"}
+                          >
+                            {colapsados.has(g.pedidoId) ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                          </button>
+
+                          {/* Posición en la cola: se cambia igual que en el modo Avanzado. */}
+                          <span className="shrink-0">
+                            <OrdenNumeral
+                              orden={pedidoPorId.get(g.pedidoId)?.orden ?? null}
+                              puedeEditar={puedeEditar && !!pedidoPorId.get(g.pedidoId)}
+                              onReordenar={(nuevo) => reordenarPedido(g.pedidoId, nuevo)}
+                            />
+                          </span>
+
+                          {/* Llegada del primer mixer: la hora prometida a la obra. */}
+                          <span className="w-20 shrink-0 whitespace-nowrap text-sm font-medium text-ink">
+                            {fmtHM(Math.min(...g.filas.map((f) => calcular(f)?.llegadaMs ?? filaEfectiva(f).inicioCargaMs)))}
+                          </span>
+
+                          <span className="flex min-w-0 flex-1 items-start gap-2">
+                            <span
+                              className="mt-1.5 inline-block h-3 w-3 shrink-0 rounded-full"
+                              style={{ backgroundColor: colorPorCliente(g.clienteId) }}
+                            />
+                            <span className="min-w-0">
+                              <span className="block truncate font-semibold text-ink">{g.empresa}</span>
+                              {g.proyecto && (
+                                <span className="block truncate text-xs text-link">{g.proyecto}</span>
+                              )}
+                            </span>
+                          </span>
+
+                          {pedidoPorId.get(g.pedidoId) && (
+                            <>
+                              <span className="hidden w-36 shrink-0 text-xs leading-tight text-muted lg:block">
+                                <strong className="block font-semibold text-ink">
+                                  {pedidoPorId.get(g.pedidoId)!.disenoCodigo}
+                                </strong>
+                                {pedidoPorId.get(g.pedidoId)!.disenoEspec}
+                              </span>
+                              <span className="hidden w-24 shrink-0 truncate text-xs text-ink xl:block">
+                                {pedidoPorId.get(g.pedidoId)!.elemento || "—"}
+                              </span>
+                              <span className="hidden w-28 shrink-0 truncate text-xs text-ink xl:block">
+                                {pedidoPorId.get(g.pedidoId)!.tipoDescarga}
+                              </span>
+                              <span className="hidden w-36 shrink-0 truncate text-xs text-muted 2xl:block">
+                                {pedidoPorId.get(g.pedidoId)!.hieloTxt}
+                              </span>
+                            </>
+                          )}
+
+                          <span className="w-24 shrink-0 whitespace-nowrap text-right text-sm">
+                            <strong className="font-bold text-ink">{g.totalM3} m³</strong>
+                            <span className="block text-[11px] text-muted">
+                              {g.filas.length} viaje{g.filas.length === 1 ? "" : "s"}
+                            </span>
+                          </span>
+
+                          {/* Confirmación del asesor: mismo Badge del modo Avanzado. */}
+                          {pedidoPorId.get(g.pedidoId) && (
+                            <span className="hidden shrink-0 lg:block">
+                              <Badge tono={pedidoPorId.get(g.pedidoId)!.confirmado ? "ok" : "neutro"}>
+                                {pedidoPorId.get(g.pedidoId)!.confirmado ? "Confirmado" : "Pendiente"}
+                              </Badge>
+                            </span>
+                          )}
+
+                          {/* Acciones del PEDIDO completo (no de un viaje): las mismas del
+                              modo Avanzado. Editar re-agenda SOLO este pedido, sin mover a
+                              los demás clientes (`aislado`). */}
+                          {puedeEditar && pedidoPorId.get(g.pedidoId) && (
+                            <span className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
+                              <button
+                                onClick={() => setEditandoPedido(pedidoPorId.get(g.pedidoId)!)}
+                                disabled={ocupado}
+                                title="Editar pedido"
+                                className="rounded p-1 text-muted hover:bg-surface hover:text-accent disabled:opacity-40"
+                              >
+                                <Pencil size={15} />
+                              </button>
+                              {puedeAgregarQuitar && (
+                                <>
+                                  <button
+                                    onClick={() => setCancelandoPedido(pedidoPorId.get(g.pedidoId)!)}
+                                    disabled={ocupado}
+                                    title="Cancelar pedido (con motivo)"
+                                    className="rounded p-1 text-muted hover:bg-amber-50 hover:text-amber-600 disabled:opacity-40"
+                                  >
+                                    <Ban size={15} />
+                                  </button>
+                                  <button
+                                    onClick={() => eliminarPedido(pedidoPorId.get(g.pedidoId)!)}
+                                    disabled={ocupado}
+                                    title="Eliminar pedido"
+                                    className="rounded p-1 text-muted hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
+                                </>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {!colapsados.has(g.pedidoId) &&
+                    g.filas.map((f) => {
+                      const i = indiceVisible.get(f.id) ?? 0;
                       const ef = filaEfectiva(f);
                       const t = calcular(f);
-                      const cli = clientePorId.get(f.clienteId);
                       const rojo = idsRojos.has(f.id);
                       const choca = chocaCargaCon.get(f.id);
                       return (
                         <tr
                           key={f.id}
-                          className={`border-b border-border/60 ${rojo ? "bg-red-50" : ""} ${
-                            editandoId === f.id ? "ring-1 ring-inset ring-accent" : ""
-                          }`}
+                          className={`border-b border-border/50 tabular-nums last:border-0 hover:bg-content/20 ${
+                            rojo ? "bg-red-50 hover:bg-red-50" : ""
+                          } ${editandoId === f.id ? "ring-1 ring-inset ring-accent" : ""}`}
                         >
-                          <td className="px-2 py-1 text-muted">{i + 1}</td>
-                          {/* Cliente/proyecto en un ancho ACOTADO: un nombre largo se
-                              parte en varias líneas en vez de estirar la columna y
-                              empujar las horas del ciclo fuera de la pantalla. */}
-                          <td className="w-[220px] max-w-[220px] px-2 py-1 align-top">
-                            <span className="flex items-start gap-1.5">
-                              <span
-                                className="mt-1 inline-block h-3 w-3 shrink-0 rounded-full"
-                                style={{ backgroundColor: colorPorCliente(f.clienteId) }}
-                              />
-                              <span className="min-w-0 flex-1">
-                                <span className="block leading-tight font-medium break-words text-ink">
-                                  {cli?.empresa}
-                                </span>
-                                {cli?.proyecto && (
-                                  <span className="block text-[11px] leading-tight break-words text-muted">
-                                    {cli.proyecto}
-                                  </span>
-                                )}
-                              </span>
+                          <td className="px-2 py-1 text-xs text-muted/70">{i + 1}</td>
+                          {/* El cliente ya va en la cabecera del bloque: aqui solo el
+                              numero de viaje dentro de ese cliente, asi la columna no
+                              le come ancho a las horas del ciclo. */}
+                          <td className="w-[110px] max-w-[110px] px-2 py-1 align-top">
+                            <span className="block whitespace-nowrap leading-tight text-ink">
+                              Viaje {g.filas.indexOf(f) + 1}{" "}
+                              <span className="text-muted">de {g.filas.length}</span>
                             </span>
                             {choca && (
                               <span className="mt-0.5 block text-[11px] font-medium text-red-600">
@@ -899,7 +1097,7 @@ function PlantelManualBloque({
                               fmtHM(ef.inicioCargaMs)
                             )}
                           </td>
-                          <td className="px-2 py-1 text-muted">{t ? fmtHM(t.salidaMs) : "—"}</td>
+                          <td className="whitespace-nowrap px-2 py-1 text-muted">{t ? fmtHM(t.salidaMs) : "—"}</td>
                           <td className="px-2 py-1">
                             {puedeEditar && t ? (
                               /* Hora comprometida con el cliente: al escribirla, el servidor
@@ -944,8 +1142,8 @@ function PlantelManualBloque({
                               <span className="font-medium text-ink">{t ? fmtHM(t.llegadaMs) : "—"}</span>
                             )}
                           </td>
-                          <td className="px-2 py-1 text-muted">{t ? `${fmtHM(t.inicioDescargaMs)}–${fmtHM(t.finDescargaMs)}` : "—"}</td>
-                          <td className="px-2 py-1 text-muted">{t ? fmtHM(t.regresoMs) : "—"}</td>
+                          <td className="whitespace-nowrap px-2 py-1 text-muted">{t ? `${fmtHM(t.inicioDescargaMs)}–${fmtHM(t.finDescargaMs)}` : "—"}</td>
+                          <td className="whitespace-nowrap px-2 py-1 text-muted">{t ? fmtHM(t.regresoMs) : "—"}</td>
                           {puedeEditar && (
                             <td className="px-2 py-1">
                               <button
@@ -978,7 +1176,9 @@ function PlantelManualBloque({
                           )}
                         </tr>
                       );
-                    })
+                    })}
+                    </Fragment>
+                    ))
                   )}
                 </tbody>
               </table>
@@ -988,7 +1188,36 @@ function PlantelManualBloque({
       })}
         </div>
 
-        {/* Panel lateral colapsable: mixers y a qué hora queda libre cada uno */}
+        {/* Modales de pedido (editar / cancelar con motivo) del modo Manual */}
+      {editandoPedido && opciones && (
+        <ModalEdicion
+          pedido={editandoPedido}
+          opciones={opciones}
+          aislado
+          onCerrar={() => setEditandoPedido(null)}
+          onExito={() => {
+            setEditandoPedido(null);
+            router.refresh();
+          }}
+        />
+      )}
+      {cancelandoPedido && (
+        <CancelarPedidoModal
+          pedidoId={cancelandoPedido.id}
+          etiqueta={
+            cancelandoPedido.proyecto
+              ? `${cancelandoPedido.empresa} — ${cancelandoPedido.proyecto}`
+              : cancelandoPedido.empresa
+          }
+          onClose={() => setCancelandoPedido(null)}
+          onCancelado={() => {
+            setCancelandoPedido(null);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {/* Panel lateral colapsable: mixers y a qué hora queda libre cada uno */}
         <PanelMixers mixers={plantel.mixersPanel} info={infoMixer} />
       </div>
 

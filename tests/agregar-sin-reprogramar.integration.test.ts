@@ -7,7 +7,7 @@
 // que se le pidió, y cuando se encima con otro cliente lo AVISA en vez de moverlo.
 import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
-import { programarPedido } from "@/lib/motor/asignacion";
+import { modificarPedido, programarPedido } from "@/lib/motor/asignacion";
 import { crearCliente, crearDiseno, crearMixers, crearPlantel, limpiarBD } from "./helpers";
 
 /** Día de trabajo de la prueba: llegada pedida a las 08:00. */
@@ -165,6 +165,39 @@ describe("agregar un cliente nuevo", () => {
       hora_solicitada: aLas(8, 20),
     });
 
+    expect(await horarios(a.pedidoId)).toEqual(antesA);
+  });
+
+  it("editar un pedido en modo AISLADO (Modo Manual) tampoco mueve a los demás", async () => {
+    // Es el mismo invariante para la edición: en el Modo Manual el sistema no
+    // reprograma a terceros, solo re-agenda el pedido que se editó.
+    const { plantelId, plantaId, disenoId } = await escenario();
+    const clienteA = await crearCliente(true, 30, 30);
+    const clienteB = await crearCliente(true, 30, 30);
+    const base = {
+      diseno_id: disenoId,
+      plantel_id: plantelId,
+      planta_id: plantaId,
+      tipo_descarga: "Canal directo",
+      creado_por: "test",
+    };
+
+    const a = await programarPedido({ ...base, cliente_id: clienteA, volumen_total_m3: 22, hora_solicitada: DIA });
+    const b = await programarPedido({
+      ...base,
+      cliente_id: clienteB,
+      volumen_total_m3: 11,
+      hora_solicitada: aLas(11),
+    });
+    const antesA = await horarios(a.pedidoId);
+
+    // Sube el volumen de B (2 viajes en vez de 1) con la cascada AISLADA.
+    const r = await modificarPedido(
+      b.pedidoId,
+      { ...base, cliente_id: clienteB, volumen_total_m3: 22, hora_solicitada: aLas(11) },
+      true,
+    );
+    expect(r.viajes.filter((v) => v.mixerId != null).length).toBe(2);
     expect(await horarios(a.pedidoId)).toEqual(antesA);
   });
 

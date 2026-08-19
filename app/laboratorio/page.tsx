@@ -7,6 +7,7 @@ import {
   formatearVentana,
   type ViajeVentana,
 } from "@/lib/laboratorio/ventana";
+import { compararPlanteles } from "@/lib/planteles-orden";
 import { Card, PageHeader } from "../components/ui";
 import { GestionAsignaciones, type LaboratoristaOpc, type ProgramaDia } from "./gestion";
 import { AsignacionPlantas, type PlantaAsignable } from "./asignacion-plantas";
@@ -141,7 +142,17 @@ export default async function LaboratorioPage({
         }))
     : [];
 
-  // Una fila por programa (pedido) con su ventana; orden = hora programada (llegada).
+  // Una fila por programa (pedido) con su ventana. El ORDEN es el del Programa
+  // DPCR-08: primero por plantel (orden de negocio, no alfabético) y dentro de cada
+  // plantel por la llegada a obra del primer viaje del pedido —la misma clave que usa
+  // el documento (`primeraLlegadaMs` en lib/programa/snapshot.ts)—, para que el Jefe
+  // de Laboratorio recorra la lista en el mismo orden en que lee el programa.
+  const primeraLlegadaMs = (viajes: { hora_llegada_proyecto: Date | null }[]) => {
+    const ms = viajes
+      .filter((v) => v.hora_llegada_proyecto != null)
+      .map((v) => v.hora_llegada_proyecto!.getTime());
+    return ms.length ? Math.min(...ms) : Number.MAX_SAFE_INTEGER;
+  };
   const filas = pedidos
     .map((p) => {
       const ventana = ventanaDePedido(p.viajes as ViajeVentana[], p.hora_solicitada);
@@ -158,9 +169,15 @@ export default async function LaboratorioPage({
         ventana,
         ventanaTxt: ventana ? formatearVentana(ventana) : null,
         inicioMs: ventana ? ventana.inicioMs : Number.MAX_SAFE_INTEGER,
+        llegadaMs: primeraLlegadaMs(p.viajes),
       };
     })
-    .sort((a, b) => a.inicioMs - b.inicioMs || a.empresa.localeCompare(b.empresa));
+    .sort(
+      (a, b) =>
+        compararPlanteles(a.plantel, b.plantel) ||
+        a.llegadaMs - b.llegadaMs ||
+        a.empresa.localeCompare(b.empresa),
+    );
 
   // Traslapes: POR laboratorista, dos programas de cliente DISTINTO que se cruzan.
   // Un pedido puede tener VARIOS laboratoristas → se indexa cada (pedido, lab).
