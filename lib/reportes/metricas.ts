@@ -61,6 +61,7 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
           estado: true,
           es_adicion: true,
           volumen_asignado_m3: true,
+          volumen_real_m3: true,
           hora_inicio_carga: true,
           hora_llegada_proyecto: true,
           hora_regreso_planta: true,
@@ -127,9 +128,11 @@ export async function calcularReportes(f: FiltroReportes): Promise<ResumenReport
 
     for (const v of conMixer) {
       if (v.estado === "Completado") {
-        volumenM3 += v.volumen_asignado_m3;
+        // Volumen DESPACHADO: el real si el despachador lo corrigio.
+        const m3Real = v.volumen_real_m3 ?? v.volumen_asignado_m3;
+        volumenM3 += m3Real;
         const k = diaMs(p.hora_solicitada);
-        porDia.set(k, (porDia.get(k) ?? 0) + v.volumen_asignado_m3);
+        porDia.set(k, (porDia.get(k) ?? 0) + m3Real);
         c.viajes += 1;
       }
       // Primer viaje del cliente ese día (carga más temprana): candidato para la

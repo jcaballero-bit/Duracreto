@@ -1488,9 +1488,13 @@ export async function cancelarViajeAction(
     const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
     const nota = (motivo ?? "").trim();
 
+    // Se CONSERVAN mixer y operador: el programa del día ya está publicado y no se
+    // reescribe porque un viaje se caiga (misma regla que la cancelación de un pedido
+    // después del cierre). La flota no queda retenida: la cascada ignora los viajes
+    // Cancelados, así que la unidad se puede reutilizar igual.
     await prisma.viajes.update({
       where: { id: viajeId },
-      data: { estado: "Cancelado", mixer_id: null, operador_id: null },
+      data: { estado: "Cancelado" },
     });
     await prisma.bitacora_auditoria.create({
       data: {

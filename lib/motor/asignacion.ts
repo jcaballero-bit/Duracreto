@@ -3867,17 +3867,22 @@ export async function editarVolumenViaje(
     };
   }
 
-  const anterior = viaje.volumen_asignado_m3;
+  // Se escribe el volumen REAL, nunca el programado: el Programa DPCR-08 no se
+  // modifica porque en Despacho se cargue menos (o mas) de lo previsto. Tampoco se
+  // marca `ajustado_manualmente`: ese flag existia para que la cascada no
+  // sobreescribiera el volumen editado, y ahora el dato real vive en su propia
+  // columna, que la cascada nunca toca.
+  const anterior = viaje.volumen_real_m3 ?? viaje.volumen_asignado_m3;
   await prisma.viajes.update({
     where: { id: viajeId },
-    data: { volumen_asignado_m3: nuevoVolumen, ajustado_manualmente: true },
+    data: { volumen_real_m3: nuevoVolumen },
   });
   await prisma.bitacora_auditoria.create({
     data: {
       tabla_afectada: "viajes",
       registro_id: viajeId,
       usuario,
-      campo_modificado: "volumen_asignado_m3",
+      campo_modificado: "volumen_real_m3",
       valor_anterior: String(anterior),
       valor_nuevo: String(nuevoVolumen),
       // El motivo distingue la correccion del Admin sobre un viaje ya despachado

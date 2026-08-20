@@ -1551,7 +1551,10 @@ describe("carga segura de planeacion vs capacidad fisica del mixer", () => {
     // Hasta la fisica (10), aunque supere la carga segura (9) -> permitido (emergencia).
     expect((await editarVolumenViaje(trip.id, 10, "test")).ok).toBe(true);
     const v = await prisma.viajes.findUniqueOrThrow({ where: { id: trip.id } });
-    expect(v.volumen_asignado_m3).toBe(10);
+    // El volumen cargado en emergencia es el REAL; el programado no se toca (así el
+    // Programa DPCR-08 no cambia por lo que pase en Despacho).
+    expect(v.volumen_real_m3).toBe(10);
+    expect(v.volumen_asignado_m3).toBe(9);
   });
 });
 

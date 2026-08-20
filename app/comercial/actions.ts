@@ -171,14 +171,14 @@ export async function editarEventoComercialAction(
       hora_solicitada: true,
       fecha_cancelacion: true,
       cliente: { select: { empresa: true } },
-      viajes: { select: { estado: true, volumen_asignado_m3: true } },
+      viajes: { select: { estado: true, volumen_asignado_m3: true, volumen_real_m3: true } },
     },
   });
   if (!pedido) return { ok: false, mensaje: "Pedido no encontrado." };
 
   const suministrado = pedido.viajes
     .filter((v) => v.estado === "Completado")
-    .reduce((s, v) => s + v.volumen_asignado_m3, 0);
+    .reduce((s, v) => s + (v.volumen_real_m3 ?? v.volumen_asignado_m3), 0);
   const redondear = (n: number) => Math.round(n * 100) / 100;
 
   // Nuevo día conservando la hora del instante original de referencia.

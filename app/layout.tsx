@@ -1,8 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { auth } from "@/auth";
-import { Sidebar } from "./components/sidebar";
-import { Topbar } from "./components/topbar";
+import { Shell } from "./components/shell";
 import { RegistrarSW } from "./components/registrar-sw";
 import { InstallBanner } from "./components/install-banner";
 
@@ -49,11 +48,7 @@ export default async function RootLayout({
         <RegistrarSW />
         {usuario ? (
           <>
-            <Sidebar usuario={usuario} />
-            <div className="print-shell-wrap flex min-h-screen flex-col md:pl-[260px]">
-              <Topbar usuario={usuario} />
-              <main className="print-shell-main flex-1 px-4 py-4 md:px-6 md:py-6">{children}</main>
-            </div>
+            <Shell usuario={usuario}>{children}</Shell>
             <InstallBanner />
           </>
         ) : (

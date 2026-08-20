@@ -6,6 +6,18 @@ import { alcanceActual, requerirPasswordAlDia } from "@/lib/auth/guard";
 import { filtroPedidoPorZona, type Alcance } from "@/lib/auth/acceso";
 import { Card } from "./components/ui";
 import { Saludo } from "./saludo";
+import { CalendarioProduccion, type DesgloseDia } from "./calendario-produccion";
+import {
+  armarSemanas,
+  cortesEscala,
+  mesDesplazado,
+  nivelDeVolumen,
+  parsearMes,
+  resumenMes,
+  ymdLocal,
+} from "@/lib/produccion/calendario";
+import { produccionDelMes, type ProduccionMes } from "@/lib/produccion/consulta";
+import { accesoCalendario } from "@/lib/produccion/acceso";
 
 export const dynamic = "force-dynamic";
 
@@ -52,7 +64,13 @@ async function resumen(incluirFlota: boolean, alcance: Alcance | null) {
   return { planteles, mixersDisp, mixersTotal, volProx, fechaProx };
 }
 
-export default async function Panel() {
+export default async function Panel({
+  searchParams,
+}: {
+  // Mes visible del calendario ("YYYY-MM") y filtro de zona: van en la URL para que el
+  // estado sea compartible y los datos los siga resolviendo el servidor.
+  searchParams?: Promise<{ mesProd?: string; zonaProd?: string }>;
+}) {
   // Primer ingreso: si debe cambiar contraseña, al panel tampoco entra.
   await requerirPasswordAlDia();
   const alcance = await alcanceActual();
@@ -74,6 +92,41 @@ export default async function Panel() {
 
   const r = await resumen(!ocultarFlota, alcance);
   const sesion = await auth();
+
+  // ── Calendario de producción ejecutada ────────────────────────────────────
+  // El acceso lo decide `accesoCalendario` (regla por rol, probada aparte). Si el rol
+  // no lo ve, NO se consulta la producción: el dato ni sale del servidor.
+  const acceso = accesoCalendario(alcance, sesion?.user?.id);
+  const sp = (await searchParams) ?? {};
+  const { anio, mes } = parsearMes(sp.mesProd);
+  const zonaProd = acceso.zonas.includes(sp.zonaProd ?? "") ? sp.zonaProd : undefined;
+  const produccion: ProduccionMes =
+    acceso.visible && !acceso.faltaZona
+      ? await produccionDelMes({ anio, mes, filtroPedido: acceso.filtro, zona: zonaProd })
+      : { porDia: new Map(), porDiaPlantel: new Map() };
+  const semanas = armarSemanas(anio, mes, produccion.porDia);
+  const resumenProd = resumenMes(semanas);
+  // Cortes de la escala sobre el rango REAL del mes visible (no umbrales fijos).
+  const cortes = cortesEscala(
+    semanas.flatMap((sem) => sem.dias.filter((d) => d.delMes).map((d) => d.m3)),
+  );
+  const niveles: Record<string, number> = {};
+  for (const sem of semanas) {
+    for (const d of sem.dias) {
+      if (d.delMes && d.m3 > 0) niveles[d.iso] = nivelDeVolumen(d.m3, cortes);
+    }
+  }
+  const desglose: Record<string, DesgloseDia[]> = {};
+  for (const [iso, planteles] of produccion.porDiaPlantel) {
+    desglose[iso] = planteles.map((x) => ({ etiqueta: x.nombre, m3: x.m3, viajes: x.viajes }));
+  }
+  const mesIso = `${anio}-${String(mes).padStart(2, "0")}`;
+  const enlaceProd = (mesIso: string, zona: string | undefined) => {
+    const q = new URLSearchParams();
+    q.set("mesProd", mesIso);
+    if (zona) q.set("zonaProd", zona);
+    return `/?${q.toString()}`;
+  };
   // Primer nombre del usuario logueado (el saludo cambia según quién ve la página).
   const nombre = (sesion?.user?.name ?? "").trim().split(/\s+/)[0] || "usuario";
   const fechaHoy = new Date()
@@ -117,6 +170,46 @@ export default async function Panel() {
           pequeno
         />
       </div>
+
+      {acceso.visible && (
+        /* La mitad del ancho en pantallas grandes; completo en tablet/celular. */
+        <Card className="mt-6 p-4 lg:w-1/2">
+          {acceso.faltaZona ? (
+            <p className="text-sm text-muted">
+              Tu usuario no tiene una zona asignada, así que no se puede mostrar la
+              producción. Pídele a un administrador que te asigne una zona.
+            </p>
+          ) : (
+            <CalendarioProduccion
+              semanas={semanas}
+              niveles={niveles}
+              desglose={desglose}
+              anio={anio}
+              mes={mes}
+              hrefMesAnterior={enlaceProd(mesDesplazado(anio, mes, -1), zonaProd)}
+              hrefMesSiguiente={enlaceProd(mesDesplazado(anio, mes, 1), zonaProd)}
+              totalMes={resumenProd.totalM3}
+              promedioPorDia={resumenProd.promedioPorDia}
+              diasConProduccion={resumenProd.diasConProduccion}
+              alcanceTxt={acceso.etiqueta}
+              zona={zonaProd ?? ""}
+              zonas={
+                acceso.zonas.length
+                  ? [
+                      { valor: "", etiqueta: "Todas", href: enlaceProd(mesIso, undefined) },
+                      ...acceso.zonas.map((z) => ({
+                        valor: z,
+                        etiqueta: z,
+                        href: enlaceProd(mesIso, z),
+                      })),
+                    ]
+                  : []
+              }
+              hoyIso={ymdLocal(new Date())}
+            />
+          )}
+        </Card>
+      )}
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <AccesoRapido

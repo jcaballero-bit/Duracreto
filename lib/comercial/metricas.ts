@@ -97,11 +97,11 @@ function precision(proyectado: number, real: number): number | null {
  *  Completado (entregados). NO cuenta lo programado/pendiente — si aún no se
  *  completa ningún viaje, el pedido aporta 0 (todavía no se ha vendido/despachado). */
 function volumenDespachado(
-  viajes: { estado: string; volumen_asignado_m3: number }[],
+  viajes: { estado: string; volumen_asignado_m3: number; volumen_real_m3?: number | null }[],
 ): number {
   return viajes
     .filter((v) => v.estado === "Completado")
-    .reduce((s, v) => s + v.volumen_asignado_m3, 0);
+    .reduce((s, v) => s + (v.volumen_real_m3 ?? v.volumen_asignado_m3), 0);
 }
 
 export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenComercial> {
@@ -128,6 +128,7 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
           select: {
             estado: true,
             volumen_asignado_m3: true,
+            volumen_real_m3: true,
             motivo_asignacion: true,
             estado_confirmacion: true,
             fecha_hora_confirmacion: true,
@@ -410,7 +411,7 @@ export async function clientesAtendidos(f: FiltroCobertura): Promise<CoberturaCo
       },
       viajes: {
         where: { estado: "Completado" },
-        select: { volumen_asignado_m3: true },
+        select: { volumen_asignado_m3: true, volumen_real_m3: true },
       },
     },
   });
@@ -420,7 +421,7 @@ export async function clientesAtendidos(f: FiltroCobertura): Promise<CoberturaCo
 
   for (const p of pedidos) {
     const c = p.cliente;
-    const m3 = p.viajes.reduce((s, v) => s + v.volumen_asignado_m3, 0);
+    const m3 = p.viajes.reduce((s, v) => s + (v.volumen_real_m3 ?? v.volumen_asignado_m3), 0);
     if (m3 <= 0) continue; // sin volumen entregado real
     if (c.latitud == null || c.longitud == null) {
       sinUbic.add(c.id); // atendido pero sin coordenadas → no va al mapa
@@ -505,6 +506,7 @@ export async function registroAdicionesCancelaciones(
         select: {
           estado: true,
           volumen_asignado_m3: true,
+          volumen_real_m3: true,
           motivo_asignacion: true,
           mixer_id: true,
         },

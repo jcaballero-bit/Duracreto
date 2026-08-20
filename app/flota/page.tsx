@@ -390,7 +390,7 @@ async function resumenZona(zona: string, ini: Date, fin: Date): Promise<ResumenZ
   const reporte: FilaMixerReporte[] = mixers
     .map((m) => {
       const vs = porMixer.get(m.id) ?? [];
-      const m3 = vs.reduce((s, v) => s + v.volumen_asignado_m3, 0);
+      const m3 = vs.reduce((s, v) => s + (v.volumen_real_m3 ?? v.volumen_asignado_m3), 0);
       const inicios = vs.map((v) => v.hora_inicio_carga?.getTime()).filter((t): t is number => t != null);
       const regresos = vs.map((v) => v.hora_regreso_planta?.getTime()).filter((t): t is number => t != null);
       const horasOcupado =
@@ -425,7 +425,7 @@ async function resumenZona(zona: string, ini: Date, fin: Date): Promise<ResumenZ
           viajeId: v.id,
           inicioMs: v.hora_inicio_carga!.getTime(),
           finMs: v.hora_regreso_planta!.getTime(),
-          etiqueta: `${v.pedido.cliente.empresa.slice(0, 10)} ${v.volumen_asignado_m3}m³`,
+          etiqueta: `${v.pedido.cliente.empresa.slice(0, 10)} ${v.volumen_real_m3 ?? v.volumen_asignado_m3}m³`,
           origen: v.motivo_asignacion ?? "",
         })),
     };
@@ -438,7 +438,9 @@ async function resumenZona(zona: string, ini: Date, fin: Date): Promise<ResumenZ
     mixersEnUso: porMixer.size,
     bombasTotal: bombas.length,
     bombasDisp: bombas.filter((b) => b.estado === "Disponible").length,
-    m3Dia: Math.round(viajes.reduce((s, v) => s + v.volumen_asignado_m3, 0) * 100) / 100,
+    m3Dia:
+      Math.round(viajes.reduce((s, v) => s + (v.volumen_real_m3 ?? v.volumen_asignado_m3), 0) * 100) /
+      100,
     viajesDia: viajes.length,
     reporte,
     timeline,

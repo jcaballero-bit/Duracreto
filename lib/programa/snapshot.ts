@@ -62,6 +62,34 @@ export interface BandaPlantaSnap {
 }
 export type FilaSnap = ViajeSnap | BandaPlantaSnap;
 
+/**
+ * Total de un pedido tal como debe leerse en el documento: la SUMA de los viajes que
+ * se imprimen (los que tienen mixer y no son adición de Despacho).
+ *
+ * Antes se usaba `volumen_programado` (la línea base congelada del programa) y el
+ * número no cuadraba con la columna Vol. en dos casos reales:
+ *  · el despachador BAJA el volumen de un camión durante el día (bitácora:
+ *    "9 → 7"): el pedido sigue diciendo 150 y los viajes suman 148;
+ *  · el pedido se EDITA después del cierre: `volumen_programado` queda congelado en
+ *    150 mientras los viajes ya suman 249.
+ * Quien lee el programa suma la columna, así que el Total tiene que ser esa suma.
+ * `volumen_programado` sigue intacto en la base: es la línea base de las métricas
+ * comerciales (adiciones/cancelaciones), no un número para imprimir.
+ *
+ * Un pedido SIN viajes impresos (volumen que el motor no pudo cubrir) cae al volumen
+ * del pedido: si no, aparecería en 0.00 y se perdería el dato de cuánto se pidió.
+ */
+export function totalImpreso(p: {
+  volumen_programado?: number | null;
+  volumen_total_m3: number;
+  viajes: { mixer_id: number | null; volumen_asignado_m3: number }[];
+}): number {
+  const impresos = p.viajes.filter((v) => v.mixer_id != null);
+  if (impresos.length === 0) return p.volumen_programado ?? p.volumen_total_m3;
+  const suma = impresos.reduce((s, v) => s + v.volumen_asignado_m3, 0);
+  return Math.round(suma * 100) / 100;
+}
+
 export interface PedidoSnap {
   id: number;
   cliente: string;
@@ -244,10 +272,7 @@ export async function construirSnapshot({
 
   const plantelesSnap: PlantelSnap[] = plantelesOrd.map((pl) => {
     const suyos = pedidos.filter((p) => p.plantel_id === pl.id);
-    const totalM3 = suyos.reduce(
-      (s, p) => s + (p.volumen_programado ?? p.volumen_total_m3),
-      0,
-    );
+    const totalM3 = Math.round(suyos.reduce((s, p) => s + totalImpreso(p), 0) * 100) / 100;
     // Dentro del plantel, los pedidos van por hora de llegada a obra del primer viaje.
     const ordenados = [...suyos].sort((a, b) => primeraLlegadaMs(a) - primeraLlegadaMs(b));
     const mostrarPlanta = pl.plantas.length >= 2;
@@ -271,10 +296,7 @@ export async function construirSnapshot({
       color,
     })),
     planteles: plantelesSnap,
-    totalZona: pedidos.reduce(
-      (s, p) => s + (p.volumen_programado ?? p.volumen_total_m3),
-      0,
-    ),
+    totalZona: Math.round(pedidos.reduce((s, p) => s + totalImpreso(p), 0) * 100) / 100,
   };
 }
 
@@ -369,7 +391,7 @@ function pedidoASnap(
         ? `Temp: ${p.sacos_hielo_por_m3} sacos/m³`
         : "Sin control temp.",
     revenimiento: p.revenimiento || p.diseno.revenimiento || "",
-    totalM3: p.volumen_programado ?? p.volumen_total_m3,
+    totalM3: totalImpreso(p),
     bombaCodigo: p.bomba_id != null ? (codigoBomba.get(p.bomba_id) ?? null) : null,
     bombaColor: p.bomba_id != null ? (colorBomba.get(p.bomba_id) ?? null) : null,
     observaciones: p.observaciones ?? "",

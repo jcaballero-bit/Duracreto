@@ -323,7 +323,7 @@ export default async function DespachoPage({
       Math.round(
         p.viajes
           .filter((v) => v.estado === "Completado")
-          .reduce((s, v) => s + v.volumen_asignado_m3, 0) * 10,
+          .reduce((s, v) => s + (v.volumen_real_m3 ?? v.volumen_asignado_m3), 0) * 10,
       ) / 10;
     // Último viaje del pedido (por hora de carga programada) → ahí va "Finalizar".
     const ordenDe = (v: (typeof p.viajes)[number]) =>
@@ -384,7 +384,9 @@ export default async function DespachoPage({
         elemento: p.elemento ?? "—",
         tipoDescarga: descargaDisplay,
         hieloTxt: textoHielo(p.sacos_hielo_por_m3),
-        volumen: v.volumen_asignado_m3,
+        // Lo que el despachador ve y edita es el volumen REAL cargado; el
+        // programado (`volumen_asignado_m3`) queda intacto para el DPCR-08.
+        volumen: v.volumen_real_m3 ?? v.volumen_asignado_m3,
         volumenEditable,
         volumenCorreccionAdmin,
         volumenBloqueoMsg: volumenEditable ? null : "No editable: carga ya finalizada",
@@ -445,7 +447,7 @@ export default async function DespachoPage({
           viajeId: v.id,
           inicioMs: v.hora_inicio_carga.getTime(),
           finMs: v.hora_regreso_planta.getTime(),
-          etiqueta: `${p.cliente.empresa.slice(0, 10)} ${v.volumen_asignado_m3}m³`,
+          etiqueta: `${p.cliente.empresa.slice(0, 10)} ${v.volumen_real_m3 ?? v.volumen_asignado_m3}m³`,
           origen: v.motivo_asignacion ?? "",
         });
         filasTimeline.set(v.mixer.id, ft);
@@ -485,7 +487,7 @@ export default async function DespachoPage({
       const total = p.volumen_total_m3;
       const despachadoM3 = conMixer
         .filter((v) => DESPACHADO.has(v.estado))
-        .reduce((s, v) => s + v.volumen_asignado_m3, 0);
+        .reduce((s, v) => s + (v.volumen_real_m3 ?? v.volumen_asignado_m3), 0);
       return [
         {
           pedidoId: p.id,

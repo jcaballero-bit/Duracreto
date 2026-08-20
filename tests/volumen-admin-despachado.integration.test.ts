@@ -69,7 +69,9 @@ describe("corregir el volumen de un viaje ya despachado", () => {
     const res = await editarVolumenAction(viajeId, 7.5);
     expect(res.ok).toBe(true);
     const v = await prisma.viajes.findUniqueOrThrow({ where: { id: viajeId } });
-    expect(v.volumen_asignado_m3).toBe(7.5);
+    // La corrección va al volumen REAL; el programado (dato del DPCR-08) no se toca.
+    expect(v.volumen_real_m3).toBe(7.5);
+    expect(v.volumen_asignado_m3).toBe(9);
     // El estado y las horas reales no se tocan: solo se corrigió el volumen.
     expect(v.estado).toBe("Completado");
     expect(v.ts_inicio_carga_real).not.toBeNull();
@@ -81,7 +83,7 @@ describe("corregir el volumen de un viaje ya despachado", () => {
     await editarVolumenAction(viajeId, 6);
 
     const reg = await prisma.bitacora_auditoria.findFirstOrThrow({
-      where: { tabla_afectada: "viajes", registro_id: viajeId, campo_modificado: "volumen_asignado_m3" },
+      where: { tabla_afectada: "viajes", registro_id: viajeId, campo_modificado: "volumen_real_m3" },
       orderBy: { id: "desc" },
     });
     expect(reg.valor_anterior).toBe("9");
@@ -97,6 +99,7 @@ describe("corregir el volumen de un viaje ya despachado", () => {
     expect(res.ok).toBe(false);
     expect(res.mensaje).toContain("carga ya finalizó");
     const v = await prisma.viajes.findUniqueOrThrow({ where: { id: viajeId } });
+    expect(v.volumen_real_m3).toBeNull();
     expect(v.volumen_asignado_m3).toBe(9);
   });
 

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { PanelLeftClose } from "lucide-react";
 import { puedeAccederRuta } from "@/lib/auth/acceso";
 import { NAV, etiquetaNav } from "./nav";
 import { UserMenu } from "./user-menu";
@@ -20,7 +21,14 @@ function esActivo(pathname: string, href: string, activePrefixes?: string[]): bo
   return prefijos.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-export function Sidebar({ usuario }: { usuario: UsuarioShell }) {
+export function Sidebar({
+  usuario,
+  onOcultar,
+}: {
+  usuario: UsuarioShell;
+  /** Oculta el menú (lo pasa el shell, que también ajusta el ancho del contenido). */
+  onOcultar?: () => void;
+}) {
   const pathname = usePathname();
   // Solo se muestran los ítems a los que el rol tiene acceso.
   const items = NAV.filter((item) => puedeAccederRuta(usuario.roles, item.href));
@@ -37,12 +45,22 @@ export function Sidebar({ usuario }: { usuario: UsuarioShell }) {
             className="h-full w-full object-contain"
           />
         </div>
-        <div className="leading-tight">
+        <div className="min-w-0 leading-tight">
           <div className="font-bold text-white">DURACRETO Logistics</div>
           <div className="text-[11px] tracking-wider text-slate-400">
             CONCRETO PREMEZCLADO
           </div>
         </div>
+        {onOcultar && (
+          <button
+            onClick={onOcultar}
+            title="Ocultar el menú"
+            aria-label="Ocultar el menú"
+            className="ml-auto shrink-0 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-sidebar-active hover:text-white"
+          >
+            <PanelLeftClose size={18} />
+          </button>
+        )}
       </div>
 
       {/* Navegación */}

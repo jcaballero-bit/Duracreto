@@ -606,7 +606,11 @@ model viajes {
   pedido_id             Int
   mixer_id              Int? // nullable: un viaje sugerido de refuerzo aún sin asignar
   capacidad_asignada_m3 Int // carga SEGURA de planeacion del mixer (fisica - margen, p. ej. 7/9/11)
-  volumen_asignado_m3   Float // volumen real cargado en este viaje (puede ser parcial)
+  volumen_asignado_m3   Float // volumen PROGRAMADO de este viaje (dato del DPCR-08)
+  // Volumen REAL cargado. NULL = se cargo lo programado. Despacho en vivo escribe
+  // AQUI, nunca sobre `volumen_asignado_m3`: asi el Programa DPCR-08 no se modifica
+  // cuando se despacha menos de lo programado (misma regla que `hora_*` vs `ts_*_real`).
+  volumen_real_m3       Float?
 
   // Motorista del viaje. Se preselecciona con el operador del mixer y es
   // editable en Despacho (por si el habitual no está disponible ese día).
