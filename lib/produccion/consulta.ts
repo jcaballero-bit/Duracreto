@@ -14,6 +14,14 @@ import { prisma } from "@/lib/prisma";
 import { ESTADO_VIAJE_COMPLETADO } from "@/lib/motor/config";
 import { ymdLocal } from "./calendario";
 
+/** Volumen y viajes de una PLANTA dosificadora en un día (segundo nivel del desglose). */
+export interface ProduccionPlanta {
+  plantaId: number;
+  nombre: string;
+  m3: number;
+  viajes: number;
+}
+
 /** Volumen y viajes de un plantel en un día (para el desglose al hacer clic). */
 export interface ProduccionPlantel {
   plantelId: number;
@@ -21,6 +29,12 @@ export interface ProduccionPlantel {
   zona: string;
   m3: number;
   viajes: number;
+  /**
+   * Sus plantas dosificadoras, ordenadas de mayor a menor y sin las que no
+   * despacharon. Un plantel de una sola planta trae una sola entrada (Santa Marta y
+   * Tegucigalpa son los que tienen dos).
+   */
+  plantas: ProduccionPlanta[];
 }
 
 export interface ProduccionMes {
@@ -69,10 +83,16 @@ export async function produccionDelMes({
     select: {
       volumen_asignado_m3: true,
       volumen_real_m3: true,
+      // Planta DOSIFICADORA del viaje (un pedido puede repartirse entre las 2 plantas
+      // de un plantel, así que el dato va por viaje, no por pedido).
+      planta_id: true,
+      planta: { select: { nombre: true } },
       pedido: {
         select: {
           hora_solicitada: true,
           plantel_id: true,
+          planta_id: true,
+          planta: { select: { nombre: true } },
           plantel: { select: { nombre: true, zona: true } },
         },
       },
@@ -81,6 +101,8 @@ export async function produccionDelMes({
 
   const porDia = new Map<string, { m3: number; viajes: number }>();
   const porDiaPlantel = new Map<string, Map<number, ProduccionPlantel>>();
+  // Tercer nivel del índice: día → plantel → planta.
+  const porDiaPlanta = new Map<string, Map<number, Map<number, ProduccionPlanta>>>();
 
   for (const v of viajes) {
     const iso = ymdLocal(v.pedido.hora_solicitada);
@@ -92,17 +114,30 @@ export async function produccionDelMes({
     porDia.set(iso, dia);
 
     const porPlantel = porDiaPlantel.get(iso) ?? new Map<number, ProduccionPlantel>();
-    const p = porPlantel.get(v.pedido.plantel_id) ?? {
+    const p: ProduccionPlantel = porPlantel.get(v.pedido.plantel_id) ?? {
       plantelId: v.pedido.plantel_id,
       nombre: v.pedido.plantel.nombre,
       zona: v.pedido.plantel.zona,
       m3: 0,
       viajes: 0,
+      plantas: [], // se llena al final, desde el indice por planta
     };
     p.m3 += m3;
     p.viajes += 1;
     porPlantel.set(v.pedido.plantel_id, p);
     porDiaPlantel.set(iso, porPlantel);
+
+    // Planta del viaje; si faltara, la del pedido (y si no, queda sin identificar).
+    const plantaId = v.planta_id ?? v.pedido.planta_id ?? 0;
+    const plantaNombre = v.planta?.nombre ?? v.pedido.planta?.nombre ?? "Sin planta";
+    const delDia = porDiaPlanta.get(iso) ?? new Map<number, Map<number, ProduccionPlanta>>();
+    const delPlantel = delDia.get(v.pedido.plantel_id) ?? new Map<number, ProduccionPlanta>();
+    const pa = delPlantel.get(plantaId) ?? { plantaId, nombre: plantaNombre, m3: 0, viajes: 0 };
+    pa.m3 += m3;
+    pa.viajes += 1;
+    delPlantel.set(plantaId, pa);
+    delDia.set(v.pedido.plantel_id, delPlantel);
+    porDiaPlanta.set(iso, delDia);
   }
 
   // Redondeo a 1 decimal (sumar 11.75 + 9.5 + … arrastra cola binaria) y orden por
@@ -115,7 +150,13 @@ export async function produccionDelMes({
     desglose.set(
       iso,
       [...porPlantel.values()]
-        .map((p) => ({ ...p, m3: r1(p.m3) }))
+        .map((p) => ({
+          ...p,
+          m3: r1(p.m3),
+          plantas: [...(porDiaPlanta.get(iso)?.get(p.plantelId)?.values() ?? [])]
+            .map((pa) => ({ ...pa, m3: r1(pa.m3) }))
+            .sort((a, b) => b.m3 - a.m3 || a.nombre.localeCompare(b.nombre)),
+        }))
         .sort((a, b) => b.m3 - a.m3 || a.nombre.localeCompare(b.nombre)),
     );
   }

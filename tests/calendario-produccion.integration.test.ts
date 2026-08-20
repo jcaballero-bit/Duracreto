@@ -160,6 +160,65 @@ describe("producciónDelMes — solo lo despachado", () => {
     expect(desglose.reduce((s, d) => s + d.viajes, 0)).toBe(prod.porDia.get(ISO)!.viajes);
   });
 
+  it("el desglose de un plantel se abre por PLANTA y sus plantas suman el total del plantel", async () => {
+    // Santa Marta reparte entre sus 2 plantas: el desglose tiene que decir cuánto
+    // salió de cada una (es lo que se abre al hacer clic en el nombre del plantel).
+    const { norte, disenoId } = await escenario();
+    const planta2 = await prisma.plantas.create({
+      data: { plantel_id: norte.plantelId, nombre: "SANY", capacidad_m3h: 28, tiempo_alistamiento_min: 5 },
+    });
+    const clienteA = await crearCliente(true, 30, 30);
+    const clienteB = await crearCliente(true, 30, 30);
+    const base = { diseno_id: disenoId, tipo_descarga: "Canal directo", creado_por: "test", hora_solicitada: DIA };
+
+    const a = await programarPedido({
+      ...base,
+      cliente_id: clienteA,
+      plantel_id: norte.plantelId,
+      planta_id: norte.plantaId,
+      volumen_total_m3: 22,
+    });
+    const b = await programarPedido({
+      ...base,
+      cliente_id: clienteB,
+      plantel_id: norte.plantelId,
+      planta_id: planta2.id,
+      volumen_total_m3: 11,
+    });
+    for (const v of a.viajes.filter((x) => x.mixerId != null)) await completar(v.id);
+    await completar(b.viajes.find((x) => x.mixerId != null)!.id);
+
+    const prod = await produccionDelMes({ anio: 2026, mes: 8 });
+    const plantel = prod.porDiaPlantel.get(ISO)!.find((x) => x.nombre === "Santa Marta")!;
+    // Las dos plantas aparecen, ordenadas de mayor a menor, y suman el total.
+    expect(plantel.plantas.map((x) => x.nombre)).toEqual(["Santa Marta P1", "SANY"]);
+    expect(plantel.plantas.map((x) => x.m3)).toEqual([22, 11]);
+    const suma = Math.round(plantel.plantas.reduce((s, x) => s + x.m3, 0) * 10) / 10;
+    expect(suma).toBe(plantel.m3);
+    expect(plantel.plantas.reduce((s, x) => s + x.viajes, 0)).toBe(plantel.viajes);
+  });
+
+  it("un plantel de una sola planta trae una sola entrada en el desglose", async () => {
+    const { norte, disenoId } = await escenario();
+    const clienteId = await crearCliente(true, 30, 30);
+    const r = await programarPedido({
+      cliente_id: clienteId,
+      diseno_id: disenoId,
+      plantel_id: norte.plantelId,
+      planta_id: norte.plantaId,
+      volumen_total_m3: 11,
+      hora_solicitada: DIA,
+      tipo_descarga: "Canal directo",
+      creado_por: "test",
+    });
+    await completar(r.viajes.find((v) => v.mixerId != null)!.id);
+
+    const prod = await produccionDelMes({ anio: 2026, mes: 8 });
+    const plantel = prod.porDiaPlantel.get(ISO)![0];
+    expect(plantel.plantas).toHaveLength(1);
+    expect(plantel.plantas[0].m3).toBe(plantel.m3);
+  });
+
   it("un Jefe de Planta con un solo plantel asignado ve SOLO ese plantel", async () => {
     const { norte, otro, disenoId } = await escenario();
     const clienteA = await crearCliente(true, 30, 30);

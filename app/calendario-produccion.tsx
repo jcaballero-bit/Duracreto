@@ -8,18 +8,21 @@
 // los datos y los permisos los resuelve el servidor (ver `lib/produccion/consulta.ts`)
 // y el mes/zona viajan por la URL, así que el estado compartible sigue en el servidor.
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { DIAS_SEMANA, MESES, type SemanaCalendario } from "@/lib/produccion/calendario";
 
-/** Desglose de un día. Hoy es por plantel; cuando exista la clasificación por LÍNEA
- *  DE VENTA se suma otra lista aquí (misma forma) y el panel la muestra al lado. */
+/** Desglose de un día. El primer nivel es por plantel y el segundo (`hijos`) por
+ *  planta dosificadora. La forma es genérica a propósito: cuando exista la
+ *  clasificación por LÍNEA DE VENTA se cuelga igual, sin rehacer el panel. */
 export interface DesgloseDia {
   etiqueta: string;
   m3: number;
   viajes: number;
+  /** Sub-desglose que se abre al hacer clic en la fila (las plantas del plantel). */
+  hijos?: DesgloseDia[];
 }
 
 export interface CalendarioProps {
@@ -64,7 +67,22 @@ const ESCALA = [
 export function CalendarioProduccion(p: CalendarioProps) {
   const router = useRouter();
   const [diaSel, setDiaSel] = useState<string | null>(null);
+  // Planteles abiertos dentro del desglose (se ven sus plantas). Se limpia al cambiar
+  // de día: lo que se abrió para un día no tiene por qué quedar abierto en otro.
+  const [abiertos, setAbiertos] = useState<Set<string>>(new Set());
   const desgloseSel = diaSel ? (p.desglose[diaSel] ?? []) : [];
+
+  const elegirDia = (iso: string | null) => {
+    setDiaSel(iso);
+    setAbiertos(new Set());
+  };
+  const alternarPlantel = (etiqueta: string) =>
+    setAbiertos((prev) => {
+      const n = new Set(prev);
+      if (n.has(etiqueta)) n.delete(etiqueta);
+      else n.add(etiqueta);
+      return n;
+    });
 
   return (
     <div>
@@ -162,7 +180,7 @@ export function CalendarioProduccion(p: CalendarioProps) {
                     <td key={d.iso} className="p-0 align-top">
                       <button
                         type="button"
-                        onClick={() => setDiaSel(sel ? null : d.iso)}
+                        onClick={() => elegirDia(sel ? null : d.iso)}
                         disabled={nivel === 0}
                         title={
                           nivel === 0
@@ -220,7 +238,7 @@ export function CalendarioProduccion(p: CalendarioProps) {
               Desglose del {fechaLegible(diaSel)}
             </h3>
             <button
-              onClick={() => setDiaSel(null)}
+              onClick={() => elegirDia(null)}
               className="text-xs text-muted hover:text-ink"
             >
               Cerrar
@@ -232,19 +250,54 @@ export function CalendarioProduccion(p: CalendarioProps) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-muted">
-                  <th className="py-1">Plantel</th>
+                  <th className="py-1">Plantel / planta</th>
                   <th className="w-24 py-1 text-right">Viajes</th>
                   <th className="w-28 py-1 text-right">m³</th>
                 </tr>
               </thead>
               <tbody className="tabular-nums">
-                {desgloseSel.map((d) => (
-                  <tr key={d.etiqueta} className="border-b border-border/50 last:border-0">
-                    <td className="py-1 text-ink">{d.etiqueta}</td>
-                    <td className="py-1 text-right text-muted">{d.viajes}</td>
-                    <td className="py-1 text-right font-medium text-ink">{d.m3.toFixed(1)}</td>
-                  </tr>
-                ))}
+                {desgloseSel.map((d) => {
+                  const conPlantas = (d.hijos?.length ?? 0) > 0;
+                  const abierto = abiertos.has(d.etiqueta);
+                  return (
+                    <Fragment key={d.etiqueta}>
+                      <tr className="border-b border-border/50">
+                        <td className="py-1 text-ink">
+                          {conPlantas ? (
+                            <button
+                              onClick={() => alternarPlantel(d.etiqueta)}
+                              title={abierto ? "Ocultar las plantas" : "Ver el detalle por planta"}
+                              className="flex items-center gap-1 text-left hover:text-accent"
+                            >
+                              {abierto ? (
+                                <ChevronDown size={13} className="shrink-0 text-muted" />
+                              ) : (
+                                <ChevronRight size={13} className="shrink-0 text-muted" />
+                              )}
+                              {d.etiqueta}
+                            </button>
+                          ) : (
+                            <span className="pl-[18px]">{d.etiqueta}</span>
+                          )}
+                        </td>
+                        <td className="py-1 text-right text-muted">{d.viajes}</td>
+                        <td className="py-1 text-right font-medium text-ink">{d.m3.toFixed(1)}</td>
+                      </tr>
+
+                      {/* Segundo nivel: las plantas dosificadoras de ese plantel. */}
+                      {abierto &&
+                        d.hijos!.map((h) => (
+                          <tr key={h.etiqueta} className="border-b border-border/50 bg-surface/60">
+                            <td className="py-1 pl-[26px] text-xs text-muted">{h.etiqueta}</td>
+                            <td className="py-1 text-right text-xs text-muted">{h.viajes}</td>
+                            <td className="py-1 text-right text-xs font-medium text-ink">
+                              {h.m3.toFixed(1)}
+                            </td>
+                          </tr>
+                        ))}
+                    </Fragment>
+                  );
+                })}
                 <tr>
                   <td className="pt-1.5 text-sm font-semibold text-ink">Total del día</td>
                   <td className="pt-1.5 text-right text-sm font-semibold text-ink">

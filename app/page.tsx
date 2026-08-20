@@ -118,7 +118,13 @@ export default async function Panel({
   }
   const desglose: Record<string, DesgloseDia[]> = {};
   for (const [iso, planteles] of produccion.porDiaPlantel) {
-    desglose[iso] = planteles.map((x) => ({ etiqueta: x.nombre, m3: x.m3, viajes: x.viajes }));
+    desglose[iso] = planteles.map((x) => ({
+      etiqueta: x.nombre,
+      m3: x.m3,
+      viajes: x.viajes,
+      // Segundo nivel: las plantas dosificadoras del plantel (se abren al hacer clic).
+      hijos: x.plantas.map((pa) => ({ etiqueta: pa.nombre, m3: pa.m3, viajes: pa.viajes })),
+    }));
   }
   const mesIso = `${anio}-${String(mes).padStart(2, "0")}`;
   const enlaceProd = (mesIso: string, zona: string | undefined) => {
