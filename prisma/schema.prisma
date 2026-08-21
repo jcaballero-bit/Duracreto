@@ -278,6 +278,22 @@ model capacidades_reducidas {
 }
 
 // ── Bombas ─────────────────────────────────────────────────────────────────
+// Bombas asignadas a un pedido. Un pedido puede necesitar VARIAS (obras grandes con
+// dos o mas equipos de bombeo colocando a la vez) y una bomba atiende varios pedidos
+// en el dia, asi que la relacion es N a N.
+model pedidos_bombas {
+  id        Int @id @default(autoincrement())
+  pedido_id Int
+  bomba_id  Int
+
+  pedido pedidos @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
+  bomba  bombas  @relation(fields: [bomba_id], references: [id])
+
+  @@unique([pedido_id, bomba_id])
+  @@index([pedido_id])
+  @@index([bomba_id])
+}
+
 model bombas {
   id              Int    @id @default(autoincrement())
   identificador   String @unique
@@ -285,7 +301,8 @@ model bombas {
   plantel_base_id Int
 
   plantel_base planteles @relation("BombaBase", fields: [plantel_base_id], references: [id])
-  pedidos      pedidos[]
+  pedidos      pedidos[] // OBSOLETO (ver pedidos.bomba_id); el vinculo real es pedidos_bombas
+  asignaciones pedidos_bombas[]
 
   @@index([plantel_base_id])
   @@index([estado])
@@ -463,6 +480,10 @@ model pedidos {
   hora_solicitada   DateTime // fecha + hora: define el DÍA y la hora objetivo del pedido
   plantel_id        Int
   planta_id         Int
+  // OBSOLETO: un pedido puede llevar VARIAS bombas, y el vinculo vive en
+  // `pedidos_bombas` (fuente unica). La migracion `pedido_multiples_bombas` traspaso
+  // los valores y dejo esta columna en NULL; se conserva solo para no hacer DDL
+  // destructivo. NO leerla ni escribirla.
   bomba_id          Int?
   tipo_descarga     String // "Canal directo" | "Bomba estacionaria" | "Bomba pluma"
   revenimiento      String? // rango de asentamiento ('3" a 4"'…'9" a 10"'), editable por Programador/Jefe de Planta
@@ -545,7 +566,9 @@ model pedidos {
   diseno  disenos_mezcla @relation(fields: [diseno_id], references: [id])
   plantel planteles      @relation(fields: [plantel_id], references: [id])
   planta  plantas        @relation(fields: [planta_id], references: [id])
-  bomba   bombas?        @relation(fields: [bomba_id], references: [id])
+  bomba   bombas?        @relation(fields: [bomba_id], references: [id]) // OBSOLETO
+  /** Bombas del pedido (una o varias). Fuente unica del dato. */
+  bombas  pedidos_bombas[]
   asesor  asesores?      @relation(fields: [asesor_id], references: [id])
   viajes  viajes[]
   // Solicitud anticipada (proyección semanal) de la que nació este pedido, si aplica.
@@ -691,8 +714,17 @@ model viajes {
 model control_calidad_viaje {
   id                  Int      @id @default(autoincrement())
   viaje_id            Int      @unique
+  // Lecturas a la SALIDA DE PLANTA (las toma el laboratorista de planta al terminar
+  // la carga, antes de que el mixer salga).
+  revenimiento_planta Float? // pulgadas
+  temperatura_planta  Float? // unidad configurable (ver lib/calidad/config.ts)
+  // Lecturas EN OBRA (las toma el laboratorista del proyecto al llegar el mixer).
   revenimiento_obra   Float? // pulgadas
   temperatura_concreto Float? // unidad configurable (ver lib/calidad/config.ts)
+  // De este viaje se tomo muestra (testigos). Las dos casillas son independientes:
+  // la marca el laboratorista de PLANTA y/o el de OBRA.
+  muestra_planta      Boolean @default(false)
+  muestra_obra        Boolean @default(false)
   laboratorista_id    String?
   creado_en           DateTime @default(now())
   actualizado_en      DateTime @default(now()) @updatedAt

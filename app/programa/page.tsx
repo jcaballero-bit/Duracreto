@@ -247,7 +247,9 @@ function FilasPlantel({ plantel }: { plantel: SnapshotPrograma["planteles"][numb
 /** Un pedido: celdas de Cliente y Tipo combinadas sobre todas sus filas. En pantalla
  *  no hay cortes de página, así que el rowSpan puede ser tan grande como haga falta. */
 function FilasPedido({ pedido: p }: { pedido: PedidoSnap }) {
-  const franja = p.bombaColor ? { borderLeft: `4px solid ${p.bombaColor}` } : undefined;
+  // La franja lateral toma el color de la PRIMERA bomba (si hay varias, cada una
+  // lleva además su propio chip debajo del total).
+  const franja = p.bombas.length ? { borderLeft: `4px solid ${p.bombas[0].color}` } : undefined;
   return (
     <>
       {p.filas.map((f, i) => (
@@ -293,14 +295,15 @@ function FilasPedido({ pedido: p }: { pedido: PedidoSnap }) {
               <div>{p.hielo}</div>
               {!!p.revenimiento && <div>Rev: {p.revenimiento}</div>}
               <div className="font-semibold">Total: {p.totalM3.toFixed(2)} m³</div>
-              {!!p.bombaCodigo && (
+              {p.bombas.map((b) => (
                 <span
-                  className="mt-1 inline-block rounded-sm px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                  style={{ background: p.bombaColor ?? "#334155" }}
+                  key={b.codigo}
+                  className="mt-1 mr-1 inline-block rounded-sm px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                  style={{ background: b.color || "#334155" }}
                 >
-                  Bomba {p.bombaCodigo}
+                  Bomba {b.codigo}
                 </span>
-              )}
+              ))}
             </td>
           )}
 

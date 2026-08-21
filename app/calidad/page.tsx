@@ -1,7 +1,16 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import { requerirAcceso } from "@/lib/auth/guard";
-import { textoRevenimiento, textoTemperatura } from "@/lib/calidad/config";
+import { textoTemperatura } from "@/lib/calidad/config";
+import { formatearRevenimiento } from "@/lib/calidad/fraccion";
+import {
+  dosificadoresPorPlanta,
+  laboratoristasPorPlanta,
+  textoMuestraViaje,
+  ubicacionDeMuestras,
+} from "@/lib/calidad/asignados";
+import { volumenDespachadoDe } from "@/lib/calidad/volumen";
+import { textoResistencia } from "@/lib/formato";
 import { PageHeader } from "../components/ui";
 import { CalidadFiltros } from "./calidad-filtros";
 
@@ -33,12 +42,14 @@ const siNo = (b: boolean) => (b ? "Sí" : "No");
 
 const PRINT_CSS = `
 @media print {
-  @page { size: A4 portrait; margin: 10mm; }
+  /* HORIZONTAL: la tabla lleva 10 columnas (mixer, tiempos, muestra, planta…) y en
+     vertical se aprieta. */
+  @page { size: A4 landscape; margin: 8mm; }
   html, body { background: #fff !important; }
   body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   body * { visibility: hidden; }
   .calidad-doc, .calidad-doc * { visibility: visible; }
-  .calidad-doc { position: absolute; left: 0; top: 0; width: 100%; font-size: 11px; }
+  .calidad-doc { position: absolute; left: 0; top: 0; width: 100%; font-size: 10px; }
   .no-print { display: none !important; }
   .calidad-pedido { break-inside: avoid; }
 }
@@ -79,7 +90,7 @@ export default async function CalidadPage({
     orderBy: [{ cliente_id: "asc" }, { orden_dia: "asc" }],
     include: {
       cliente: { select: { empresa: true, proyecto: true } },
-      diseno: { select: { codigo: true, etiqueta_resistencia: true } },
+      diseno: true,
       plantel: { select: { nombre: true } },
       asignaciones_lab: { include: { laboratorista: { select: { name: true, email: true } } } },
       control_calidad_general: {
@@ -90,6 +101,7 @@ export default async function CalidadPage({
         orderBy: [{ hora_inicio_carga: "asc" }, { id: "asc" }],
         include: {
           mixer: { select: { identificador: true, id: true } },
+          planta: { select: { id: true, nombre: true } },
           control_calidad: true,
         },
       },
@@ -111,6 +123,11 @@ export default async function CalidadPage({
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
 
   const pedidosVista = clienteSel ? pedidos : [];
+  // Quién dosificó cada planta ese día y quién controló su salida (para el pie del
+  // documento). Se consulta una sola vez para toda la fecha.
+  const [dosifPorPlanta, labPorPlanta] = pedidosVista.length
+    ? await Promise.all([dosificadoresPorPlanta(ini), laboratoristasPorPlanta(ini)])
+    : [new Map<number, string[]>(), new Map<number, { nombre: string; observaciones: string }>()];
 
   return (
     <>
@@ -163,6 +180,22 @@ export default async function CalidadPage({
                 cg?.laboratorista?.name ??
                 cg?.laboratorista?.email ??
                 (labsAsignados.length > 0 ? labsAsignados.join(", ") : "—");
+              // m³ del PROGRAMA y m³ DESPACHADOS de planta; el laboratorio puede
+              // ajustar los colocados y entonces manda su valor.
+              const programados = cg?.m3_programados ?? p.volumen_programado ?? p.volumen_total_m3;
+              const colocados = cg?.m3_colocados ?? volumenDespachadoDe(p.viajes);
+              // Dónde se tomaron las muestras (lo marcado viaje por viaje); si nadie
+              // marcó nada todavía, se cae a la instrucción del jefe de laboratorio.
+              const ubicacionMuestras =
+                ubicacionDeMuestras(p.viajes) ?? p.muestras_ubicacion ?? "—";
+              // Plantas que cargaron este programa (para el pie de responsables).
+              const plantasUsadas = [
+                ...new Map(
+                  p.viajes
+                    .filter((v) => v.planta)
+                    .map((v) => [v.planta!.id, { id: v.planta!.id, nombre: v.planta!.nombre }]),
+                ).values(),
+              ].sort((a, b) => a.nombre.localeCompare(b.nombre));
               return (
                 <section key={`doc-${p.id}`} className="calidad-pedido mb-6">
                   <div className="mb-2">
@@ -172,8 +205,8 @@ export default async function CalidadPage({
                     </div>
                     <div className="text-xs text-slate-600">
                       Plantel {p.plantel.nombre} · Descarga: {p.tipo_descarga}
-                      {p.elemento ? ` · Elemento: ${p.elemento}` : ""} · Concreto: {p.diseno.codigo}
-                      {p.diseno.etiqueta_resistencia ? ` (${p.diseno.etiqueta_resistencia})` : ""}
+                      {p.elemento ? ` · Elemento: ${p.elemento}` : ""} · Concreto:{" "}
+                      {`${textoResistencia(p.diseno)}${p.diseno.tamano_agregado ? ` · ${p.diseno.tamano_agregado}` : ""}`}
                     </div>
                   </div>
 
@@ -182,31 +215,47 @@ export default async function CalidadPage({
                       <thead>
                         <tr className="border-b border-slate-300 text-left">
                           <th className="px-2 py-1">Mixer</th>
+                          <th className="px-2 py-1">Planta</th>
                           <th className="px-2 py-1">Carga</th>
                           <th className="px-2 py-1">Salida</th>
                           <th className="px-2 py-1">Llegada</th>
                           <th className="px-2 py-1">Inicio descarga</th>
                           <th className="px-2 py-1">Fin descarga</th>
-                          <th className="px-2 py-1">Revenimiento</th>
-                          <th className="px-2 py-1">Temperatura</th>
+                          <th className="px-2 py-1">Rev. planta</th>
+                          <th className="px-2 py-1">Temp. planta</th>
+                          <th className="px-2 py-1">Rev. obra</th>
+                          <th className="px-2 py-1">Temp. obra</th>
+                          <th className="px-2 py-1">Muestra</th>
                         </tr>
                       </thead>
                       <tbody>
                         {p.viajes.map((v) => (
                           <tr key={v.id} className="border-b border-slate-200">
                             <td className="px-2 py-1 font-medium">{v.mixer?.identificador ?? `#${v.mixer_id}`}</td>
+                            <td className="px-2 py-1">{v.planta?.nombre ?? "—"}</td>
                             <td className="px-2 py-1">{hhmm(v.ts_inicio_carga_real)}</td>
                             <td className="px-2 py-1">{hhmm(v.ts_salida_real)}</td>
                             <td className="px-2 py-1">{hhmm(v.ts_llegada_real)}</td>
                             <td className="px-2 py-1">{hhmm(v.ts_inicio_descarga_real)}</td>
                             <td className="px-2 py-1">{hhmm(v.ts_fin_descarga_real)}</td>
-                            <td className="px-2 py-1">{textoRevenimiento(v.control_calidad?.revenimiento_obra)}</td>
-                            <td className="px-2 py-1">{textoTemperatura(v.control_calidad?.temperatura_concreto)}</td>
+                            <td className="px-2 py-1">
+                              {formatearRevenimiento(v.control_calidad?.revenimiento_planta)}
+                            </td>
+                            <td className="px-2 py-1">
+                              {textoTemperatura(v.control_calidad?.temperatura_planta)}
+                            </td>
+                            <td className="px-2 py-1">
+                              {formatearRevenimiento(v.control_calidad?.revenimiento_obra)}
+                            </td>
+                            <td className="px-2 py-1">
+                              {textoTemperatura(v.control_calidad?.temperatura_concreto)}
+                            </td>
+                            <td className="px-2 py-1 font-medium">{textoMuestraViaje(v.control_calidad)}</td>
                           </tr>
                         ))}
                         {p.viajes.length === 0 && (
                           <tr>
-                            <td colSpan={8} className="px-2 py-3 text-center text-slate-500">
+                            <td colSpan={12} className="px-2 py-3 text-center text-slate-500">
                               Sin viajes con mixer asignado.
                             </td>
                           </tr>
@@ -224,8 +273,19 @@ export default async function CalidadPage({
                       ¿Se aplicó aditivo?: <strong>{siNo(!!cg?.aplico_aditivo)}</strong>
                       {cg?.aplico_aditivo && cg.aditivo_unidades ? ` (${cg.aditivo_unidades})` : ""}
                     </div>
-                    <div>m³ programados: <strong>{cg?.m3_programados ?? p.volumen_total_m3}</strong></div>
-                    <div>m³ colocados: <strong>{cg?.m3_colocados ?? "—"}</strong></div>
+                    <div>
+                      m³ programados: <strong>{programados.toFixed(2)}</strong>{" "}
+                      <span className="text-slate-500">(del programa)</span>
+                    </div>
+                    <div>
+                      m³ colocados: <strong>{colocados.toFixed(2)}</strong>{" "}
+                      <span className="text-slate-500">
+                        {cg?.m3_colocados != null ? "(ajustado por laboratorio)" : "(despachado de planta)"}
+                      </span>
+                    </div>
+                    <div className="sm:col-span-2">
+                      Ubicación del muestreo: <strong>{ubicacionMuestras}</strong>
+                    </div>
                     <div className="sm:col-span-2">
                       ¿Existe reclamo?: <strong>{siNo(!!cg?.existe_reclamo)}</strong>
                       {cg?.existe_reclamo && cg.detalle_reclamo ? ` — ${cg.detalle_reclamo}` : ""}
@@ -233,6 +293,22 @@ export default async function CalidadPage({
                     {cg?.observaciones && (
                       <div className="sm:col-span-2">Observaciones: {cg.observaciones}</div>
                     )}
+                  </div>
+
+                  {/* Responsables: quién dosificó y quién controló en cada planta que
+                      cargó este programa, y quién estuvo en la obra. */}
+                  <div className="mt-3 grid gap-x-6 gap-y-1 border-t border-slate-200 pt-2 text-xs sm:grid-cols-2">
+                    {plantasUsadas.map((pl) => (
+                      <div key={pl.id}>
+                        <strong>Planta {pl.nombre}</strong> — Dosificó:{" "}
+                        {dosifPorPlanta.get(pl.id)?.join(", ") ?? "—"} · Laboratorista en planta:{" "}
+                        {labPorPlanta.get(pl.id)?.nombre ?? "—"}
+                      </div>
+                    ))}
+                    <div className="sm:col-span-2">
+                      Laboratorista en obra (proyecto):{" "}
+                      <strong>{labsAsignados.length ? labsAsignados.join(", ") : "—"}</strong>
+                    </div>
                   </div>
 
                   <div className="mt-3 text-xs text-slate-600">

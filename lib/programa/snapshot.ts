@@ -105,8 +105,8 @@ export interface PedidoSnap {
   revenimiento: string;
   /** Total del pedido (línea base congelada del programa). */
   totalM3: number;
-  bombaCodigo: string | null;
-  bombaColor: string | null;
+  /** Bombas del pedido (una o varias): cada una con su color de franja. */
+  bombas: { codigo: string; color: string }[];
   /** Observaciones del pedido; van al PIE del bloque del cliente. Vacío = no se imprime. */
   observaciones: string;
   filas: FilaSnap[];
@@ -237,7 +237,7 @@ export async function construirSnapshot({
         cliente: { include: { asesor: { select: { nombre: true } } } },
         diseno: true,
         planta: { select: { nombre: true } },
-        bomba: { select: { identificador: true } },
+        bombas: { select: { bomba: { select: { id: true, identificador: true } } } },
         viajes: {
           where: { es_adicion: false },
           include: {
@@ -262,9 +262,10 @@ export async function construirSnapshot({
   const colorBomba = new Map<number, string>();
   const codigoBomba = new Map<number, string>();
   for (const p of pedidos) {
-    if (p.bomba_id != null && !colorBomba.has(p.bomba_id)) {
-      colorBomba.set(p.bomba_id, PALETA_BOMBA[colorBomba.size % PALETA_BOMBA.length]);
-      codigoBomba.set(p.bomba_id, p.bomba?.identificador ?? `#${p.bomba_id}`);
+    for (const { bomba } of p.bombas) {
+      if (colorBomba.has(bomba.id)) continue;
+      colorBomba.set(bomba.id, PALETA_BOMBA[colorBomba.size % PALETA_BOMBA.length]);
+      codigoBomba.set(bomba.id, bomba.identificador ?? `#${bomba.id}`);
     }
   }
 
@@ -369,11 +370,21 @@ function pedidoASnap(
       if (arr) arr.push(v);
       else porPlanta.set(nombre, [v]);
     }
-    const grupos = [...porPlanta.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-    let num = 0;
+    // Las bandas van en orden CRONOLÓGICO (por la carga del primer viaje de cada
+    // planta), no alfabético: mover un viaje a la otra planta desde Despacho no debe
+    // reordenar ni renumerar el suministro que ya se publicó. La numeración sigue la
+    // hora de carga, así que un camión conserva su número aunque cambie de planta.
+    const primeraCarga = (vs: ViajeDoc[]) =>
+      Math.min(...vs.map((v) => v.hora_inicio_carga?.getTime() ?? Number.MAX_SAFE_INTEGER));
+    const grupos = [...porPlanta.entries()].sort(
+      (a, b) => primeraCarga(a[1]) - primeraCarga(b[1]) || a[0].localeCompare(b[0]),
+    );
+    // Número de viaje por hora de carga sobre TODO el pedido (los viajes ya vienen
+    // ordenados así de la consulta), no por el orden de las bandas.
+    const numeroDe = new Map<ViajeDoc, number>(trips.map((v, i) => [v, i + 1]));
     for (const [nombrePlanta, vs] of grupos) {
       filas.push({ tipo: "planta", nombre: nombrePlanta });
-      for (const v of vs) filas.push(viajeASnap(v, ++num));
+      for (const v of vs) filas.push(viajeASnap(v, numeroDe.get(v) ?? 0));
     }
   }
 
@@ -392,8 +403,10 @@ function pedidoASnap(
         : "Sin control temp.",
     revenimiento: p.revenimiento || p.diseno.revenimiento || "",
     totalM3: totalImpreso(p),
-    bombaCodigo: p.bomba_id != null ? (codigoBomba.get(p.bomba_id) ?? null) : null,
-    bombaColor: p.bomba_id != null ? (colorBomba.get(p.bomba_id) ?? null) : null,
+    bombas: p.bombas.map((x: { bomba: { id: number; identificador: string } }) => ({
+      codigo: codigoBomba.get(x.bomba.id) ?? x.bomba.identificador,
+      color: colorBomba.get(x.bomba.id) ?? PALETA_BOMBA[0],
+    })),
     observaciones: p.observaciones ?? "",
     filas,
   };

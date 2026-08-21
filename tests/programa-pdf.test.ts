@@ -75,8 +75,7 @@ function pedido(cliente: string, filas: FilaSnap[], observaciones = ""): PedidoS
     hielo: "Sin control temp.",
     revenimiento: '6" a 7"',
     totalM3: filas.filter((f) => f.tipo === "viaje").length * 11,
-    bombaCodigo: "SM-B2",
-    bombaColor: "#1F4E79",
+    bombas: [{ codigo: "SM-B2", color: "#1F4E79" }],
     observaciones,
     filas,
   };

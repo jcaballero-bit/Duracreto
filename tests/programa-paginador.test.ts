@@ -47,9 +47,8 @@ function pedido(cliente: string, filas: FilaSnap[], extra: Partial<PedidoSnap> =
     hielo: "Sin control temp.",
     revenimiento: '5"',
     totalM3: filas.filter((f) => f.tipo === "viaje").length * 9,
-    bombaCodigo: null,
+    bombas: [],
     observaciones: "",
-    bombaColor: null,
     filas,
     ...extra,
   };

@@ -15,6 +15,11 @@ import {
 } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { ordenarViajesDespacho } from "@/lib/despacho/orden";
+import {
+  ESTADO_LABORATORISTA_PLANTA,
+  filtroPedidoPorPlantasDelLab,
+  plantasDelLaboratorista,
+} from "@/lib/calidad/planta-lab";
 import { compararPlanteles } from "@/lib/planteles-orden";
 import { Card, PageHeader } from "../components/ui";
 import { AutoRefresh } from "../components/auto-refresh";
@@ -109,6 +114,8 @@ export default async function DespachoPage({
   let scopePedido: Record<string, unknown>;
   let soloLectura = false; // campos (volumen/mixer/motorista/hora) de solo lectura
   let estadosEditables: string[] | null = null; // null = todos los botones; [] = ninguno
+  // Plantas donde este usuario es HOY el laboratorista de báscula (vacío si no lo es).
+  let plantasDelLab: number[] = [];
   let puedeCrear = false;
   // Dosificador acotado a SU planta (más fino que el plantel): solo ve/opera los
   // viajes de esa planta. Cada planta de un plantel de 2 necesita su propio usuario.
@@ -122,10 +129,19 @@ export default async function DespachoPage({
     }
     puedeCrear = true;
   } else if (alcance.esLaboratorista) {
-    // Solo los programas (pedidos) que le asignaron; el día ya lo acota la consulta.
-    scopePedido = filtroPedidoPorLaboratorista(userId);
+    // Dos papeles, y se pueden dar los dos el mismo día:
+    //  · OBRA: los programas (pedidos) que le asignaron → Llegada/Descargando/Regresando.
+    //  · PLANTA: si hoy está en la báscula de una planta, ve TODOS los viajes que
+    //    cargan ahí (aunque el proyecto no sea suyo) y solo puede marcar "En ruta".
+    plantasDelLab = await plantasDelLaboratorista(userId, ini);
+    scopePedido = plantasDelLab.length
+      ? { OR: [filtroPedidoPorLaboratorista(userId), filtroPedidoPorPlantasDelLab(plantasDelLab)] }
+      : filtroPedidoPorLaboratorista(userId);
     soloLectura = true;
-    estadosEditables = [...ESTADOS_LABORATORISTA]; // Llegada/Descargando/Regresando
+    estadosEditables = [
+      ...ESTADOS_LABORATORISTA,
+      ...(plantasDelLab.length ? [ESTADO_LABORATORISTA_PLANTA] : []),
+    ];
   } else if (alcance.esGerenteControlCalidad || alcance.esGerenteComercial) {
     scopePedido = {}; // ve TODAS las zonas, solo lectura
     soloLectura = true;
@@ -184,7 +200,7 @@ export default async function DespachoPage({
           cliente: true,
           plantel: true,
           diseno: true,
-          bomba: { select: { identificador: true } },
+          bombas: { select: { bomba: { select: { identificador: true } } } },
           // Control de calidad: si hay Laboratorista(s) asignado(s) (para mostrar la
           // captura en la tarjeta) y las preguntas generales ya guardadas del pedido.
           asignaciones_lab: { select: { laboratorista_id: true } },
@@ -343,10 +359,11 @@ export default async function DespachoPage({
         texto: `Flota ${v.mixer.plantel_base.nombre}`,
         tono: esPropio ? ("neutro" as const) : ("info" as const),
       };
-      // Descarga: con bomba → código de bomba; canal directo → texto tal cual.
+      // Descarga: con bomba(s) → los códigos separados por coma (un pedido puede
+      // llevar varios equipos de bombeo); canal directo → el texto tal cual.
       const descargaDisplay =
-        p.tipo_descarga !== "Canal directo" && p.bomba
-          ? p.bomba.identificador
+        p.tipo_descarga !== "Canal directo" && p.bombas.length
+          ? p.bombas.map((x) => x.bomba.identificador).join(", ")
           : p.tipo_descarga;
       // Volumen editable solo antes de que la carga finalice físicamente… salvo para
       // el Administrador, que puede corregirlo aunque el camión ya haya salido (para
@@ -417,6 +434,19 @@ export default async function DespachoPage({
         tieneLab,
         revenimientoObra: v.control_calidad?.revenimiento_obra ?? null,
         temperaturaConcreto: v.control_calidad?.temperatura_concreto ?? null,
+        revenimientoPlanta: v.control_calidad?.revenimiento_planta ?? null,
+        temperaturaPlanta: v.control_calidad?.temperatura_planta ?? null,
+        // La salida de planta la captura quien está hoy en la báscula de ESA planta
+        // (o los roles de calidad con alcance sobre el programa). El servidor lo
+        // vuelve a validar en `guardarSalidaPlantaAction`.
+        puedeSalidaPlanta:
+          alcance.esAdmin ||
+          alcance.esGerenteControlCalidad ||
+          alcance.esJefeLaboratorio ||
+          (v.planta_id != null && plantasDelLab.includes(v.planta_id)),
+        cargaIniciada: v.ts_inicio_carga_real != null,
+        muestraPlanta: !!v.control_calidad?.muestra_planta,
+        muestraObra: !!v.control_calidad?.muestra_obra,
         llegadaAlcanzada: v.ts_llegada_real != null,
         esUltimoDelPedido: v.id === ultimoViajePedidoId,
         generalCalidad,

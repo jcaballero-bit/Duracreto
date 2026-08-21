@@ -181,7 +181,7 @@ export function altoCeldaTipo(
   lineas += lineasDeTexto(p.hielo, g.charsTipo);
   if (p.revenimiento) lineas += 1;
   if (conTotal) lineas += 1;
-  if (p.bombaCodigo) lineas += 1;
+  lineas += p.bombas.length; // un chip por bomba, uno debajo del otro
   return lineas * g.altoLinea + g.padCelda;
 }
 

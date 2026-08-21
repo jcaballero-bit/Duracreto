@@ -77,6 +77,16 @@ export interface ViajeDespacho {
   // Lecturas ya guardadas de este viaje (control_calidad_viaje).
   revenimientoObra: number | null;
   temperaturaConcreto: number | null;
+  /** Lecturas a la SALIDA DE PLANTA (las toma el laboratorista de báscula). */
+  revenimientoPlanta: number | null;
+  temperaturaPlanta: number | null;
+  /** El usuario puede capturar la salida de planta de ESTE viaje (su planta hoy). */
+  puedeSalidaPlanta: boolean;
+  /** La carga de este viaje ya empezó (momento de la muestra en planta). */
+  cargaIniciada: boolean;
+  /** Ya se marcó que de este viaje se tomó muestra en planta / en obra. */
+  muestraPlanta: boolean;
+  muestraObra: boolean;
   // ¿La llegada real ya está sellada? (para auto-abrir la captura de la muestra).
   llegadaAlcanzada: boolean;
   // ¿Es el último viaje del PEDIDO? (ahí se muestra "Finalizar control de calidad").
@@ -464,12 +474,19 @@ function FilaViaje({
       {/* Captura de la muestra (revenimiento + temperatura). Solo con Laboratorista
           asignado y rol de calidad. Se abre sola al marcar "Llegada"; NO bloquea el
           avance del viaje (Descargando/Regresando no dependen de estos valores). */}
-      {puedeCapturarCalidad && v.tieneLab && (
+      {(v.puedeSalidaPlanta || (puedeCapturarCalidad && v.tieneLab)) && (
         <CapturaCalidadViaje
           viajeId={v.id}
           revenimiento={v.revenimientoObra}
           temperatura={v.temperaturaConcreto}
+          revenimientoPlanta={v.revenimientoPlanta}
+          temperaturaPlanta={v.temperaturaPlanta}
+          muestraPlanta={v.muestraPlanta}
+          muestraObra={v.muestraObra}
           llegadaAlcanzada={v.llegadaAlcanzada}
+          cargaIniciada={v.cargaIniciada}
+          puedeSalidaPlanta={v.puedeSalidaPlanta}
+          puedeObra={puedeCapturarCalidad && v.tieneLab}
         />
       )}
     </div>

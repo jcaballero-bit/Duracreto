@@ -36,21 +36,6 @@ import {
   type PedidoVista,
 } from "./tabla-pedidos";
 
-/** Sugiere el diseño más parecido al texto libre del asesor (por resistencia). */
-function sugerirDiseno(
-  texto: string | null,
-  disenos: { id: number; etiqueta_resistencia: string | null; resistencia_psi: number | null }[],
-): number | null {
-  const digitos = (texto ?? "").replace(/[^0-9]/g, "");
-  if (digitos) {
-    for (const d of disenos) {
-      const ref = String(d.etiqueta_resistencia ?? d.resistencia_psi ?? "").replace(/[^0-9]/g, "");
-      if (ref && digitos.includes(ref)) return d.id;
-    }
-  }
-  return disenos[0]?.id ?? null;
-}
-
 export const dynamic = "force-dynamic";
 
 function ymdLocal(d: Date): string {
@@ -184,7 +169,7 @@ export default async function ProgramacionPage({
         cliente: true,
         diseno: true,
         plantel: true,
-        bomba: { select: { identificador: true } },
+        bombas: { select: { bomba: { select: { id: true, identificador: true } } } },
         viajes: {
           // Los viajes cancelados en Despacho (1 viaje suelto) no se listan aquí.
           where: { estado: { not: "Cancelado" } },
@@ -298,10 +283,12 @@ export default async function ProgramacionPage({
           }))
       : [];
 
-    // Descarga: con bomba → código de la bomba; canal directo → texto tal cual.
+    // Descarga: con bomba(s) → los códigos separados por coma; canal directo → texto.
     const esBomba = p.tipo_descarga !== "Canal directo";
     const descargaDisplay =
-      esBomba && p.bomba ? p.bomba.identificador : p.tipo_descarga;
+      esBomba && p.bombas.length
+        ? p.bombas.map((x) => x.bomba.identificador).join(", ")
+        : p.tipo_descarga;
 
     // Hora de carga base (más temprana de la cascada) para prellenar el control de
     // hora de carga manual del Admin; si no hay horario aún, la solicitada.
@@ -373,7 +360,7 @@ export default async function ProgramacionPage({
         revenimiento: p.revenimiento,
         tipo_servicio: p.tipo_servicio,
         sacos_hielo_por_m3: p.sacos_hielo_por_m3,
-        bomba_id: p.bomba_id,
+        bombas_ids: p.bombas.map((x) => x.bomba.id),
         asesor_id: p.asesor_id,
         hora_bloqueada: p.hora_bloqueada,
         usar_ambas_plantas: p.usar_ambas_plantas,
@@ -403,12 +390,6 @@ export default async function ProgramacionPage({
   // Solo Admin/Programador/JefePlanta operan aquí (la ruta ya está limitada a esos
   // roles). El Programador y el Jefe de Planta SOLO ven los clientes preprogramados
   // de SU zona asignada; el Admin ve todos.
-  const disenosSimple = disenos.map((d) => ({
-    id: d.id,
-    etiqueta_resistencia: d.etiqueta_resistencia,
-    resistencia_psi: d.resistencia_psi,
-  }));
-
   // Zona(s) del usuario para acotar los pendientes: Programador por su User.zona,
   // Jefe de Planta por la(s) zona(s) de SUS planteles asignados (M2M). Admin → sin
   // límite. (GerenteComercial/GerenteControlCalidad: sin límite, ven todo.)
@@ -472,7 +453,6 @@ export default async function ProgramacionPage({
     frecuencia: s.frecuencia_entre_camiones_min,
     observaciones: s.observaciones ?? "",
     plantelId: s.plantel_id,
-    disenoSugeridoId: sugerirDiseno(s.tipo_concreto_estimado, disenosSimple),
     creadoEn: s.creado_en ? s.creado_en.toISOString() : null,
   }));
 
@@ -533,14 +513,14 @@ export default async function ProgramacionPage({
         filasMixer.set(v.mixer.id, fila);
       }
 
-      // Bombas: ventana de descarga en obra del pedido que tiene bomba asignada.
-      if (p.bomba_id != null) {
+      // Bombas: ventana de descarga en obra, en la fila de CADA bomba del pedido.
+      for (const { bomba } of p.bombas) {
         const iniDesc = msDe(v.hora_inicio_descarga) ?? msDe(v.hora_llegada_proyecto);
         const finDesc = msDe(v.hora_fin_descarga) ?? regreso;
         if (iniDesc != null && finDesc != null) {
           const fila =
-            filasBomba.get(p.bomba_id) ??
-            ({ id: p.bomba_id, label: p.bomba?.identificador ?? `#${p.bomba_id}`, barras: [] } as FilaGantt);
+            filasBomba.get(bomba.id) ??
+            ({ id: bomba.id, label: bomba.identificador ?? `#${bomba.id}`, barras: [] } as FilaGantt);
           fila.barras.push({
             id: `bo-${v.id}`,
             inicioMs: iniDesc,
@@ -548,7 +528,7 @@ export default async function ProgramacionPage({
             etiqueta: etq,
             color: "bg-violet-500",
           });
-          filasBomba.set(p.bomba_id, fila);
+          filasBomba.set(bomba.id, fila);
         }
       }
     }

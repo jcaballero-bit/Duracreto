@@ -55,7 +55,8 @@ export interface EntradaPedido {
   hora_solicitada: Date;
   plantel_id: number;
   planta_id: number;
-  bomba_id?: number | null;
+  /** Bombas elegidas a mano (una o varias). Vacío/omitido = la auto-asigna el hub. */
+  bombas_ids?: number[];
   tipo_descarga: string; // "Canal directo" | "Bomba estacionaria" | "Bomba pluma"
   revenimiento?: string | null; // rango de asentamiento (editable), null = usa el del diseño
   tipo_servicio?: string | null; // "Normal" | "Servicio de Construcción" (filtra diseños)
@@ -1625,18 +1626,17 @@ export async function bombasParaPlantel(
     where: { estado: ESTADO_DISPONIBLE },
     select: { id: true, identificador: true, plantel_base_id: true },
   });
-  // Carga del día por bomba (# de pedidos activos que la usan).
-  const grupos = await prisma.pedidos.groupBy({
+  // Carga del día por bomba (# de pedidos activos que la usan). Un pedido puede
+  // llevar varias bombas, así que se cuenta sobre `pedidos_bombas`.
+  const grupos = await prisma.pedidos_bombas.groupBy({
     by: ["bomba_id"],
     where: {
-      bomba_id: { not: null },
-      estado_pedido: "Activo",
-      hora_solicitada: { gte: ini, lt: fin },
+      pedido: { estado_pedido: "Activo", hora_solicitada: { gte: ini, lt: fin } },
     },
     _count: { _all: true },
   });
   const cargaDe = new Map<number, number>();
-  for (const g of grupos) if (g.bomba_id != null) cargaDe.set(g.bomba_id, g._count._all);
+  for (const g of grupos) cargaDe.set(g.bomba_id, g._count._all);
 
   const hubReal = hubId ?? plantelId;
   const propias: BombaCandidata[] = [];
@@ -1692,16 +1692,36 @@ export async function elegirBombaAutomatica(
   return auto?.id ?? null;
 }
 
-/** Resuelve la bomba de un pedido: respeta la elección manual; si el pedido es por
- *  bomba y no se eligió una, la auto-asigna por hub (propia -> hub). */
-async function resolverBombaPedido(entrada: EntradaPedido): Promise<number | null> {
-  if (entrada.bomba_id != null) return entrada.bomba_id; // elección manual
-  if (entrada.tipo_descarga === "Canal directo") return null; // sin bomba
+/**
+ * Resuelve las bombas de un pedido. Respeta la elección manual —que puede ser de
+ * VARIAS bombas: una obra grande puede tener dos o más equipos de bombeo colocando a
+ * la vez— y si el pedido es por bomba y no se eligió ninguna, auto-asigna UNA por hub
+ * (propia -> hub). Devuelve la lista, sin repetidos.
+ */
+async function resolverBombasPedido(entrada: EntradaPedido): Promise<number[]> {
+  const elegidas = [...new Set(entrada.bombas_ids ?? [])].filter((x) => Number.isFinite(x));
+  if (elegidas.length > 0) return elegidas; // elección manual (una o varias)
+  if (entrada.tipo_descarga === "Canal directo") return []; // sin bomba
   const plantel = await prisma.planteles.findUnique({
     where: { id: entrada.plantel_id },
     select: { hub_id: true },
   });
-  return elegirBombaAutomatica(entrada.plantel_id, plantel?.hub_id ?? null, entrada.hora_solicitada);
+  const auto = await elegirBombaAutomatica(
+    entrada.plantel_id,
+    plantel?.hub_id ?? null,
+    entrada.hora_solicitada,
+  );
+  return auto != null ? [auto] : [];
+}
+
+/** Deja en `pedidos_bombas` EXACTAMENTE las bombas indicadas (fuente única). */
+async function fijarBombasDePedido(pedidoId: number, bombasIds: number[]): Promise<void> {
+  await prisma.$transaction([
+    prisma.pedidos_bombas.deleteMany({ where: { pedido_id: pedidoId } }),
+    ...bombasIds.map((bomba_id) =>
+      prisma.pedidos_bombas.create({ data: { pedido_id: pedidoId, bomba_id } }),
+    ),
+  ]);
 }
 
 // ── Programación de un pedido (flujo principal) ──────────────────────────────
@@ -1719,8 +1739,8 @@ export async function programarPedido(
     entrada.plantel_id,
     entrada.hora_solicitada,
   );
-  // Bomba: elección manual o auto-asignación por hub (propia -> hub).
-  const bombaId = await resolverBombaPedido(entrada);
+  // Bombas: elección manual (una o varias) o auto-asignación por hub (propia -> hub).
+  const bombasIds = await resolverBombasPedido(entrada);
   // El ORIGEN define si es parte del programa o una adición:
   //  · Programación (Nuevo pedido / conversión) → parte del programa: la línea base
   //    (volumen_programado) es el volumen del pedido; aparece en el DPCR-08.
@@ -1737,7 +1757,6 @@ export async function programarPedido(
       hora_solicitada: entrada.hora_solicitada,
       plantel_id: entrada.plantel_id,
       planta_id: entrada.planta_id,
-      bomba_id: bombaId,
       tipo_descarga: entrada.tipo_descarga,
       revenimiento: entrada.revenimiento ?? null,
       tipo_servicio: entrada.tipo_servicio ?? null,
@@ -1756,6 +1775,7 @@ export async function programarPedido(
     },
   });
 
+  await fijarBombasDePedido(pedido.id, bombasIds);
   // Cliente NUEVO: se agenda SOLO este pedido (los ya programados no se mueven).
   return asignarViajesDePedido(pedido.id, entrada, true);
 }
@@ -1787,8 +1807,9 @@ export async function modificarPedido(
   });
 
   await prisma.viajes.deleteMany({ where: { pedido_id: pedidoId } });
-  // Bomba: elección manual o auto-asignación por hub (propia -> hub).
-  const bombaId = await resolverBombaPedido(entrada);
+  // Bombas: elección manual (una o varias) o auto-asignación por hub (propia -> hub).
+  const bombasIds = await resolverBombasPedido(entrada);
+  await fijarBombasDePedido(pedidoId, bombasIds);
   await prisma.pedidos.update({
     where: { id: pedidoId },
     data: {
@@ -1807,7 +1828,6 @@ export async function modificarPedido(
       hora_solicitada: entrada.hora_solicitada,
       plantel_id: entrada.plantel_id,
       planta_id: entrada.planta_id,
-      bomba_id: bombaId,
       tipo_descarga: entrada.tipo_descarga,
       revenimiento: entrada.revenimiento ?? null,
       tipo_servicio: entrada.tipo_servicio ?? null,
@@ -3368,9 +3388,9 @@ export async function detectarAlertasMargen(dia: Date): Promise<AlertaMargen[]> 
   // La ventana de la bomba para un pedido = [primer inicio de descarga,
   // último fin de descarga] entre sus viajes.
   const pedidosBomba = await prisma.pedidos.findMany({
-    where: { bomba_id: { not: null }, hora_solicitada: { gte: ini, lt: fin } },
+    where: { bombas: { some: {} }, hora_solicitada: { gte: ini, lt: fin } },
     select: {
-      bomba_id: true,
+      bombas: { select: { bomba_id: true } },
       viajes: {
         where: { estado: { not: "Cancelado" } },
         select: { id: true, hora_inicio_descarga: true, hora_fin_descarga: true },
@@ -3385,7 +3405,7 @@ export async function detectarAlertasMargen(dia: Date): Promise<AlertaMargen[]> 
   }
   const porBomba = new Map<number, OcupBomba[]>();
   for (const p of pedidosBomba) {
-    if (p.bomba_id == null) continue;
+    if (p.bombas.length === 0) continue;
     const desc = p.viajes.filter(
       (v) => v.hora_inicio_descarga && v.hora_fin_descarga,
     );
@@ -3398,9 +3418,12 @@ export async function detectarAlertasMargen(dia: Date): Promise<AlertaMargen[]> 
     const finVentana = new Date(
       Math.max(...desc.map((v) => v.hora_fin_descarga!.getTime())),
     );
-    const lista = porBomba.get(p.bomba_id) ?? [];
-    lista.push({ refViajeId: desc[0].id, inicio, fin: finVentana });
-    porBomba.set(p.bomba_id, lista);
+    // El pedido ocupa TODAS sus bombas en esa ventana.
+    for (const { bomba_id } of p.bombas) {
+      const lista = porBomba.get(bomba_id) ?? [];
+      lista.push({ refViajeId: desc[0].id, inicio, fin: finVentana });
+      porBomba.set(bomba_id, lista);
+    }
   }
 
   for (const [bombaId, lista] of porBomba) {

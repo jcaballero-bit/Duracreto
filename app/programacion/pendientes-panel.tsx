@@ -24,7 +24,6 @@ export interface PendienteVista {
   frecuencia: number | null;
   observaciones: string;
   plantelId: number | null;
-  disenoSugeridoId: number | null;
   // Cuándo la creó el asesor (ISO). Para ordenar por antigüedad (la más vieja primero).
   creadoEn: string | null;
 }
@@ -75,7 +74,11 @@ export function PendientesDelDia({
 
   const preset = (p: PendienteVista): PresetPedido => ({
     cliente_id: p.clienteId,
-    diseno_id: p.disenoSugeridoId ?? undefined,
+    // El diseño NO se pre-selecciona a propósito: el asesor describe el concreto con
+    // sus palabras ("4500 3/4") y adivinarlo abre la puerta a despachar una
+    // resistencia equivocada. El Programador / Jefe de Planta lo elige a mano
+    // mirando la referencia del asesor que el formulario muestra arriba.
+    diseno_id: undefined,
     plantel_id: p.plantelId ?? undefined,
     volumen_total_m3: p.volumen ?? undefined,
     sacos_hielo_por_m3: p.sacosHielo ?? undefined,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, Plus, X } from "lucide-react";
 import {
   analizarFrecuenciaAction,
   crearPedidoAction,
@@ -55,7 +56,8 @@ export interface ValoresPedido {
   revenimiento: string | null;
   tipo_servicio: string | null;
   sacos_hielo_por_m3: number;
-  bomba_id: number | null;
+  /** Bombas del pedido (una o varias). */
+  bombas_ids: number[];
   asesor_id: number | null;
   hora_bloqueada: boolean;
   usar_ambas_plantas: boolean;
@@ -174,8 +176,10 @@ export function PedidoForm({
   const [tipoDescarga, setTipoDescarga] = useState(
     valores?.tipo_descarga ?? preset?.tipo_descarga ?? "Canal directo",
   );
-  const [bombaId, setBombaId] = useState(
-    valores?.bomba_id != null ? String(valores.bomba_id) : "",
+  // Bombas del pedido: una obra grande puede llevar dos o más equipos de bombeo
+  // colocando a la vez. La lista vacía = "Sin bomba" (o la auto-asigna el motor).
+  const [bombasIds, setBombasIds] = useState<string[]>(
+    (valores?.bombas_ids ?? []).map(String),
   );
   const bombaHabilitada = tipoDescarga !== "Canal directo"; // cualquier bomba
 
@@ -232,12 +236,19 @@ export function PedidoForm({
   );
   // Diseño controlado: si el filtro por tipo de servicio deja fuera el actual, se
   // reajusta al primero permitido (o 0 si no hay ninguno que cumpla el filtro).
+  // Al CONVERTIR una proyección del asesor el diseño arranca VACÍO y hay que
+  // elegirlo: el asesor lo describe con sus palabras y auto-seleccionarlo llevaba a
+  // despachar una resistencia equivocada. En un pedido nuevo normal se mantiene el
+  // primero de la lista (no hay una referencia contra la que confirmarlo).
+  const exigeElegirDiseno = !!preset && valores?.diseno_id == null;
   const [disenoId, setDisenoId] = useState<number>(
-    valores?.diseno_id ?? preset?.diseno_id ?? disenos[0]?.id ?? 0,
+    valores?.diseno_id ?? (exigeElegirDiseno ? 0 : (disenos[0]?.id ?? 0)),
   );
   useEffect(() => {
-    if (!disenosFiltrados.some((d) => d.id === disenoId)) {
-      setDisenoId(disenosFiltrados[0]?.id ?? 0);
+    // Al cambiar el tipo de servicio, si el diseño elegido ya no cumple el filtro se
+    // reajusta; cuando hay que elegirlo a mano se deja vacío en vez de poner otro.
+    if (disenoId !== 0 && !disenosFiltrados.some((d) => d.id === disenoId)) {
+      setDisenoId(exigeElegirDiseno ? 0 : (disenosFiltrados[0]?.id ?? 0));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tipoServicio]);
@@ -407,6 +418,37 @@ export function PedidoForm({
 
         {/* Lo que el asesor escribió en el Programa Semana (solo lectura): guía para
             elegir el diseño y confirmar el revenimiento. Solo aparece al convertir. */}
+        {/* Aviso al abrir "Convertir a pedido": el diseño va vacío a propósito y hay
+            que elegirlo mirando lo que pidió el asesor. Desaparece al elegirlo. */}
+        {exigeElegirDiseno && (
+          <div
+            className={
+              "flex items-start gap-2 rounded-lg border px-3 py-2 text-sm sm:col-span-2 " +
+              (disenoId === 0
+                ? "border-amber-300 bg-amber-100 text-amber-900"
+                : "border-ok/30 bg-ok/10 text-ok")
+            }
+          >
+            {disenoId === 0 ? (
+              <>
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  <strong>Elige el diseño de mezcla.</strong> No se selecciona solo para
+                  evitar despachar una resistencia equivocada: compáralo con lo que pidió
+                  el asesor
+                  {preset?.tipoConcretoAsesor ? ` (${preset.tipoConcretoAsesor})` : ""} y
+                  elígelo en la lista.
+                </span>
+              </>
+            ) : (
+              <>
+                <Check size={16} className="mt-0.5 shrink-0" />
+                <span>Diseño elegido. Confirma que corresponde a lo que pidió el asesor.</span>
+              </>
+            )}
+          </div>
+        )}
+
         {(preset?.tipoConcretoAsesor || preset?.revenimientoAsesor || preset?.tipoServicioAsesor) && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm sm:col-span-2">
             <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-800">
@@ -452,11 +494,16 @@ export function PedidoForm({
           ) : (
             <select
               name="diseno_id"
-              className={inputCls}
+              className={
+                inputCls + (exigeElegirDiseno && disenoId === 0 ? " border-amber-400 bg-amber-50" : "")
+              }
               value={disenoId}
               onChange={(e) => setDisenoId(Number(e.target.value))}
               required
             >
+              {exigeElegirDiseno && (
+                <option value="">— Elige el diseño según la solicitud del asesor —</option>
+              )}
               {disenosFiltrados.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.etiqueta}
@@ -631,7 +678,7 @@ export function PedidoForm({
               setTipoDescarga(e.target.value);
               // La bomba solo aplica a descarga por bomba: al cambiar a canal,
               // se limpia la selección para no enviar una bomba inválida.
-              if (e.target.value === "Canal directo") setBombaId("");
+              if (e.target.value === "Canal directo") setBombasIds([]);
             }}
             required
           >
@@ -641,21 +688,66 @@ export function PedidoForm({
           </select>
         </Campo>
 
-        <Campo label="Bomba (opcional)">
-          <select
-            name="bomba_id"
-            className={`${inputCls} disabled:cursor-not-allowed disabled:bg-content disabled:text-muted`}
-            value={bombaId}
-            onChange={(e) => setBombaId(e.target.value)}
-            disabled={!bombaHabilitada}
-          >
-            <option value="">Sin bomba</option>
-            {bombasDisponibles.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.etiqueta}
-              </option>
+        <Campo label="Bomba(s) (opcional)">
+          {/* Un selector por bomba: una obra grande puede llevar dos o más equipos
+              de bombeo a la vez. Cada selector manda su propio `bomba_id`, y el
+              servidor los recoge con `formData.getAll("bomba_id")`. */}
+          <div className="space-y-1.5">
+            {(bombasIds.length ? bombasIds : [""]).map((valor, i) => (
+              <div key={i} className="flex items-center gap-1">
+                <select
+                  name="bomba_id"
+                  className={`${inputCls} disabled:cursor-not-allowed disabled:bg-content disabled:text-muted`}
+                  value={valor}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setBombasIds((prev) => {
+                      const base = prev.length ? [...prev] : [""];
+                      base[i] = v;
+                      // Un selector vaciado se quita de la lista (salvo el primero,
+                      // que se queda como "Sin bomba").
+                      return base.filter((x, k) => x !== "" || k === 0);
+                    });
+                  }}
+                  disabled={!bombaHabilitada}
+                >
+                  <option value="">Sin bomba</option>
+                  {bombasDisponibles
+                    .filter((b) => String(b.id) === valor || !bombasIds.includes(String(b.id)))
+                    .map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.etiqueta}
+                      </option>
+                    ))}
+                </select>
+                {bombasIds.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setBombasIds((prev) => prev.filter((_, k) => k !== i))}
+                    title="Quitar esta bomba"
+                    className="rounded p-1 text-muted hover:bg-red-50 hover:text-red-600"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
             ))}
-          </select>
+
+            {bombaHabilitada && (
+              <button
+                type="button"
+                onClick={() => setBombasIds((prev) => [...prev.filter(Boolean), ""])}
+                disabled={
+                  // Solo se ofrece si hay al menos una elegida y quedan bombas libres.
+                  bombasIds.filter(Boolean).length === 0 ||
+                  bombasIds.filter(Boolean).length >= bombasDisponibles.length
+                }
+                className="inline-flex items-center gap-1 rounded-lg border border-dashed border-border px-2 py-1 text-xs text-muted hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Plus size={12} /> Agregar bomba
+              </button>
+            )}
+          </div>
           {!bombaHabilitada && (
             <span className="text-xs text-muted">
               Disponible solo con descarga por bomba.
@@ -711,7 +803,13 @@ export function PedidoForm({
         </Campo>
 
         <div className="flex items-end sm:col-span-2">
-          <PrimaryButton type="submit" disabled={pendiente} conMas={!esEdicion}>
+          {/* Sin diseño elegido no se puede guardar: es un dato que no admite un
+              valor por descarte (una resistencia equivocada se funde en la obra). */}
+          <PrimaryButton
+            type="submit"
+            disabled={pendiente || (exigeElegirDiseno && disenoId === 0)}
+            conMas={!esEdicion}
+          >
             {esEdicion
               ? pendiente
                 ? "Guardando…"

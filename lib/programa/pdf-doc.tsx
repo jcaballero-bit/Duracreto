@@ -300,7 +300,11 @@ function Th({
  */
 function BloqueClienteView({ bloque }: { bloque: BloqueCliente }): ReactElement {
   const p = bloque.pedido;
-  const franja = p.bombaColor ? { borderLeftWidth: 3, borderLeftColor: p.bombaColor } : {};
+  // Franja lateral con el color de la PRIMERA bomba (si el pedido lleva varias,
+  // cada una imprime además su propio chip en la celda de Tipo).
+  const franja = p.bombas.length
+    ? { borderLeftWidth: 3, borderLeftColor: p.bombas[0].color }
+    : {};
   // Dónde empieza la capa del Tipo de concreto (después de Cliente + las 7 columnas).
   const izqTipo = COLUMNAS.cliente + ANCHO_CENTRO;
 
@@ -393,11 +397,11 @@ function BloqueClienteView({ bloque }: { bloque: BloqueCliente }): ReactElement 
         {bloque.conTotal && (
           <Text style={[s.negrita, s.textoCentrado]}>Total: {p.totalM3.toFixed(2)} m³</Text>
         )}
-        {!!p.bombaCodigo && (
-          <View style={[s.chipBombaCelda, { backgroundColor: p.bombaColor ?? TINTA }]}>
-            <Text style={s.chipBombaTexto}>Bomba {p.bombaCodigo}</Text>
+        {p.bombas.map((b) => (
+          <View key={b.codigo} style={[s.chipBombaCelda, { backgroundColor: b.color || TINTA }]}>
+            <Text style={s.chipBombaTexto}>Bomba {b.codigo}</Text>
           </View>
-        )}
+        ))}
       </View>
     </View>
   );

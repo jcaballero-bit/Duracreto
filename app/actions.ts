@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA } from "@/lib/auth/acceso";
+import { ESTADO_LABORATORISTA_PLANTA, viajeEsDeSuPlanta } from "@/lib/calidad/planta-lab";
 import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
 import { validarVolumenPorRol } from "@/lib/volumen";
@@ -156,16 +157,26 @@ async function autorizarPorPedido(pedidoId: number): Promise<Permiso> {
   return autorizarFecha(pedido.hora_solicitada);
 }
 
-/** Rechaza si la bomba elegida tiene mantenimiento/baja que cubre la fecha del
- *  pedido (Hito 6). Devuelve mensaje o null si está libre. */
+/** Rechaza si ALGUNA de las bombas elegidas tiene mantenimiento/baja que cubre la
+ *  fecha del pedido (Hito 6). Devuelve mensaje o null si todas están libres. */
 async function validarBombaMantenimiento(entrada: EntradaPedido): Promise<string | null> {
-  if (entrada.bomba_id == null) return null;
-  const mant = await mantenimientoDeUnidad("Bomba", entrada.bomba_id, entrada.hora_solicitada);
-  if (!mant) return null;
   const fmt = (d: Date) =>
     d.toLocaleDateString("es-HN", { day: "2-digit", month: "2-digit", year: "numeric" });
-  const etq = mant.tipo_evento === "Mantenimiento_Programado" ? "mantenimiento programado" : "baja de servicio";
-  return `La bomba elegida tiene ${etq} del ${fmt(mant.fecha_inicio)} al ${fmt(mant.fecha_fin)} — no se puede asignar en esa fecha.`;
+  for (const bombaId of entrada.bombas_ids ?? []) {
+    const mant = await mantenimientoDeUnidad("Bomba", bombaId, entrada.hora_solicitada);
+    if (!mant) continue;
+    const bomba = await prisma.bombas.findUnique({
+      where: { id: bombaId },
+      select: { identificador: true },
+    });
+    const etq =
+      mant.tipo_evento === "Mantenimiento_Programado" ? "mantenimiento programado" : "baja de servicio";
+    return (
+      `La bomba ${bomba?.identificador ?? bombaId} tiene ${etq} del ${fmt(mant.fecha_inicio)} ` +
+      `al ${fmt(mant.fecha_fin)} — no se puede asignar en esa fecha.`
+    );
+  }
+  return null;
 }
 
 /** Autoriza operar sobre un viaje (zona + fecha del rol, por su pedido). Además,
@@ -376,6 +387,12 @@ function construirEntrada(
   formData: FormData,
   creadoPor: string,
 ): { entrada?: EntradaPedido; error?: string } {
+  // El diseño de mezcla NO admite valor por descarte: al convertir una proyección va
+  // vacío a propósito y hay que elegirlo. Se valida aquí también, no solo en el form.
+  const disenoId = Number(formData.get("diseno_id"));
+  if (!Number.isFinite(disenoId) || disenoId <= 0) {
+    return { error: "Elige el diseño de mezcla según lo que pidió el asesor." };
+  }
   const volumen = Number(formData.get("volumen_total_m3"));
   const horaStr = String(formData.get("hora_solicitada"));
   const hielo = Number(formData.get("sacos_hielo_por_m3") ?? 0) || 0;
@@ -391,12 +408,16 @@ function construirEntrada(
   return {
     entrada: {
       cliente_id: Number(formData.get("cliente_id")),
-      diseno_id: Number(formData.get("diseno_id")),
+      diseno_id: disenoId,
       volumen_total_m3: volumen,
       hora_solicitada: new Date(horaStr),
       plantel_id: Number(formData.get("plantel_id")),
       planta_id: Number(formData.get("planta_id")),
-      bomba_id: Number(formData.get("bomba_id")) || null,
+      // Bombas: el formulario manda un `bomba_id` por cada selector (una o varias).
+      bombas_ids: formData
+        .getAll("bomba_id")
+        .map((x) => Number(x))
+        .filter((x) => Number.isFinite(x) && x > 0),
       tipo_descarga: String(formData.get("tipo_descarga")),
       revenimiento: String(formData.get("revenimiento") || "") || null,
       tipo_servicio: String(formData.get("tipo_servicio") || "") || null,
@@ -1210,14 +1231,35 @@ export async function avanzarEstadoAction(
     alcance?.esAdmin || alcance?.esDespachador || alcance?.esJefePlanta || alcance?.esDosificador;
   if (alcance && !rolPlenoDespacho) {
     if (alcance.esLaboratorista) {
-      // Laboratorista: solo Llegada/Descargando/Regresando y solo sus proyectos.
-      if (!(ESTADOS_LABORATORISTA as readonly string[]).includes(nuevoEstado)) {
-        return { ok: false, mensaje: "Como Laboratorista solo puedes marcar Llegada, Descargando o Regresando." };
-      }
       const sesion = await auth();
       const uid = sesion?.user?.id ?? "";
-      if (!(await viajeEsDeLaboratorista(viajeId, uid))) {
-        return { ok: false, mensaje: "Ese viaje no es de un proyecto asignado a ti." };
+      const viaje = await prisma.viajes.findUnique({
+        where: { id: viajeId },
+        select: { pedido: { select: { hora_solicitada: true } } },
+      });
+      const dia = viaje?.pedido.hora_solicitada ?? new Date();
+      // Dos papeles distintos, y un mismo laboratorista puede tener los dos hoy:
+      //  · en OBRA (proyecto asignado): Llegada / Descargando / Regresando;
+      //  · en PLANTA (báscula): solo "En ruta" — despacha el mixer que cargó.
+      const deSuProyecto = await viajeEsDeLaboratorista(viajeId, uid);
+      const deSuPlanta = await viajeEsDeSuPlanta(viajeId, uid, dia);
+      const permitidos = [
+        ...(deSuProyecto ? (ESTADOS_LABORATORISTA as readonly string[]) : []),
+        ...(deSuPlanta ? [ESTADO_LABORATORISTA_PLANTA] : []),
+      ];
+      if (permitidos.length === 0) {
+        return {
+          ok: false,
+          mensaje: "Ese viaje no es de un proyecto asignado a ti ni carga en tu planta.",
+        };
+      }
+      if (!permitidos.includes(nuevoEstado)) {
+        return {
+          ok: false,
+          mensaje: deSuPlanta && !deSuProyecto
+            ? "Como Laboratorista de planta solo puedes marcar En ruta (la salida del mixer)."
+            : "Como Laboratorista solo puedes marcar Llegada, Descargando o Regresando.",
+        };
       }
     } else {
       return { ok: false, mensaje: "Tu rol no permite avanzar el estado de los viajes." };

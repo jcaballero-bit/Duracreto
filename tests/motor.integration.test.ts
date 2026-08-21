@@ -501,8 +501,8 @@ describe("bombas — préstamo por hub (mapa propio)", () => {
       tipo_descarga: "Bomba estacionaria", // sin bomba_id -> auto por hub
       creado_por: "test",
     });
-    const pedido = await prisma.pedidos.findUniqueOrThrow({ where: { id: r.pedidoId } });
-    expect(pedido.bomba_id).toBe(bombaHub.id);
+    const bombas = await prisma.pedidos_bombas.findMany({ where: { pedido_id: r.pedidoId } });
+    expect(bombas.map((b) => b.bomba_id)).toEqual([bombaHub.id]);
   });
 
   it("prefiere la bomba PROPIA antes que la del hub", async () => {
@@ -528,8 +528,8 @@ describe("bombas — préstamo por hub (mapa propio)", () => {
       tipo_descarga: "Bomba estacionaria",
       creado_por: "test",
     });
-    const pedido = await prisma.pedidos.findUniqueOrThrow({ where: { id: r.pedidoId } });
-    expect(pedido.bomba_id).toBe(bombaPropia.id); // propia antes que la del hub
+    const bombas = await prisma.pedidos_bombas.findMany({ where: { pedido_id: r.pedidoId } });
+    expect(bombas.map((b) => b.bomba_id)).toEqual([bombaPropia.id]); // propia antes que la del hub
   });
 });
 
@@ -1092,7 +1092,7 @@ describe("bombas — traslape / margen en la alerta (hueco 2)", () => {
       hora_solicitada: DIA,
       plantel_id: plantelId,
       planta_id: plantaId,
-      bomba_id: bomba.id,
+      bombas_ids: [bomba.id],
       tipo_descarga: "Bomba estacionaria", // descarga larga → traslape de bomba
       creado_por: "test",
     };
