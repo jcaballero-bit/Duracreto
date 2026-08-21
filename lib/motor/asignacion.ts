@@ -2280,6 +2280,7 @@ async function colocarAdicionesAlFinal(
     orderBy: { id: "asc" },
     select: {
       id: true,
+      pedido_id: true,
       planta_id: true,
       volumen_asignado_m3: true,
       planta: { select: { capacidad_m3h: true, tiempo_alistamiento_min: true } },
@@ -2295,6 +2296,7 @@ async function colocarAdicionesAlFinal(
       estado: { not: "Cancelado" },
     },
     select: {
+      pedido_id: true,
       planta_id: true,
       mixer_id: true,
       hora_inicio_carga: true,
@@ -2306,12 +2308,30 @@ async function colocarAdicionesAlFinal(
 
   /** Hasta cuándo está ocupada la boca de carga de cada planta. */
   const libreDesde = new Map<number, number>();
+  /**
+   * Hasta cuándo llega la cola de CADA PEDIDO. Un viaje adicional tiene que quedar
+   * como el ÚLTIMO de ese cliente: si solo se mirara la ocupación de la planta,
+   * podría colocarse ANTES del último camión ya programado del mismo cliente (pasó:
+   * se agregó un viaje y salió como "Viaje 17 de 18" en vez del 18) y además el
+   * cliente vería un camión intercalado en medio de su suministro.
+   */
+  const finPorPedido = new Map<number, number>();
   /** Ventanas [inicio de carga, regreso) ya tomadas por cada mixer. */
   const ocupacionMixer = new Map<number, [number, number][]>();
   for (const v of existentes) {
     const finCarga = (v.ts_fin_carga_real ?? v.hora_fin_carga)?.getTime();
     if (v.planta_id != null && finCarga != null) {
       libreDesde.set(v.planta_id, Math.max(libreDesde.get(v.planta_id) ?? 0, finCarga));
+    }
+    // Para la cola del pedido vale cualquier marca de tiempo del viaje: lo que
+    // importa es no quedar por delante de ninguno de sus camiones.
+    const finPedido = (
+      v.ts_fin_carga_real ??
+      v.hora_fin_carga ??
+      v.hora_inicio_carga
+    )?.getTime();
+    if (finPedido != null) {
+      finPorPedido.set(v.pedido_id, Math.max(finPorPedido.get(v.pedido_id) ?? 0, finPedido));
     }
     if (v.mixer_id != null && v.hora_inicio_carga && v.hora_regreso_planta) {
       const arr = ocupacionMixer.get(v.mixer_id) ?? [];
@@ -2324,6 +2344,8 @@ async function colocarAdicionesAlFinal(
     if (v.planta_id == null || !v.planta) continue;
     const arranque = Math.max(
       libreDesde.get(v.planta_id) ?? ini.getTime(),
+      // Después del último camión de ESTE cliente, esté en la planta que esté.
+      finPorPedido.get(v.pedido_id) ?? 0,
       ini.getTime(),
     );
     const t = tiemposDeViaje(arranque, {
@@ -2363,8 +2385,10 @@ async function colocarAdicionesAlFinal(
       },
     });
 
-    // La boca de carga y el mixer quedan ocupados para el siguiente de la tanda.
+    // La boca de carga, la cola del cliente y el mixer quedan ocupados para el
+    // siguiente de la tanda (si se agregan varios viajes, van uno tras otro).
     libreDesde.set(v.planta_id, t.finCargaMs);
+    finPorPedido.set(v.pedido_id, t.finCargaMs);
     if (elegido) {
       const arr = ocupacionMixer.get(elegido.id) ?? [];
       arr.push([t.inicioCargaMs, t.regresoMs]);

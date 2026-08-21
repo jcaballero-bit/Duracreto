@@ -40,6 +40,7 @@ export interface ViajeDespacho {
   id: number;
   pedidoId: number;
   codigoViaje: string; // identificador del sistema, ej. "V-000045"
+  clienteId: number;
   numClienteDia: number; // número de viaje del cliente ESE DÍA (1..N, dinámico)
   totalClienteDia: number; // total de viajes del cliente ese día
   ordenCargaMs: number; // clave de orden cronológico (hora de carga real o programada)

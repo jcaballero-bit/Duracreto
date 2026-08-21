@@ -280,29 +280,11 @@ export default async function DespachoPage({
     alcance.esJefeLaboratorio ||
     alcance.esGerenteControlCalidad;
 
-  // Número de viaje por CLIENTE y DÍA (dinámico, NO se guarda): reinicia en 1 cada
-  // día por cliente. Se ordena por la hora PROGRAMADA de carga (la misma clave que
-  // el orden fijo de las tarjetas, `ordenCargaMs`), NUNCA por la hora real: si se
-  // usara la real, al marcar "En carga" el viaje tomaría la hora de AHORA y saltaría
-  // de número (p. ej. de "Viaje 1" a "Viaje 10"), corriéndose la numeración. Con la
-  // hora programada el número es estable y coincide con el orden en pantalla. Se
-  // calcula sobre TODOS los pedidos del cliente ese día (aunque sean de distintos
-  // planteles/pedidos).
-  const porClienteDia = new Map<number, { viajeId: number; ordenMs: number }[]>();
-  for (const p of pedidos) {
-    for (const v of p.viajes) {
-      if (!v.mixer) continue;
-      const ordenMs = (v.hora_inicio_carga ?? p.hora_solicitada).getTime();
-      const arr = porClienteDia.get(p.cliente_id) ?? [];
-      arr.push({ viajeId: v.id, ordenMs });
-      porClienteDia.set(p.cliente_id, arr);
-    }
-  }
-  const numViajeCliente = new Map<number, { num: number; total: number }>();
-  for (const arr of porClienteDia.values()) {
-    arr.sort((a, b) => a.ordenMs - b.ordenMs || a.viajeId - b.viajeId);
-    arr.forEach((x, i) => numViajeCliente.set(x.viajeId, { num: i + 1, total: arr.length }));
-  }
+  // El número de viaje por CLIENTE y DÍA ("Viaje 4 de 8") se asigna MÁS ABAJO, una
+  // vez ordenadas las tarjetas, recorriéndolas en el mismo orden en que se ven. Antes
+  // se calculaba aparte por hora de carga y podía no coincidir con el orden de la
+  // pantalla: dos tarjetas seguidas mostraban "Viaje 4" y luego "Viaje 7", y el
+  // despachador registraba el camión equivocado.
 
   // Nota operativa de cada plantel ese dia (la deja la Programacion; vacia = nada).
   const obsPlantel = new Map(
@@ -376,13 +358,13 @@ export default async function DespachoPage({
       // que quede claro que es una corrección de registro y no una programación.
       const volumenCorreccionAdmin = volumenEditable && !editableNormal;
 
-      const numInfo = numViajeCliente.get(v.id);
       const fila: ViajeDespacho = {
         id: v.id,
         pedidoId: p.id,
         codigoViaje: `V-${String(v.id).padStart(6, "0")}`,
-        numClienteDia: numInfo?.num ?? 1,
-        totalClienteDia: numInfo?.total ?? 1,
+        clienteId: p.cliente_id,
+        numClienteDia: 0, // se numera al final, sobre el orden ya ordenado
+        totalClienteDia: 0,
         // Orden cronológico FIJO por la hora PROGRAMADA de carga (no la real): así
         // el orden no cambia cuando el viaje se despacha o se registra su hora real.
         ordenCargaMs: (v.hora_inicio_carga ?? p.hora_solicitada).getTime(),
@@ -500,6 +482,26 @@ export default async function DespachoPage({
   //     un viaje no lo mueve de lugar.
   for (const g of grupos) {
     g.viajes = ordenarViajesDespacho(g.viajes);
+  }
+
+  // Número de viaje por CLIENTE y DÍA, asignado recorriendo las tarjetas EN EL ORDEN
+  // EN QUE SE VEN (plantel por plantel, bloque por bloque). Así el número es siempre
+  // consecutivo al bajar por la pantalla —nunca un "Viaje 4" seguido de un "Viaje 7"—
+  // y el camión que se agrega al final del suministro sale con el último número.
+  const totalPorCliente = new Map<number, number>();
+  for (const g of grupos) {
+    for (const v of g.viajes) {
+      totalPorCliente.set(v.clienteId, (totalPorCliente.get(v.clienteId) ?? 0) + 1);
+    }
+  }
+  const vistosPorCliente = new Map<number, number>();
+  for (const g of grupos) {
+    for (const v of g.viajes) {
+      const n = (vistosPorCliente.get(v.clienteId) ?? 0) + 1;
+      vistosPorCliente.set(v.clienteId, n);
+      v.numClienteDia = n;
+      v.totalClienteDia = totalPorCliente.get(v.clienteId) ?? n;
+    }
   }
 
   // Clientes en ATENCIÓN ahora: pedidos con al menos un viaje iniciado (no
