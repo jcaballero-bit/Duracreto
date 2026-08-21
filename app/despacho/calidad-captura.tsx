@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition, type Dispatch, type SetStateAction } from "react";
+import { useState, useTransition, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { ClipboardCheck, FlaskConical, Save, X } from "lucide-react";
 import {
@@ -65,7 +65,14 @@ export function CapturaCalidadViaje({
   const sinPulgada = (n: number | null) =>
     n != null ? formatearRevenimiento(n).replace(/"/g, "") : "";
 
-  const [abierto, setAbierto] = useState(false);
+  // Cada sección se abre SOLA en el momento de su muestra —planta cuando el mixer
+  // empieza a cargar, obra cuando llega— y se cierra al guardar. `ovPlanta`/`ovObra`
+  // son la decisión MANUAL del usuario, que manda sobre la automática. Se DERIVA en
+  // vez de guardarse desde un efecto: así guardar cierra la sección de verdad y no
+  // se vuelve a abrir sola en el siguiente render (era el bug de la salida de planta,
+  // que dejaba el botón Guardar puesto mientras la de obra sí se cerraba).
+  const [ovPlanta, setOvPlanta] = useState<boolean | null>(null);
+  const [ovObra, setOvObra] = useState<boolean | null>(null);
   const [revP, setRevP] = useState(sinPulgada(revenimientoPlanta));
   const [tempP, setTempP] = useState(temperaturaPlanta?.toString() ?? "");
   const [enPlanta, setEnPlanta] = useState(muestraPlanta);
@@ -73,12 +80,16 @@ export function CapturaCalidadViaje({
   const [temp, setTemp] = useState(temperatura?.toString() ?? "");
   const [enObra, setEnObra] = useState(muestraObra);
 
-  // Se abre sola en el momento de tomar cada muestra: al empezar a cargar (planta) y
-  // al llegar a la obra. Nunca bloquea el avance del viaje.
-  useEffect(() => {
-    if (puedeSalidaPlanta && cargaIniciada && !hayPlanta) setAbierto(true);
-    else if (puedeObra && llegadaAlcanzada && !hayObra) setAbierto(true);
-  }, [puedeSalidaPlanta, cargaIniciada, hayPlanta, puedeObra, llegadaAlcanzada, hayObra]);
+  const editPlanta = puedeSalidaPlanta && (ovPlanta ?? (cargaIniciada && !hayPlanta));
+  const editObra = puedeObra && (ovObra ?? (llegadaAlcanzada && !hayObra));
+  const abierto = editPlanta || editObra;
+
+  /** El encabezado abre o cierra las dos secciones a la vez. */
+  const alternarTodo = () => {
+    const cerrar = abierto;
+    setOvPlanta(!cerrar);
+    setOvObra(!cerrar);
+  };
 
   /** Lee el revenimiento tecleado; avisa si no se entiende en vez de guardar basura. */
   const leerRev = (texto: string): number | null | false => {
@@ -100,8 +111,10 @@ export function CapturaCalidadViaje({
         tempP.trim() === "" ? null : Number(tempP),
         enPlanta,
       );
-      if (res.ok) router.refresh();
-      else alert(res.mensaje ?? "No se pudo guardar la salida de planta.");
+      if (res.ok) {
+        setOvPlanta(false); // se guardó: la sección se cierra, como la de obra
+        router.refresh();
+      } else alert(res.mensaje ?? "No se pudo guardar la salida de planta.");
     });
   };
 
@@ -116,7 +129,7 @@ export function CapturaCalidadViaje({
         enObra,
       );
       if (res.ok) {
-        setAbierto(false);
+        setOvObra(false);
         router.refresh();
       } else alert(res.mensaje ?? "No se pudo guardar la lectura de calidad.");
     });
@@ -141,7 +154,7 @@ export function CapturaCalidadViaje({
     <div className="mt-3 rounded-lg border border-border bg-content/40 p-2.5">
       <button
         type="button"
-        onClick={() => setAbierto((a) => !a)}
+        onClick={alternarTodo}
         className="flex w-full items-center justify-between gap-2 text-left"
       >
         <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-ink">
@@ -153,7 +166,7 @@ export function CapturaCalidadViaje({
         </span>
       </button>
 
-      {abierto && puedeSalidaPlanta && (
+      {editPlanta && (
         <BloqueLectura
           titulo="Salida de planta"
           rev={revP}
@@ -168,7 +181,7 @@ export function CapturaCalidadViaje({
         />
       )}
 
-      {abierto && puedeObra && (
+      {editObra && (
         <BloqueLectura
           titulo="En obra (proyecto)"
           rev={rev}
