@@ -3,6 +3,7 @@
 import {
   BarChart3,
   Building2,
+  Clock,
   CalendarClock,
   ClipboardCheck,
   Contact,
@@ -42,6 +43,7 @@ export const NAV: ItemNav[] = [
   },
   { href: "/comercial", label: "Gerencia Comercial", icon: TrendingUp },
   { href: "/reportes", label: "Indicadores", icon: BarChart3 },
+  { href: "/extraordinario", label: "Horario extraordinario", icon: Clock },
   { href: "/reasignaciones", label: "Reasignar Dosificador", icon: Shuffle },
   { href: "/flota", label: "Flota", icon: Building2 },
   { href: "/laboratorio", label: "Laboratorio", icon: FlaskConical },

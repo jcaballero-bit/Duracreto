@@ -16,6 +16,8 @@ import { leerMargenHueco } from "@/lib/motor/config-runtime";
 import { leerAperturaDefault, textoHoraMin } from "@/lib/motor/apertura";
 import { leerConfigBloqueo } from "@/lib/programacion/bloqueo";
 import { ETIQUETA_TIPO_DIA, TIPOS_DIA, textoMin } from "@/lib/planilla/recargos";
+import { HorariosPlanta, type FilaPlantaHorario } from "./horarios-planta";
+import { leerCostoFicha, leerUmbralExtra } from "@/lib/extraordinario/metricas";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +28,7 @@ const TABS: { key: string; label: string }[] = [
   { key: "disenos", label: "Diseños de mezcla" },
   { key: "capacidades", label: "Capacidades reducidas" },
   { key: "recargos", label: "Recargos de ley" },
+  { key: "horarios", label: "Horario de planta" },
   { key: "ajustes", label: "Ajustes del motor" },
   { key: "usuarios", label: "Usuarios y roles" },
 ];
@@ -397,6 +400,33 @@ async function renderTab(tab: string, ctx: Ctx) {
         ],
         filas,
         true, // sin importacion CSV
+      );
+    }
+    case "horarios": {
+      const [plantasFull, costoFicha, umbralPct] = await Promise.all([
+        prisma.plantas.findMany({
+          orderBy: { id: "asc" },
+          include: {
+            plantel: { select: { nombre: true } },
+            horarios_normales: true,
+          },
+        }),
+        leerCostoFicha(),
+        leerUmbralExtra(),
+      ]);
+      const filasHorario: FilaPlantaHorario[] = plantasFull.map((p) => ({
+        plantaId: p.id,
+        planta: p.nombre,
+        plantel: p.plantel.nombre,
+        celdas: p.horarios_normales.map((h) => ({
+          tipoDia: h.tipo_dia,
+          apertura: textoMin(h.hora_apertura_min),
+          cierre: textoMin(h.hora_cierre_min),
+          activo: h.activo,
+        })),
+      }));
+      return (
+        <HorariosPlanta filas={filasHorario} costoFicha={costoFicha} umbralPct={umbralPct} />
       );
     }
     case "ajustes": {

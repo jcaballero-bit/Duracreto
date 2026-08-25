@@ -192,6 +192,7 @@ model plantas {
   asignaciones_lab_planta asignaciones_laboratorista_planta[] // Laboratorista de control de salida
   reasignaciones_dosificador reasignaciones_dosificador_planta[] // reasignaciones de Dosificador a esta planta por día
   aperturas aperturas_planta[] // apertura excepcional de un dia concreto
+  horarios_normales horario_normal_planta[] // jornada operativa normal (clasifica despachos)
 
   @@index([plantel_id])
 }
@@ -223,6 +224,8 @@ model aperturas_planta {
 model configuracion {
   clave     String @id
   valor_int Int?
+  /// Para ajustes decimales (p. ej. el costo por m3 de la ficha, L 30.78).
+  valor_float Float?
 }
 
 // ── Operadores (motoristas) ────────────────────────────────────────────────
@@ -481,6 +484,7 @@ model clientes {
   asesor       asesores?                  @relation(fields: [asesor_id], references: [id])
   pedidos      pedidos[]
   solicitudes  solicitudes_anticipadas[]
+  cobros_sobretiempo cobros_sobretiempo[] // sobretiempo que se le cobro a este cliente
 
   @@index([asesor_id])
 }
@@ -950,4 +954,40 @@ model bitacora_auditoria {
   motivo          String?
 
   @@index([tabla_afectada, registro_id])
+}
+
+/// Jornada operativa NORMAL de cada planta, por tipo de dia. Es la referencia con la
+/// que se clasifica un despacho como normal o extraordinario.
+///
+/// NO confundir con `configuracion_recargos`: aquellas son bandas de ley laboral que
+/// aplican a las PERSONAS; esta es el horario de la PLANTA. Coinciden por defecto pero
+/// se configuran por separado, y una planta puede cerrar a otra hora que su vecina.
+/// La ausencia de una fila activa para un tipo de dia significa "sin horario normal"
+/// (todo ese dia es extraordinario); por eso el domingo no lleva fila precargada.
+model horario_normal_planta {
+  id                Int     @id @default(autoincrement())
+  planta_id         Int
+  planta            plantas @relation(fields: [planta_id], references: [id], onDelete: Cascade)
+  tipo_dia          String // "LunVie" | "Sabado" | "Domingo"
+  hora_apertura_min Int // minutos desde medianoche
+  hora_cierre_min   Int
+  activo            Boolean @default(true)
+
+  @@unique([planta_id, tipo_dia])
+  @@index([planta_id])
+}
+
+/// Sobretiempo que se le cobro a un cliente (captura manual y opcional). Se usa en el
+/// analisis de absorcion de costo para mostrar la diferencia NETA.
+model cobros_sobretiempo {
+  id            Int       @id @default(autoincrement())
+  fecha         DateTime
+  monto         Float
+  cliente_id    Int?
+  cliente       clientes? @relation(fields: [cliente_id], references: [id], onDelete: SetNull)
+  observaciones String?
+  creado_por    String?
+  creado_en     DateTime  @default(now())
+
+  @@index([fecha])
 }

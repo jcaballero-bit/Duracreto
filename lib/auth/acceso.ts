@@ -141,6 +141,9 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   // Planilla del personal operativo: contiene SALARIOS, así que es exclusiva del
   // Administrador. Ningún otro rol la ve en el menú ni entra por URL directa.
   "/planilla": ["Administrador"],
+  // Despachos en horario extraordinario: Admin (todo) y Jefe de Planta (acotado a
+  // sus planteles asignados por `filtroPlantelPorZona`).
+  "/extraordinario": ["Administrador", "JefePlanta"],
   // Reasignación de planta de Dosificadores por día: la gestiona el Jefe de Planta,
   // el Programador o el Admin (el Dosificador NO — solo ve el resultado).
   "/reasignaciones": ["Administrador", "JefePlanta", "Programador"],

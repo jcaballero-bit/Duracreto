@@ -8,6 +8,8 @@ export async function limpiarBD() {
   await prisma.solicitudes_anticipadas.deleteMany(); // ref clientes (RESTRICT) → primero
   await prisma.viajes.deleteMany();
   await prisma.pedidos.deleteMany();
+  await prisma.cobros_sobretiempo.deleteMany(); // ref clientes
+  await prisma.asistencia_operativos.deleteMany(); // ref operadores
   await prisma.disponibilidad_flota.deleteMany();
   await prisma.historial_estado_unidad.deleteMany();
   await prisma.bombas.deleteMany();
