@@ -123,5 +123,9 @@ export function resolverFila(catalogo: Catalogo, r: Fila, m: Mapas): Resuelto {
       if (efe === null) return { error: "capacidad_efectiva_m3 inválida" };
       return { data: { capacidad_nominal_m3: nom, capacidad_efectiva_m3: efe } };
     }
+    case "configuracion_recargos":
+      // Las bandas de recargo se gestionan solo en Administracion (son 13 filas y un
+      // error de captura desordena toda la planilla): no se importan por CSV.
+      return { error: "las bandas de recargo no se importan por CSV" };
   }
 }

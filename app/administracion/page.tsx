@@ -15,6 +15,7 @@ import { AjusteApertura, AjusteBloqueoEdicion, AjustesMotor } from "./ajustes-mo
 import { leerMargenHueco } from "@/lib/motor/config-runtime";
 import { leerAperturaDefault, textoHoraMin } from "@/lib/motor/apertura";
 import { leerConfigBloqueo } from "@/lib/programacion/bloqueo";
+import { ETIQUETA_TIPO_DIA, TIPOS_DIA, textoMin } from "@/lib/planilla/recargos";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,7 @@ const TABS: { key: string; label: string }[] = [
   { key: "asesores", label: "Asesores" },
   { key: "disenos", label: "Diseños de mezcla" },
   { key: "capacidades", label: "Capacidades reducidas" },
+  { key: "recargos", label: "Recargos de ley" },
   { key: "ajustes", label: "Ajustes del motor" },
   { key: "usuarios", label: "Usuarios y roles" },
 ];
@@ -347,6 +349,54 @@ async function renderTab(tab: string, ctx: Ctx) {
         ],
         filas,
         true, // sin importación CSV
+      );
+    }
+    case "recargos": {
+      const filas0 = await prisma.configuracion_recargos.findMany({
+        orderBy: [{ tipo_dia: "asc" }, { hora_desde_min: "asc" }],
+      });
+      // Se listan por tipo de dia en el orden del negocio (LunVie, Sabado, Domingo).
+      const rank = (t: string) => TIPOS_DIA.indexOf(t as (typeof TIPOS_DIA)[number]);
+      const ordenadas = [...filas0].sort(
+        (a, b) => rank(a.tipo_dia) - rank(b.tipo_dia) || a.hora_desde_min - b.hora_desde_min,
+      );
+      const filas: FilaCatalogo[] = ordenadas.map((r) => ({
+        id: r.id,
+        celdas: {
+          dia: ETIQUETA_TIPO_DIA[r.tipo_dia as (typeof TIPOS_DIA)[number]] ?? r.tipo_dia,
+          franja: `${textoMin(r.hora_desde_min)} a ${textoMin(r.hora_hasta_min)}`,
+          recargo: r.porcentaje_recargo === 0 ? "Hora normal" : `${r.porcentaje_recargo} %`,
+        },
+        valores: {
+          tipo_dia: r.tipo_dia,
+          hora_desde_min: textoMin(r.hora_desde_min),
+          hora_hasta_min: textoMin(r.hora_hasta_min),
+          porcentaje_recargo: String(r.porcentaje_recargo),
+        },
+      }));
+      return bloque(
+        "configuracion_recargos",
+        "banda de recargo",
+        "Franjas horarias y su recargo, por tipo de dia. Es la tabla que usa la planilla para clasificar las horas de cada turno (0 % = hora normal). Editable: los porcentajes NO estan escritos en el codigo. Las horas se capturan como HH:MM y 24:00 es el final del dia.",
+        [
+          { key: "dia", label: "Tipo de dia" },
+          { key: "franja", label: "Franja" },
+          { key: "recargo", label: "Recargo" },
+        ],
+        [
+          {
+            name: "tipo_dia",
+            label: "Tipo de dia",
+            tipo: "select",
+            opciones: TIPOS_DIA.map((t) => ({ value: t, label: ETIQUETA_TIPO_DIA[t] })),
+            requerido: true,
+          },
+          { name: "hora_desde_min", label: "Desde (HH:MM)", tipo: "text", requerido: true, placeholder: "07:00" },
+          { name: "hora_hasta_min", label: "Hasta (HH:MM)", tipo: "text", requerido: true, placeholder: "15:00" },
+          { name: "porcentaje_recargo", label: "Recargo (%)", tipo: "number", requerido: true, placeholder: "25" },
+        ],
+        filas,
+        true, // sin importacion CSV
       );
     }
     case "ajustes": {

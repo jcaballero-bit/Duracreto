@@ -231,6 +231,18 @@ model operadores {
   nombre String
   estado String @default("Disponible") // "Disponible" | "No disponible"
 
+  // Puesto dentro del personal operativo (ver lib/planilla/puestos.ts). La tabla se
+  // llama `operadores` por historia (la referencian mixers.operador_asignado_id,
+  // viajes.operador_id y el framework de catalogos), pero guarda a TODO el personal
+  // operativo: dosificadores, operadores de cargadora/bomba, motoristas de camion y
+  // de mixer. Los registros previos migraron con puesto = "Motorista_Mixer".
+  puesto String @default("Motorista_Mixer")
+
+  // Sueldo mensual pactado. DATO SENSIBLE: solo el Administrador lo ve (/planilla).
+  // El diario y el horario se derivan (ver lib/planilla/salario.ts):
+  //   diario = mensual / 30 ; hora = diario / 8 = mensual / 240
+  salario_mensual Float?
+
   // Plantel donde el operador trabaja normalmente (FK opcional). El MIXER habitual del
   // operador NO vive aqui: es la relacion inversa `mixers_asignados` (fuente unica =
   // mixers.operador_asignado_id), para no desincronizar el dato en dos lugares.
@@ -239,9 +251,67 @@ model operadores {
 
   mixers_asignados mixers[] @relation("OperadorMixer") // mixers cuyo motorista habitual es este
   viajes           viajes[] // viajes donde va este motorista
+  asistencias      asistencia_operativos[] // asistencia diaria para la planilla
 
   @@index([estado])
   @@index([plantel_asignado_id])
+  @@index([puesto])
+}
+
+/// Bandas de recargo por tipo de dia (ley laboral). EDITABLES desde Administracion:
+/// los porcentajes nunca se escriben en el codigo. Las horas van como MINUTOS desde
+/// medianoche (misma convencion que hora_apertura_min), asi 24:00 = 1440 cabe.
+model configuracion_recargos {
+  id                 Int    @id @default(autoincrement())
+  tipo_dia           String // "LunVie" | "Sabado" | "Domingo"
+  hora_desde_min     Int // inclusive
+  hora_hasta_min     Int // exclusive
+  porcentaje_recargo Float // 0 = hora normal; 25/50/75/100 = recargo
+
+  @@unique([tipo_dia, hora_desde_min])
+  @@index([tipo_dia])
+}
+
+/// Asistencia diaria del personal operativo. Las horas por nivel de recargo se
+/// calculan con calcularHorasTurno (lib/planilla/horas.ts) y se guardan resueltas;
+/// se recalculan si se edita la entrada o la salida. Una fila por persona y dia.
+model asistencia_operativos {
+  id           Int        @id @default(autoincrement())
+  persona_id   Int
+  persona      operadores @relation(fields: [persona_id], references: [id], onDelete: Cascade)
+  fecha        DateTime // dia a medianoche
+  hora_entrada DateTime?
+  hora_salida  DateTime?
+
+  horas_normales  Float @default(0)
+  horas_extra_25  Float @default(0)
+  horas_extra_50  Float @default(0)
+  horas_extra_75  Float @default(0)
+  horas_extra_100 Float @default(0)
+
+  // Ausencia (nullable): "Vacaciones" | "Permiso_Sin_Goce" | "Incapacidad" | "Otro".
+  // El costo se SUGIERE segun el tipo (vacaciones/incapacidad = salario diario,
+  // permiso sin goce = 0) y queda editable.
+  tipo_ausencia  String?
+  costo_ausencia Float?
+
+  observaciones String?
+  creado_por    String?
+  creado_en     DateTime @default(now())
+
+  @@unique([persona_id, fecha])
+  @@index([fecha])
+}
+
+/// Periodos de pago catorcenales, con 6 dias de rezago entre el cierre y el pago.
+/// Ancla: 06-jul-2026 a 19-jul-2026, pago 25-jul-2026. Los siguientes se generan
+/// sumando 14 dias; el Administrador puede ajustar uno a mano.
+model periodos_pago {
+  id           Int      @id @default(autoincrement())
+  fecha_inicio DateTime @unique
+  fecha_fin    DateTime
+  fecha_pago   DateTime
+  estado       String   @default("Abierto") // "Abierto" | "Cerrado" | "Pagado"
 }
 
 // ── Mixers (camiones revolvedores) ─────────────────────────────────────────

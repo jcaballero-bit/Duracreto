@@ -3,6 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import {
+  ETIQUETA_PUESTO_SINGULAR,
+  PUESTOS_MOTORISTA_MIXER,
+  type Puesto,
+} from "@/lib/planilla/puestos";
 import { exigirGestionFlota } from "@/lib/auth/guard";
 import { cambiarEstadoUnidad } from "@/lib/flota/estado-unidad";
 
@@ -165,9 +170,22 @@ export async function asignarMixerOperadorAction(
 
   const operador = await prisma.operadores.findUnique({
     where: { id: operadorId },
-    select: { nombre: true },
+    select: { nombre: true, puesto: true },
   });
   if (!operador) return { ok: false, mensaje: "Operador no encontrado." };
+
+  // La tabla `operadores` guarda a todo el personal operativo, y el motor copia este
+  // motorista habitual al viaje del mixer: un dosificador o un operador de cargadora
+  // no puede quedar aquí (si no, saldría como motorista del viaje).
+  if (
+    mixerId != null &&
+    !(PUESTOS_MOTORISTA_MIXER as string[]).includes(operador.puesto)
+  ) {
+    return {
+      ok: false,
+      mensaje: `${operador.nombre} tiene el puesto "${ETIQUETA_PUESTO_SINGULAR[operador.puesto as Puesto] ?? operador.puesto}": no puede ser el motorista habitual de un mixer.`,
+    };
+  }
 
   // Si se asigna un mixer, validar que exista y que su motorista actual sea otro
   // (evita marcar como "ya asignado a otro" desde la UI y guardar igual por API).

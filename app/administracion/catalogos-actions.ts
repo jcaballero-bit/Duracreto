@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { alcanceActual } from "@/lib/auth/guard";
 import { normalizarEncabezado } from "./columnas";
+import { parsearHoraMin } from "@/lib/planilla/recargos";
 import { resolverFila, type Fila } from "./import-resolver";
 
 export type Catalogo =
@@ -16,7 +17,8 @@ export type Catalogo =
   | "operadores"
   | "asesores"
   | "disenos"
-  | "capacidades_reducidas";
+  | "capacidades_reducidas"
+  | "configuracion_recargos";
 
 type Datos = Record<string, string>;
 type Res = { ok: boolean; mensaje?: string };
@@ -135,6 +137,14 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         capacidad_nominal_m3: int(d.capacidad_nominal_m3),
         capacidad_efectiva_m3: int(d.capacidad_efectiva_m3),
       };
+    case "configuracion_recargos":
+      return {
+        tipo_dia: s(d.tipo_dia),
+        // Las horas se capturan como "HH:MM" y se guardan en minutos desde medianoche.
+        hora_desde_min: parsearHoraMin(s(d.hora_desde_min)) ?? int(d.hora_desde_min),
+        hora_hasta_min: parsearHoraMin(s(d.hora_hasta_min)) ?? int(d.hora_hasta_min),
+        porcentaje_recargo: Number(s(d.porcentaje_recargo).replace(",", ".")),
+      };
   }
 }
 
@@ -151,6 +161,7 @@ function modelo(catalogo: Catalogo) {
     asesores: prisma.asesores,
     disenos: prisma.disenos_mezcla,
     capacidades_reducidas: prisma.capacidades_reducidas,
+    configuracion_recargos: prisma.configuracion_recargos,
   } as const;
   return mapa[catalogo];
 }

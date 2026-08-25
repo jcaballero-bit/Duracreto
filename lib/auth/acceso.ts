@@ -138,6 +138,9 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   // pestaña Operadores (motoristas) — la página filtra las pestañas por rol.
   "/flota": ["Administrador", "Programador", "Despachador", "Dosificador", "JefePlanta"],
   "/reportes": ["Administrador", "JefePlanta"],
+  // Planilla del personal operativo: contiene SALARIOS, así que es exclusiva del
+  // Administrador. Ningún otro rol la ve en el menú ni entra por URL directa.
+  "/planilla": ["Administrador"],
   // Reasignación de planta de Dosificadores por día: la gestiona el Jefe de Planta,
   // el Programador o el Admin (el Dosificador NO — solo ve el resultado).
   "/reasignaciones": ["Administrador", "JefePlanta", "Programador"],

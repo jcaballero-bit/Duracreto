@@ -100,6 +100,7 @@ async function main() {
   await prisma.pedidos.deleteMany();
   await prisma.bombas.deleteMany();
   await prisma.mixers.deleteMany();
+  await prisma.asistencia_operativos.deleteMany(); // ref operadores → primero
   await prisma.operadores.deleteMany();
   await prisma.plantas.deleteMany();
   await prisma.clientes.deleteMany(); // ref asesores → borrar antes
@@ -236,6 +237,9 @@ async function main() {
       data: {
         nombre: `Motorista ${String(numOp).padStart(2, "0")}`,
         estado: "Disponible",
+        puesto: "Motorista_Mixer",
+        // Sueldo mensual de ejemplo. El diario (/30) y el horario (/240) se derivan.
+        salario_mensual: 13500,
       },
     });
     await prisma.mixers.update({
@@ -251,7 +255,33 @@ async function main() {
   // Operadores de reserva (sin mixer fijo) para el desplegable de despacho.
   for (let i = 1; i <= 4; i++) {
     await prisma.operadores.create({
-      data: { nombre: `Motorista reserva ${i}`, estado: "Disponible" },
+      data: {
+        nombre: `Motorista reserva ${i}`,
+        estado: "Disponible",
+        puesto: "Motorista_Mixer",
+        salario_mensual: 12500,
+      },
+    });
+  }
+
+  // Resto del personal operativo (la planilla agrupa por puesto; no manejan mixer,
+  // asi que NO aparecen en el desplegable de motorista de Despacho).
+  const otroPersonal: { nombre: string; puesto: string; salario: number }[] = [
+    { nombre: "Dosificador Santa Marta 1", puesto: "Dosificador", salario: 15000 },
+    { nombre: "Dosificador Santa Marta 2", puesto: "Dosificador", salario: 15000 },
+    { nombre: "Dosificador Tegucigalpa", puesto: "Dosificador", salario: 15000 },
+    { nombre: "Operador cargadora Santa Marta", puesto: "Operador_Cargadora", salario: 14000 },
+    { nombre: "Operador bomba SM-B1", puesto: "Operador_Bomba", salario: 16000 },
+    { nombre: "Motorista camion lowboy", puesto: "Motorista_Camion", salario: 14500 },
+  ];
+  for (const p of otroPersonal) {
+    await prisma.operadores.create({
+      data: {
+        nombre: p.nombre,
+        estado: "Disponible",
+        puesto: p.puesto,
+        salario_mensual: p.salario,
+      },
     });
   }
 

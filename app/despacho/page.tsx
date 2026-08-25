@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { PUESTOS_MOTORISTA_MIXER } from "@/lib/planilla/puestos";
 import { auth } from "@/auth";
 import { especDiseno, textoHielo } from "@/lib/formato";
 import {
@@ -182,7 +183,16 @@ export default async function DespachoPage({
         orderBy: { id: "asc" },
       }),
       prisma.operadores.findMany({
-        where: { estado: "Disponible" },
+        // La tabla `operadores` guarda a TODO el personal operativo (dosificadores,
+        // operadores de cargadora...), asi que el desplegable de motorista se limita a
+        // los puestos que pueden manejar un mixer. Se incluye igual a quien ya va en un
+        // viaje de hoy, para no borrar de la lista un dato ya capturado.
+        where: {
+          OR: [
+            { estado: "Disponible", puesto: { in: PUESTOS_MOTORISTA_MIXER } },
+            { viajes: { some: { hora_solicitada: { gte: ini, lt: fin } } } },
+          ],
+        },
         orderBy: { nombre: "asc" },
       }),
       prisma.pedidos.findMany({

@@ -4,6 +4,11 @@ import {
   type FilaCatalogo,
   type MixerOpc,
 } from "../administracion/catalogo-admin";
+import {
+  ETIQUETA_PUESTO_SINGULAR,
+  PUESTOS,
+  etiquetaPuesto,
+} from "@/lib/planilla/puestos";
 
 /**
  * Catálogo de operadores (motoristas), en Flota. Reutiliza el framework de catálogos.
@@ -54,6 +59,7 @@ export async function OperadoresCatalogo() {
       id: o.id,
       celdas: {
         nombre: o.nombre,
+        puesto: etiquetaPuesto(o.puesto),
         estado: o.estado,
         plantel: nombrePlantel(o.plantel_asignado_id),
         // La celda "mixer" la renderiza MixerAsignadoCelda (desplegable inline); este
@@ -62,6 +68,7 @@ export async function OperadoresCatalogo() {
       },
       valores: {
         nombre: o.nombre,
+        puesto: o.puesto,
         estado: o.estado,
         plantel_asignado_id: o.plantel_asignado_id ? String(o.plantel_asignado_id) : "",
       },
@@ -71,7 +78,9 @@ export async function OperadoresCatalogo() {
   return (
     <div>
       <p className="mb-3 text-sm text-muted">
-        Motoristas. El estado indica su disponibilidad. El <strong>plantel asignado</strong> es
+        Personal operativo (motoristas de mixer y de camion, dosificadores, operadores de
+        cargadora y de bomba). El <strong>puesto</strong> agrupa la planilla y define quien
+        puede ir como motorista de un viaje. El estado indica su disponibilidad. El <strong>plantel asignado</strong> es
         donde trabaja normalmente; el <strong>mixer asignado</strong> es su unidad habitual (al
         programarlo, el motor pre-llena a este motorista, editable en despacho).
       </p>
@@ -80,12 +89,20 @@ export async function OperadoresCatalogo() {
         singular="operador"
         columnas={[
           { key: "nombre", label: "Nombre" },
+          { key: "puesto", label: "Puesto" },
           { key: "estado", label: "Estado" },
           { key: "plantel", label: "Plantel asignado" },
           { key: "mixer", label: "Mixer asignado" },
         ]}
         campos={[
           { name: "nombre", label: "Nombre", tipo: "text", requerido: true },
+          {
+            name: "puesto",
+            label: "Puesto",
+            tipo: "select",
+            opciones: PUESTOS.map((p) => ({ value: p, label: ETIQUETA_PUESTO_SINGULAR[p] })),
+            requerido: true,
+          },
           {
             name: "estado",
             label: "Estado",

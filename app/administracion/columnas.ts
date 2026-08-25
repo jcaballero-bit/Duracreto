@@ -17,6 +17,8 @@ export const COLUMNAS_ESPERADAS: Record<Catalogo, string[]> = {
   asesores: ["nombre", "correo"],
   disenos: ["codigo", "resistencia", "tamano_agregado", "revenimiento", "aditivo"],
   capacidades_reducidas: ["capacidad_nominal_m3", "capacidad_efectiva_m3"],
+  // Se gestiona solo en Administración (sin importación CSV), pero el mapa es total.
+  configuracion_recargos: ["tipo_dia", "hora_desde_min", "hora_hasta_min", "porcentaje_recargo"],
 };
 
 const DIACRITICOS = new RegExp("[\\u0300-\\u036f]", "g");

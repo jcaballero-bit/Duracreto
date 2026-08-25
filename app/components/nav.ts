@@ -14,6 +14,7 @@ import {
   Settings,
   TrendingUp,
   Truck,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 
@@ -46,6 +47,7 @@ export const NAV: ItemNav[] = [
   { href: "/laboratorio", label: "Laboratorio", icon: FlaskConical },
   { href: "/calidad", label: "Reporte de Calidad", icon: ClipboardCheck },
   { href: "/programa", label: "Programa DPCR-08", icon: FileText },
+  { href: "/planilla", label: "Planilla", icon: Wallet },
   { href: "/administracion", label: "Administración", icon: Settings },
   { href: "/bitacora", label: "Bitácora", icon: ScrollText },
 ];
