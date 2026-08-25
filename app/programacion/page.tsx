@@ -425,12 +425,21 @@ export default async function ProgramacionPage({
       }
     : {};
 
+  // El filtro de PLANTEL de la pantalla también acota los pendientes: si se está
+  // programando Santa Marta, el panel solo muestra las proyecciones que el asesor
+  // clasificó para Santa Marta. Las que aún no tienen plantel asignado no encajan en
+  // ningún plantel concreto: se cuentan aparte y se avisan (ver `pendientesSinPlantel`)
+  // para que no se pierdan de vista — se ven eligiendo "Todos los planteles".
+  const filtroPlantelPendientes =
+    plantelFiltro !== "todos" ? { plantel_id: Number(plantelFiltro) } : {};
+
   const pendientesRaw = puedeEditar
     ? await prisma.solicitudes_anticipadas.findMany({
         where: {
           estado: "Pendiente",
           fecha_requerida: { gte: ini, lt: fin },
           ...filtroZonaPendientes,
+          ...filtroPlantelPendientes,
         },
         include: { cliente: true, asesor: { select: { nombre: true } } },
         // Más antiguas primero (por defecto); el panel permite reordenar.
@@ -455,6 +464,20 @@ export default async function ProgramacionPage({
     plantelId: s.plantel_id,
     creadoEn: s.creado_en ? s.creado_en.toISOString() : null,
   }));
+
+  // Proyecciones del día SIN plantel asignado, que el filtro de plantel deja fuera.
+  // Solo se cuentan (para avisar en el panel); no se listan aquí.
+  const pendientesSinPlantel =
+    puedeEditar && plantelFiltro !== "todos"
+      ? await prisma.solicitudes_anticipadas.count({
+          where: {
+            estado: "Pendiente",
+            fecha_requerida: { gte: ini, lt: fin },
+            plantel_id: null,
+            ...filtroZonaPendientes,
+          },
+        })
+      : 0;
 
   // ── Gantt de recursos del día (Plantas / Mixers / Bombas, eje compartido) ────
   const COLOR_ORIGEN_GANTT: Record<string, string> = {
@@ -808,7 +831,12 @@ export default async function ProgramacionPage({
 
       {puedeEditarEfectivo && (
         <div id="pendientes-por-programar">
-          <PendientesDelDia pendientes={pendientes} opciones={opciones} fecha={fecha} />
+          <PendientesDelDia
+            pendientes={pendientes}
+            opciones={opciones}
+            fecha={fecha}
+            sinPlantel={pendientesSinPlantel}
+          />
         </div>
       )}
 

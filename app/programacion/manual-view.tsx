@@ -9,7 +9,15 @@
 // Productividad (mejoras): Deshacer/Rehacer de la sesión (Ctrl+Z / Ctrl+Shift+Z),
 // navegación tipo hoja de cálculo (Enter/flechas/Escape) + pegar desde Excel/Sheets,
 // generar N viajes en serie, y validación de traslape de CARGA en planta.
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Ban, ChevronDown, ChevronRight, Lock, LockOpen, MessageSquare, Pencil, Plus, Redo2, Sunrise, Trash2, Truck, Undo2, Wand2, X } from "lucide-react";
 import {
@@ -22,6 +30,7 @@ import {
   fijarAperturaPlantaAction,
   fijarHoraViajeAction,
   generarViajesEnSerieAction,
+  fijarBombasPedidoAction,
   guardarObservacionPlantelAction,
 } from "../actions";
 import { inicioCargaDesdeLlegada, tiemposDeViaje } from "@/lib/motor/tiempos";
@@ -826,24 +835,27 @@ function PlantelManualBloque({
             </div>
 
             <div className="overflow-x-auto bg-surface">
-              <table className="w-full min-w-[820px] text-sm">
+              {/* `table-fixed` + un ancho por columna: así el select de mixer no se
+                  estira para llenar el sobrante (quedaba enorme) y no se abren huecos
+                  entre columnas. La última columna (eliminar) absorbe lo que sobre. */}
+              <table className="w-full min-w-[900px] table-fixed text-sm">
                 <thead>
                   <tr className="border-b border-border bg-content/30 text-left text-[11px] uppercase tracking-wide text-muted">
-                    <th className="w-8 px-2 py-2">#</th>
-                    <th className="w-[110px] px-2 py-2">Viaje</th>
-                    <th className="px-2 py-2">Mixer</th>
-                    <th className="w-24 px-2 py-2">Vol.</th>
-                    <th className="w-24 px-2 py-2">
+                    <th className="w-9 px-2 py-2">#</th>
+                    <th className="w-[92px] px-2 py-2">Viaje</th>
+                    <th className="w-[128px] px-2 py-2">Mixer</th>
+                    <th className="w-[74px] px-2 py-2">Vol.</th>
+                    <th className="w-[106px] px-2 py-2">
                       Carga{puedeEditar && <span className="ml-1 text-accent" title="Editable">•</span>}
                     </th>
-                    <th className="px-2 py-2">Salida</th>
-                    <th className="w-24 px-2 py-2">
+                    <th className="w-[86px] px-2 py-2">Salida</th>
+                    <th className="w-[106px] px-2 py-2">
                       Llega{puedeEditar && <span className="ml-1 text-accent" title="Editable">•</span>}
                     </th>
-                    <th className="px-2 py-2">Descarga</th>
-                    <th className="px-2 py-2">Regreso</th>
-                    {puedeEditar && <th className="px-2 py-2 w-8" title="Hora fija" />}
-                    {puedeEditar && <th className="px-2 py-2 w-8" />}
+                    <th className="w-[168px] px-2 py-2">Descarga</th>
+                    <th className="w-[86px] px-2 py-2">Regreso</th>
+                    {puedeEditar && <th className="w-8 px-2 py-2" title="Hora fija" />}
+                    {puedeEditar && <th className="px-2 py-2" />}
                   </tr>
                 </thead>
                 <tbody>
@@ -917,8 +929,20 @@ function PlantelManualBloque({
                               <span className="hidden w-24 shrink-0 truncate text-xs text-ink xl:block">
                                 {pedidoPorId.get(g.pedidoId)!.elemento || "—"}
                               </span>
-                              <span className="hidden w-28 shrink-0 truncate text-xs text-ink xl:block">
-                                {pedidoPorId.get(g.pedidoId)!.tipoDescarga}
+                              <span className="hidden w-32 shrink-0 xl:block">
+                                <BombasCelda
+                                  pedidoId={g.pedidoId}
+                                  etiqueta={pedidoPorId.get(g.pedidoId)!.tipoDescarga}
+                                  esBomba={
+                                    pedidoPorId.get(g.pedidoId)!.valores.tipo_descarga !==
+                                    "Canal directo"
+                                  }
+                                  bombasIds={pedidoPorId.get(g.pedidoId)!.valores.bombas_ids}
+                                  bombas={opciones?.bombas ?? []}
+                                  plantelId={plantel.plantelId}
+                                  puedeEditar={puedeEditar}
+                                  ocupado={ocupado}
+                                />
                               </span>
                               <span className="hidden w-36 shrink-0 truncate text-xs text-muted 2xl:block">
                                 {pedidoPorId.get(g.pedidoId)!.hieloTxt}
@@ -998,7 +1022,7 @@ function PlantelManualBloque({
                           {/* El cliente ya va en la cabecera del bloque: aqui solo el
                               numero de viaje dentro de ese cliente, asi la columna no
                               le come ancho a las horas del ciclo. */}
-                          <td className="w-[110px] max-w-[110px] px-2 py-1 align-top">
+                          <td className="w-[92px] max-w-[92px] px-2 py-1 align-top">
                             <span className="block whitespace-nowrap leading-tight text-ink">
                               Viaje {g.filas.indexOf(f) + 1}{" "}
                               <span className="text-muted">de {g.filas.length}</span>
@@ -1528,6 +1552,153 @@ function AperturaPlanta({
   );
 }
 
+/**
+ * Bomba(s) del pedido, editables desde la franja del cliente en el Modo Manual: se
+ * cambia la bomba o se agregan más sin abrir el formulario completo (una obra grande
+ * puede tener dos o más equipos de bombeo colocando a la vez).
+ *
+ * Solo toca `pedidos_bombas`: no mueve horarios ni mixers. El servidor valida rol,
+ * zona, fecha y que ninguna bomba elegida esté de baja ese día.
+ */
+function BombasCelda({
+  pedidoId,
+  etiqueta,
+  esBomba,
+  bombasIds,
+  bombas,
+  plantelId,
+  puedeEditar,
+  ocupado,
+}: {
+  pedidoId: number;
+  /** Texto que se ve cerrado: los códigos, o el tipo de descarga si es canal. */
+  etiqueta: string;
+  esBomba: boolean;
+  bombasIds: number[];
+  bombas: OpcionesModal["bombas"];
+  plantelId: number;
+  puedeEditar: boolean;
+  ocupado: boolean;
+}) {
+  const router = useRouter();
+  const [abierto, setAbierto] = useState(false);
+  const [pendiente, startTransition] = useTransition();
+  const [ids, setIds] = useState<string[]>(bombasIds.map(String));
+
+  // Canal directo no lleva bomba: solo se muestra el texto.
+  if (!esBomba || !puedeEditar) {
+    return <span className="block truncate text-xs text-ink">{etiqueta}</span>;
+  }
+
+  // Propias del plantel primero, luego el resto (préstamo), como en el formulario.
+  const orden = [...bombas].sort((a, b) => {
+    const ra = a.plantelId === plantelId || a.plantelId === null ? 0 : 1;
+    const rb = b.plantelId === plantelId || b.plantelId === null ? 0 : 1;
+    return ra - rb || a.etiqueta.localeCompare(b.etiqueta);
+  });
+
+  const guardar = () => {
+    const limpios = [...new Set(ids.filter(Boolean).map(Number))];
+    startTransition(async () => {
+      const res = await fijarBombasPedidoAction(pedidoId, limpios);
+      if (res.ok) {
+        setAbierto(false);
+        router.refresh();
+      } else alert(res.mensaje ?? "No se pudieron guardar las bombas.");
+    });
+  };
+
+  return (
+    <span className="relative block">
+      <button
+        type="button"
+        onClick={() => {
+          setIds(bombasIds.map(String));
+          setAbierto((a) => !a);
+        }}
+        title="Cambiar o agregar bombas"
+        className="flex w-full items-center gap-1 truncate text-left text-xs text-ink hover:text-accent"
+      >
+        <span className="truncate">{etiqueta || "Sin bomba"}</span>
+        <Pencil size={11} className="shrink-0 text-muted" />
+      </button>
+
+      {abierto && (
+        <div className="absolute top-full left-0 z-20 mt-1 w-64 rounded-lg border border-border bg-surface p-2 shadow-lg">
+          <div className="mb-1.5 text-[11px] font-semibold text-ink">Bomba(s) del pedido</div>
+          <div className="space-y-1.5">
+            {(ids.length ? ids : [""]).map((valor, i) => (
+              <div key={i} className="flex items-center gap-1">
+                <select
+                  value={valor}
+                  disabled={ocupado || pendiente}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setIds((prev) => {
+                      const base = prev.length ? [...prev] : [""];
+                      base[i] = v;
+                      return base.filter((x, k) => x !== "" || k === 0);
+                    });
+                  }}
+                  className="w-full rounded-lg border border-border bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent"
+                >
+                  <option value="">— Sin bomba —</option>
+                  {orden
+                    .filter((b) => String(b.id) === valor || !ids.includes(String(b.id)))
+                    .map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.etiqueta}
+                        {b.plantelId !== plantelId && b.plantelId !== null ? " (préstamo)" : ""}
+                      </option>
+                    ))}
+                </select>
+                {ids.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setIds((prev) => prev.filter((_, k) => k !== i))}
+                    title="Quitar esta bomba"
+                    className="rounded p-0.5 text-muted hover:bg-red-50 hover:text-red-600"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setIds((prev) => [...prev.filter(Boolean), ""])}
+              disabled={ids.filter(Boolean).length === 0 || ids.filter(Boolean).length >= orden.length}
+              className="inline-flex items-center gap-1 rounded-lg border border-dashed border-border px-2 py-1 text-[11px] text-muted hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus size={11} /> Agregar bomba
+            </button>
+            <span className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setAbierto(false)}
+                className="rounded-lg px-2 py-1 text-[11px] text-muted hover:text-ink"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={guardar}
+                disabled={pendiente || ocupado}
+                className="rounded-lg bg-accent px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+              >
+                {pendiente ? "…" : "Guardar"}
+              </button>
+            </span>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
 function PanelMixers({
   mixers,
   info,
@@ -1982,6 +2153,6 @@ function Campo({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const inCls = "w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-ink outline-none focus:border-accent";
-// El selector de mixer necesita un ancho mínimo: con la tabla apretada se encogía
-// tanto que no se alcanzaba a leer el identificador de la unidad.
-const selCls = `${inCls} min-w-[5.5rem]`;
+// El ancho del selector de mixer lo fija su COLUMNA (la tabla es `table-fixed`), no
+// un mínimo propio: así entra justo el identificador de la unidad y no se estira.
+const selCls = inCls;

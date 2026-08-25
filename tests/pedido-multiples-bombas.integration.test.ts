@@ -20,7 +20,7 @@ vi.mock("@/lib/auth/guard", () => ({
 }));
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 
-const { crearPedidoAction } = await import("@/app/actions");
+const { crearPedidoAction, fijarBombasPedidoAction } = await import("@/app/actions");
 
 const DIA = new Date(2026, 7, 26, 8, 0, 0, 0);
 
@@ -170,6 +170,50 @@ describe("varias bombas por pedido", () => {
     expect(res.ok).toBe(false);
     expect(res.mensaje).toContain("45BC-04");
     expect(res.mensaje).toContain("mantenimiento");
+  });
+
+  it("desde Programación se cambian o agregan bombas al vuelo", async () => {
+    const e = await escenario();
+    const r = await programarPedido(base(e, [e.b1.id]));
+    expect(await bombasDe(r.pedidoId)).toEqual(["45BC-06"]);
+
+    // Se agrega una segunda bomba desde la franja del cliente.
+    expect((await fijarBombasPedidoAction(r.pedidoId, [e.b1.id, e.b2.id])).ok).toBe(true);
+    expect(await bombasDe(r.pedidoId)).toEqual(["45BC-06", "45BC-04"]);
+
+    // Se cambia por otra (reemplaza, no acumula) y queda en la bitácora.
+    expect((await fijarBombasPedidoAction(r.pedidoId, [e.b3.id])).ok).toBe(true);
+    expect(await bombasDe(r.pedidoId)).toEqual(["32BC-01"]);
+    const reg = await prisma.bitacora_auditoria.findFirstOrThrow({
+      where: { tabla_afectada: "pedidos", registro_id: r.pedidoId, campo_modificado: "bombas" },
+      orderBy: { id: "desc" },
+    });
+    expect(reg.valor_anterior).toBe("45BC-06, 45BC-04");
+    expect(reg.valor_nuevo).toBe("32BC-01");
+
+    // Y se pueden quitar todas.
+    expect((await fijarBombasPedidoAction(r.pedidoId, [])).ok).toBe(true);
+    expect(await bombasDe(r.pedidoId)).toEqual([]);
+  });
+
+  it("no deja poner una bomba que está de baja ese día", async () => {
+    const e = await escenario();
+    const r = await programarPedido(base(e, [e.b1.id]));
+    await prisma.disponibilidad_flota.create({
+      data: {
+        unidad_tipo: "Bomba",
+        unidad_id: e.b2.id,
+        fecha_inicio: new Date(2026, 7, 25),
+        fecha_fin: new Date(2026, 7, 27),
+        tipo_evento: "Mantenimiento_Programado",
+        estado: "Programado",
+        creado_por: "test",
+      },
+    });
+    const res = await fijarBombasPedidoAction(r.pedidoId, [e.b1.id, e.b2.id]);
+    expect(res.ok).toBe(false);
+    expect(res.mensaje).toContain("45BC-04");
+    expect(await bombasDe(r.pedidoId)).toEqual(["45BC-06"]); // no se cambió nada
   });
 
   it("las alertas de traslape miran TODAS las bombas del pedido", async () => {

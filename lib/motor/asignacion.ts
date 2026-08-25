@@ -1715,7 +1715,7 @@ async function resolverBombasPedido(entrada: EntradaPedido): Promise<number[]> {
 }
 
 /** Deja en `pedidos_bombas` EXACTAMENTE las bombas indicadas (fuente única). */
-async function fijarBombasDePedido(pedidoId: number, bombasIds: number[]): Promise<void> {
+export async function fijarBombasDePedido(pedidoId: number, bombasIds: number[]): Promise<void> {
   await prisma.$transaction([
     prisma.pedidos_bombas.deleteMany({ where: { pedido_id: pedidoId } }),
     ...bombasIds.map((bomba_id) =>

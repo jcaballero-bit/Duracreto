@@ -32,6 +32,7 @@ import {
   confirmarRefuerzo,
   corregirHoraReal,
   editarVolumenViaje,
+  fijarBombasDePedido,
   huecosDePlanta,
   mantenimientoDeUnidad,
   modificarPedido,
@@ -1320,6 +1321,70 @@ export async function editarVolumenAction(
   );
   if (res.ok) revalidarPantallas();
   return res;
+}
+
+/**
+ * Server action: fija las bombas de un pedido (una, varias o ninguna). Se usa desde
+ * la franja del cliente en Programación › Modo Manual, para cambiar o agregar bombas
+ * sin abrir el formulario completo. NO toca horarios ni mixers.
+ */
+export async function fijarBombasPedidoAction(
+  pedidoId: number,
+  bombasIds: number[],
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const op = await autorizarOperacionPedido("Cambiar las bombas del pedido");
+  if (!op.ok) return op;
+  const permiso = await autorizarPorPedido(pedidoId);
+  if (!permiso.ok) return permiso;
+
+  const pedido = await prisma.pedidos.findUnique({
+    where: { id: pedidoId },
+    select: { hora_solicitada: true, bombas: { select: { bomba: { select: { identificador: true } } } } },
+  });
+  if (!pedido) return { ok: false, mensaje: "Pedido no encontrado." };
+
+  const ids = [...new Set(bombasIds)].filter((x) => Number.isFinite(x) && x > 0);
+  // Ninguna bomba elegida puede estar de baja la fecha del pedido.
+  for (const bombaId of ids) {
+    const mant = await mantenimientoDeUnidad("Bomba", bombaId, pedido.hora_solicitada);
+    if (!mant) continue;
+    const b = await prisma.bombas.findUnique({
+      where: { id: bombaId },
+      select: { identificador: true },
+    });
+    const fmt = (d: Date) =>
+      d.toLocaleDateString("es-HN", { day: "2-digit", month: "2-digit", year: "numeric" });
+    return {
+      ok: false,
+      mensaje: `La bomba ${b?.identificador ?? bombaId} está de baja del ${fmt(mant.fecha_inicio)} al ${fmt(mant.fecha_fin)}.`,
+    };
+  }
+
+  const antes = pedido.bombas.map((x) => x.bomba.identificador).join(", ") || "sin bomba";
+  await fijarBombasDePedido(pedidoId, ids);
+  const despues =
+    (
+      await prisma.pedidos_bombas.findMany({
+        where: { pedido_id: pedidoId },
+        select: { bomba: { select: { identificador: true } } },
+      })
+    )
+      .map((x) => x.bomba.identificador)
+      .join(", ") || "sin bomba";
+  const sesion = await auth();
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "pedidos",
+      registro_id: pedidoId,
+      usuario: sesion?.user?.name ?? sesion?.user?.email ?? "sistema",
+      campo_modificado: "bombas",
+      valor_anterior: antes,
+      valor_nuevo: despues,
+      motivo: "Cambio de bombas desde Programación",
+    },
+  });
+  revalidarPantallas();
+  return { ok: true };
 }
 
 /** Server action: confirma un mixer de refuerzo (Paso 3) para un pedido. */

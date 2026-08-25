@@ -35,10 +35,14 @@ export function PendientesDelDia({
   pendientes,
   opciones,
   fecha,
+  sinPlantel = 0,
 }: {
   pendientes: PendienteVista[];
   opciones: OpcionesModal;
   fecha: string;
+  /** Proyecciones del día que el filtro de plantel dejó fuera por no tener plantel
+   *  asignado. Solo se avisa el número, para que no se pierdan de vista. */
+  sinPlantel?: number;
 }) {
   const router = useRouter();
   const [convirtiendo, setConvirtiendo] = useState<PendienteVista | null>(null);
@@ -99,6 +103,11 @@ export function PendientesDelDia({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-amber-900">
           Pendientes del Programa Semana para este día ({pendientes.length})
+          {sinPlantel > 0 && (
+            <span className="ml-2 font-normal">
+              · {sinPlantel} sin plantel asignado (se ven en «Todos los planteles»)
+            </span>
+          )}
         </h2>
         <label className="flex items-center gap-1.5 text-xs text-amber-900">
           <span className="font-medium">Ordenar:</span>
