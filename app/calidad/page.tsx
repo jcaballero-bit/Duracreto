@@ -12,6 +12,7 @@ import {
 import { volumenDespachadoDe } from "@/lib/calidad/volumen";
 import { textoResistencia } from "@/lib/formato";
 import { PageHeader } from "../components/ui";
+import { CalidadTabs } from "../components/calidad-tabs";
 import { CalidadFiltros } from "./calidad-filtros";
 
 export const dynamic = "force-dynamic";
@@ -137,6 +138,7 @@ export default async function CalidadPage({
           titulo="Reporte de calidad"
           descripcion="Vista y generación del PDF de control de calidad por cliente y fecha (solo lectura). La CAPTURA de revenimiento, temperatura y preguntas generales se hace en Despacho en vivo. Elige cliente y fecha y toca Descargar PDF."
         />
+        <CalidadTabs activo="/calidad" roles={alcance.roles} />
       </div>
 
       <CalidadFiltros

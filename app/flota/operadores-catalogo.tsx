@@ -60,6 +60,8 @@ export async function OperadoresCatalogo() {
       celdas: {
         nombre: o.nombre,
         puesto: etiquetaPuesto(o.puesto),
+        codigo: o.codigo_biometrico ?? "—",
+        activo: o.activo ? "Sí" : "No",
         estado: o.estado,
         plantel: nombrePlantel(o.plantel_asignado_id),
         // La celda "mixer" la renderiza MixerAsignadoCelda (desplegable inline); este
@@ -69,6 +71,8 @@ export async function OperadoresCatalogo() {
       valores: {
         nombre: o.nombre,
         puesto: o.puesto,
+        codigo_biometrico: o.codigo_biometrico ?? "",
+        activo: o.activo ? "si" : "no",
         estado: o.estado,
         plantel_asignado_id: o.plantel_asignado_id ? String(o.plantel_asignado_id) : "",
       },
@@ -90,6 +94,8 @@ export async function OperadoresCatalogo() {
         columnas={[
           { key: "nombre", label: "Nombre" },
           { key: "puesto", label: "Puesto" },
+          { key: "codigo", label: "Código del reloj" },
+          { key: "activo", label: "Activo" },
           { key: "estado", label: "Estado" },
           { key: "plantel", label: "Plantel asignado" },
           { key: "mixer", label: "Mixer asignado" },
@@ -102,6 +108,21 @@ export async function OperadoresCatalogo() {
             tipo: "select",
             opciones: PUESTOS.map((p) => ({ value: p, label: ETIQUETA_PUESTO_SINGULAR[p] })),
             requerido: true,
+          },
+          {
+            name: "codigo_biometrico",
+            label: "Código del reloj biométrico",
+            tipo: "text",
+            placeholder: "2000002",
+          },
+          {
+            name: "activo",
+            label: "Relación laboral vigente",
+            tipo: "select",
+            opciones: [
+              { value: "si", label: "Activo" },
+              { value: "no", label: "Dado de baja" },
+            ],
           },
           {
             name: "estado",

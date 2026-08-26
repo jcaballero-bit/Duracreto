@@ -8,6 +8,7 @@ import { textoLempiras } from "@/lib/planilla/salario";
 import { FiltrosExtraordinario } from "./filtros";
 import { BarrasHora } from "./barras-hora";
 import { Cobros, type CobroVista } from "./cobros";
+import { PersonalTabs } from "../components/personal-tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -81,6 +82,8 @@ export default async function ExtraordinarioPage({
         titulo="Horario extraordinario"
         descripcion="Despachos fuera de la jornada normal de cada planta, y cuánto de ese sobretiempo absorbe la ficha de costos."
       />
+
+      <PersonalTabs activo="/extraordinario" roles={alcance.roles} />
 
       <Card className="mb-4 p-4">
         <FiltrosExtraordinario

@@ -13,7 +13,7 @@ export const COLUMNAS_ESPERADAS: Record<Catalogo, string[]> = {
   bombas: ["identificador", "estado", "plantel_base"],
   camiones: ["identificador", "placa", "estado", "plantel_base"],
   pickups: ["identificador", "placa", "estado", "plantel_base"],
-  operadores: ["nombre", "estado"],
+  operadores: ["nombre", "puesto", "plantel", "codigo_biometrico", "estado", "activo"],
   asesores: ["nombre", "correo"],
   disenos: ["codigo", "resistencia", "tamano_agregado", "revenimiento", "aditivo"],
   capacidades_reducidas: ["capacidad_nominal_m3", "capacidad_efectiva_m3"],

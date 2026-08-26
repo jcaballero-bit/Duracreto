@@ -238,6 +238,9 @@ async function main() {
         nombre: `Motorista ${String(numOp).padStart(2, "0")}`,
         estado: "Disponible",
         puesto: "Motorista_Mixer",
+        // Plantel donde trabaja: el del mixer que maneja habitualmente. Sin esto no
+        // aparece en la pantalla de Asistencia del Jefe de Planta ni del Programador.
+        plantel_asignado_id: mx.plantel_base_id,
         // Sueldo mensual de ejemplo. El diario (/30) y el horario (/240) se derivan.
         salario_mensual: 13500,
       },
@@ -259,6 +262,7 @@ async function main() {
         nombre: `Motorista reserva ${i}`,
         estado: "Disponible",
         puesto: "Motorista_Mixer",
+        plantel_asignado_id: santaMarta.id,
         salario_mensual: 12500,
       },
     });
@@ -266,13 +270,14 @@ async function main() {
 
   // Resto del personal operativo (la planilla agrupa por puesto; no manejan mixer,
   // asi que NO aparecen en el desplegable de motorista de Despacho).
-  const otroPersonal: { nombre: string; puesto: string; salario: number }[] = [
-    { nombre: "Dosificador Santa Marta 1", puesto: "Dosificador", salario: 15000 },
-    { nombre: "Dosificador Santa Marta 2", puesto: "Dosificador", salario: 15000 },
-    { nombre: "Dosificador Tegucigalpa", puesto: "Dosificador", salario: 15000 },
-    { nombre: "Operador cargadora Santa Marta", puesto: "Operador_Cargadora", salario: 14000 },
-    { nombre: "Operador bomba SM-B1", puesto: "Operador_Bomba", salario: 16000 },
-    { nombre: "Motorista camion lowboy", puesto: "Motorista_Camion", salario: 14500 },
+  const otroPersonal: { nombre: string; puesto: string; salario: number; plantel: number }[] = [
+    { nombre: "Dosificador Santa Marta 1", puesto: "Dosificador", salario: 15000, plantel: santaMarta.id },
+    { nombre: "Dosificador Santa Marta 2", puesto: "Dosificador", salario: 15000, plantel: santaMarta.id },
+    { nombre: "Dosificador Tegucigalpa", puesto: "Dosificador", salario: 15000, plantel: tegucigalpa.id },
+    { nombre: "Operador cargadora Santa Marta", puesto: "Operador_Cargadora", salario: 14000, plantel: santaMarta.id },
+    { nombre: "Operador bomba SM-B1", puesto: "Operador_Bomba", salario: 16000, plantel: santaMarta.id },
+    { nombre: "Motorista camion lowboy", puesto: "Motorista_Camion", salario: 14500, plantel: santaMarta.id },
+    { nombre: "Dosificador Choloma", puesto: "Dosificador", salario: 15000, plantel: choloma.id },
   ];
   for (const p of otroPersonal) {
     await prisma.operadores.create({
@@ -280,6 +285,7 @@ async function main() {
         nombre: p.nombre,
         estado: "Disponible",
         puesto: p.puesto,
+        plantel_asignado_id: p.plantel,
         salario_mensual: p.salario,
       },
     });

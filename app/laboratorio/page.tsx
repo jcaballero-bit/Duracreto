@@ -9,6 +9,7 @@ import {
 } from "@/lib/laboratorio/ventana";
 import { compararPlanteles } from "@/lib/planteles-orden";
 import { Card, PageHeader } from "../components/ui";
+import { CalidadTabs } from "../components/calidad-tabs";
 import { GestionAsignaciones, type LaboratoristaOpc, type ProgramaDia } from "./gestion";
 import { AsignacionPlantas, type PlantaAsignable } from "./asignacion-plantas";
 
@@ -232,6 +233,9 @@ export default async function LaboratorioPage({
             : "Asigna a cada programa del día quién será el Laboratorista que lo visitará (o Ninguno). El horario se calcula de los viajes; un mismo Laboratorista no puede tener dos proyectos que se crucen."
         }
       />
+
+      <CalidadTabs activo="/laboratorio" roles={alcance.roles} />
+
       <Card className="p-5">
         <GestionAsignaciones
           fecha={fecha}

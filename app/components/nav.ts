@@ -3,9 +3,7 @@
 import {
   BarChart3,
   Building2,
-  Clock,
   CalendarClock,
-  ClipboardCheck,
   Contact,
   Shuffle,
   FileText,
@@ -15,7 +13,7 @@ import {
   Settings,
   TrendingUp,
   Truck,
-  Wallet,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 
@@ -43,13 +41,23 @@ export const NAV: ItemNav[] = [
   },
   { href: "/comercial", label: "Gerencia Comercial", icon: TrendingUp },
   { href: "/reportes", label: "Indicadores", icon: BarChart3 },
-  { href: "/extraordinario", label: "Horario extraordinario", icon: Clock },
   { href: "/reasignaciones", label: "Reasignar Dosificador", icon: Shuffle },
   { href: "/flota", label: "Flota", icon: Building2 },
-  { href: "/laboratorio", label: "Laboratorio", icon: FlaskConical },
-  { href: "/calidad", label: "Reporte de Calidad", icon: ClipboardCheck },
+  // Control de Calidad agrupa Laboratorio + Reporte de Calidad (tabs dentro de la
+  // pantalla). Las cuatro roles de la seccion alcanzan ambas rutas.
+  {
+    href: "/laboratorio",
+    label: "Control de Calidad",
+    icon: FlaskConical,
+    activePrefixes: ["/calidad"],
+  },
   { href: "/programa", label: "Programa DPCR-08", icon: FileText },
-  { href: "/planilla", label: "Planilla", icon: Wallet },
+  {
+    href: "/asistencia",
+    label: "Control Mano de Obra",
+    icon: Users,
+    activePrefixes: ["/planilla", "/extraordinario"],
+  },
   { href: "/administracion", label: "Administración", icon: Settings },
   { href: "/bitacora", label: "Bitácora", icon: ScrollText },
 ];
@@ -59,16 +67,12 @@ function prefijosDe(item: ItemNav): string[] {
   return [item.href, ...(item.activePrefixes ?? [])];
 }
 
-/**
- * Etiqueta del ítem según el rol. Para el Laboratorista (que NO gestiona
- * asignaciones) la pestaña "Laboratorio" se llama "Proyectos asignados" — para él
- * es su agenda, no la gestión. Admin/Jefe de Laboratorio la ven como "Laboratorio".
- */
-export function etiquetaNav(item: ItemNav, roles: string[]): string {
-  if (item.href === "/laboratorio") {
-    const esGestor = roles.includes("Administrador") || roles.includes("JefeLaboratorio");
-    if (!esGestor && roles.includes("Laboratorista")) return "Proyectos asignados";
-  }
+/** Etiqueta del ítem del menú (hoy siempre la del grupo). */
+export function etiquetaNav(item: ItemNav, _roles: string[]): string {
+  // Se conserva la firma con los roles porque el titulo de seccion puede volver a
+  // depender de ellos; hoy ninguna etiqueta cambia por rol (la del Laboratorista se
+  // movio a la pestana de Control de Calidad, ver calidad-tabs.tsx).
+  void _roles;
   return item.label;
 }
 

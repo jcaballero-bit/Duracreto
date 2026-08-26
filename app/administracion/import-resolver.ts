@@ -2,6 +2,7 @@
 // nombre). Sin BD ni "use server": se prueba en aislamiento. La acción de
 // importación le pasa los mapas nombre→id ya cargados.
 import { ZONAS } from "@/lib/auth/roles";
+import { PUESTOS } from "@/lib/planilla/puestos";
 import type { Catalogo } from "./catalogos-actions";
 
 export type Fila = Record<string, string>;
@@ -97,7 +98,23 @@ export function resolverFila(catalogo: Catalogo, r: Fila, m: Mapas): Resuelto {
     }
     case "operadores": {
       if (!req(r.nombre)) return { error: "nombre vacío" };
-      return { data: { nombre: req(r.nombre), estado: req(r.estado) || "Disponible" } };
+      const puesto = req(r.puesto) || "Motorista_Mixer";
+      if (!PUESTOS.includes(puesto as (typeof PUESTOS)[number])) {
+        return { error: `puesto "${puesto}" no es válido` };
+      }
+      const p = buscarPlantel(r.plantel);
+      if (typeof p === "string") return { error: p };
+      return {
+        data: {
+          nombre: req(r.nombre),
+          puesto,
+          plantel_asignado_id: p,
+          codigo_biometrico: opc(r.codigo_biometrico),
+          estado: req(r.estado) || "Disponible",
+          // "no" (en cualquier capitalizacion) da de baja; vacio deja activo.
+          activo: nlc(r.activo) === "" ? true : nlc(r.activo) !== "no",
+        },
+      };
     }
     case "asesores": {
       if (!req(r.nombre)) return { error: "nombre vacío" };

@@ -8,6 +8,7 @@ import { ORDEN_PUESTOS, etiquetaPuesto, type Puesto } from "@/lib/planilla/puest
 import { textoLempiras } from "@/lib/planilla/salario";
 import { PlanillaTabla } from "./planilla-tabla";
 import { PeriodoControles } from "./periodo-controles";
+import { PersonalTabs } from "../components/personal-tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +24,7 @@ export default async function PlanillaPage({
 }: {
   searchParams: Promise<{ periodo?: string }>;
 }) {
-  await requerirAcceso("/planilla");
+  const alcance = await requerirAcceso("/planilla");
   const sp = await searchParams;
 
   // Periodo por índice respecto al ancla; por defecto, el que contiene hoy.
@@ -65,6 +66,8 @@ export default async function PlanillaPage({
         titulo="Planilla"
         descripcion="Horas y ausencias del personal operativo por periodo de pago catorcenal. Costo bruto: no incluye deducciones ni neto a pagar."
       />
+
+      <PersonalTabs activo="/planilla" roles={alcance.roles} />
 
       <div className="mb-4">
         <Link

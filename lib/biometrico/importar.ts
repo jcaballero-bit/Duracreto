@@ -297,7 +297,7 @@ export async function aplicarImportacion(
         tipo_ausencia: tipoAusencia,
         // Una ausencia pendiente no tiene costo decidido: NULL, no 0.
         costo_ausencia: null,
-        origen: "Importado",
+        origen: "Biometrico",
         datos_reloj: r.crudo,
         departamento_reloj: r.departamento === "" ? null : r.departamento,
       };

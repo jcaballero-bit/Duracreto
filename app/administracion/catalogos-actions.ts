@@ -112,6 +112,10 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
       return {
         nombre: s(d.nombre),
         estado: s(d.estado) || "Disponible",
+        // Puesto y relacion laboral: los usa la planilla y la pantalla de Asistencia.
+        puesto: s(d.puesto) || "Motorista_Mixer",
+        activo: s(d.activo) === "" ? true : s(d.activo).toLowerCase() !== "no",
+        codigo_biometrico: sNull(d.codigo_biometrico),
         // Plantel donde trabaja normalmente (el mixer habitual se asigna aparte, en
         // mixers.operador_asignado_id — fuente única — vía asignarMixerOperadorAction).
         plantel_asignado_id: idNull(d.plantel_asignado_id),

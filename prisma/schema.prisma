@@ -235,6 +235,11 @@ model operadores {
   nombre String
   estado String @default("Disponible") // "Disponible" | "No disponible"
 
+  // Relacion laboral vigente. Es DISTINTO de `estado`: aquel es la disponibilidad del
+  // dia a dia de un motorista para el motor de asignacion; este permite dar de baja a
+  // una persona sin borrar su historial de asistencia.
+  activo Boolean @default(true)
+
   // Puesto dentro del personal operativo (ver lib/planilla/puestos.ts). La tabla se
   // llama `operadores` por historia (la referencian mixers.operador_asignado_id,
   // viajes.operador_id y el framework de catalogos), pero guarda a TODO el personal
@@ -263,6 +268,7 @@ model operadores {
   asistencias      asistencia_operativos[] // asistencia diaria para la planilla
 
   @@index([estado])
+  @@index([activo])
   @@index([plantel_asignado_id])
   @@index([puesto])
 }
@@ -304,11 +310,13 @@ model asistencia_operativos {
   tipo_ausencia  String?
   costo_ausencia Float?
 
-  observaciones String?
-  creado_por    String?
-  creado_en     DateTime @default(now())
+  observaciones   String?
+  creado_por      String?
+  creado_en       DateTime @default(now())
+  actualizado_por String?
+  actualizado_en  DateTime?
 
-  // "Manual" = digitada o corregida a mano; "Importado" = vino del reloj biometrico.
+  // "Manual" = digitada o corregida a mano; "Biometrico" = vino del reloj.
   // La importacion NO reemplaza en silencio una fila Manual (pide confirmacion).
   origen String @default("Manual")
   /// La fila COMPLETA que traia el reloj, para trazabilidad. Incluye los calculos del

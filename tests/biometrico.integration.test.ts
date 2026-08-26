@@ -181,7 +181,7 @@ describe("importación", () => {
     expect(fila!.horas_extra_100).toBe(0);
     // El dato del reloj queda solo como referencia.
     expect((fila!.datos_reloj as Record<string, string>)["Tiempo HE"]).toBe("04:50:21");
-    expect(fila!.origen).toBe("Importado");
+    expect(fila!.origen).toBe("Biometrico");
   });
 
   it("un turno que cruza la medianoche da horas POSITIVAS con recargo nocturno", async () => {
@@ -302,7 +302,7 @@ describe("protección contra sobreescritura", () => {
     expect(confirmada.ok && confirmada.reporte.actualizados).toBe(1);
     const nueva = await filaDe(personaId, 17);
     expect(nueva!.hora_entrada!.getMinutes()).toBe(42);
-    expect(nueva!.origen).toBe("Importado");
+    expect(nueva!.origen).toBe("Biometrico");
 
     const bit = await prisma.bitacora_auditoria.findFirst({
       where: { tabla_afectada: "asistencia_operativos" },
@@ -343,7 +343,7 @@ describe("protección contra sobreescritura", () => {
     expect(entradas[0].motivo).toContain("Importación del reloj biométrico");
     expect(entradas[1].motivo).not.toContain("Importación");
     // Y el origen queda en la propia fila.
-    expect((await filaDe(personaId, 17))!.origen).toBe("Importado");
+    expect((await filaDe(personaId, 17))!.origen).toBe("Biometrico");
     expect((await filaDe(personaId, 18))!.origen).toBe("Manual");
   });
 });

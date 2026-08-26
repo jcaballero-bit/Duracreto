@@ -138,6 +138,10 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   // pestaña Operadores (motoristas) — la página filtra las pestañas por rol.
   "/flota": ["Administrador", "Programador", "Despachador", "Dosificador", "JefePlanta"],
   "/reportes": ["Administrador", "JefePlanta"],
+  // Asistencia: horas de entrada y salida del personal operativo. NO muestra costos,
+  // así que la ven los tres roles que capturan (el alcance de cada uno lo resuelve
+  // `lib/asistencia/acceso.ts`: Admin todo, JefePlanta sus planteles, Programador su zona).
+  "/asistencia": ["Administrador", "JefePlanta", "Programador"],
   // Planilla del personal operativo: contiene SALARIOS, así que es exclusiva del
   // Administrador. Ningún otro rol la ve en el menú ni entra por URL directa.
   "/planilla": ["Administrador"],
