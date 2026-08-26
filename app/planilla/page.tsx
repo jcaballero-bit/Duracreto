@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { FileUp } from "lucide-react";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { Card, PageHeader } from "../components/ui";
 import { planillaDelPeriodo, periodoEfectivo } from "@/lib/planilla/consulta";
@@ -63,6 +65,15 @@ export default async function PlanillaPage({
         titulo="Planilla"
         descripcion="Horas y ausencias del personal operativo por periodo de pago catorcenal. Costo bruto: no incluye deducciones ni neto a pagar."
       />
+
+      <div className="mb-4">
+        <Link
+          href="/planilla/importar"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-ink hover:border-accent hover:text-accent"
+        >
+          <FileUp size={15} /> Importar del reloj biométrico
+        </Link>
+      </div>
 
       <Card className="mb-4 p-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

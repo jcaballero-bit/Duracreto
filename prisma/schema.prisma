@@ -60,6 +60,7 @@ model planteles {
   jefes         jefes_planta_planteles[] // Jefes de Planta asignados a este plantel (M2M)
   operadores_asignados operadores[] @relation("OperadorPlantel") // motoristas cuyo plantel habitual es este
   observaciones_dia observaciones_plantel[] // nota operativa del plantel por dia
+  departamentos_reloj mapeo_departamento_biometrico[] // departamentos del reloj que corresponden a este plantel
 
   @@index([zona])
 }
@@ -241,6 +242,11 @@ model operadores {
   // de mixer. Los registros previos migraron con puesto = "Motorista_Mixer".
   puesto String @default("Motorista_Mixer")
 
+  // Codigo del empleado en el reloj biometrico (ej. "2000002"). Es la LLAVE con la que
+  // se vincula el archivo del reloj: los nombres vienen con mayusculas inconsistentes
+  // y no son confiables. Unico: dos personas no pueden compartir codigo.
+  codigo_biometrico String? @unique
+
   // Sueldo mensual pactado. DATO SENSIBLE: solo el Administrador lo ve (/planilla).
   // El diario y el horario se derivan (ver lib/planilla/salario.ts):
   //   diario = mensual / 30 ; hora = diario / 8 = mensual / 240
@@ -302,8 +308,41 @@ model asistencia_operativos {
   creado_por    String?
   creado_en     DateTime @default(now())
 
+  // "Manual" = digitada o corregida a mano; "Importado" = vino del reloj biometrico.
+  // La importacion NO reemplaza en silencio una fila Manual (pide confirmacion).
+  origen String @default("Manual")
+  /// La fila COMPLETA que traia el reloj, para trazabilidad. Incluye los calculos del
+  /// propio reloj (Tiempo HE, etc.), que NO se usan: las horas se recalculan siempre
+  /// con calcularHorasTurno. Solo se llena en filas importadas.
+  datos_reloj        Json?
+  departamento_reloj String?
+
   @@unique([persona_id, fecha])
   @@index([fecha])
+  @@index([origen])
+}
+
+/// Codigos del reloj que NO pertenecen al personal operativo (vigilancia,
+/// administrativos...). Se marcan una vez y la importacion deja de preguntar por ellos.
+model codigos_biometricos_ignorados {
+  id           Int      @id @default(autoincrement())
+  codigo       String   @unique
+  nombre_reloj String?
+  creado_por   String?
+  creado_en    DateTime @default(now())
+}
+
+/// Correspondencia entre el "Departamento" del reloj (Produccion SPS, TALLER SPS,
+/// CALIDAD SPS, PREFABRICADOS, JUTOSA...) y el plantel del sistema. Los nombres del
+/// reloj NO coinciden con los planteles y no se debe depender de que lo hagan. Un
+/// departamento sin correspondencia no descarta la fila: se importa y se senala.
+model mapeo_departamento_biometrico {
+  id           Int        @id @default(autoincrement())
+  departamento String     @unique
+  plantel_id   Int?
+  plantel      planteles? @relation(fields: [plantel_id], references: [id], onDelete: SetNull)
+  creado_por   String?
+  creado_en    DateTime   @default(now())
 }
 
 /// Periodos de pago catorcenales, con 6 dias de rezago entre el cierre y el pago.

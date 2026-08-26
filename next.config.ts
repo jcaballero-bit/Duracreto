@@ -10,6 +10,12 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/programa/pdf": ["./public/logo-duracreto.png"],
   },
+  experimental: {
+    // El archivo del reloj biometrico se sube a una server action. El de prueba pesa
+    // 366 KB (9 dias), asi que una catorcena completa puede acercarse al limite de 1 MB
+    // que Next aplica por defecto al cuerpo de una server action.
+    serverActions: { bodySizeLimit: "8mb" },
+  },
 };
 
 export default nextConfig;
