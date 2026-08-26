@@ -97,6 +97,8 @@ export interface FilaManualSrv {
   transporteMin: number;
   /** Hora clavada a mano: el reajuste por frecuencia NO mueve este viaje. */
   horaFija: boolean;
+  /** Cancelado en Despacho: se muestra (sigue en el programa) pero de solo lectura. */
+  cancelado: boolean;
 }
 /** Mixer para el PANEL lateral (incluye no disponibles, con su estado). */
 export interface MixerPanel {
@@ -477,6 +479,9 @@ function PlantelManualBloque({
   // Viajes para validaciones (todo el plantel).
   const viajesVal: ViajeManual[] = plantel.filas
     .map((f) => {
+      // Un viaje cancelado no ocupa la boca de carga ni retiene un mixer: no entra a
+      // las validaciones de traslape ni de capacidad.
+      if (f.cancelado) return null;
       const ef = filaEfectiva(f);
       const t = calcular(f);
       if (!t) return null;
@@ -714,12 +719,15 @@ function PlantelManualBloque({
 
   // ── Gantt (Plantas = cargas, Mixers = ciclos), color por cliente ──
   const seccionesGantt: SeccionGanttM[] = useMemo(() => {
+    // El Gantt es la vista de PLANEACION: un viaje cancelado no se dibuja (sigue en el
+    // detalle del modo Avanzado y en el DPCR-08, que son el programa publicado).
+    const filasGantt = plantel.filas.filter((f) => !f.cancelado);
     const plantasSec = {
       titulo: "Plantas (cargas)",
       filas: plantel.plantas.map((p) => ({
         id: `pl-${p.id}`,
         label: p.nombre,
-        barras: plantel.filas
+        barras: filasGantt
           .filter((f) => f.plantaId === p.id)
           .map((f) => {
             const t = calcular(f);
@@ -738,13 +746,13 @@ function PlantelManualBloque({
           .filter((b): b is NonNullable<typeof b> => b !== null),
       })),
     };
-    const mixersUsados = [...new Set(plantel.filas.map((f) => filaEfectiva(f).mixerId).filter((m): m is number => m != null))];
+    const mixersUsados = [...new Set(filasGantt.map((f) => filaEfectiva(f).mixerId).filter((m): m is number => m != null))];
     const mixersSec = {
       titulo: "Mixers (ciclo carga → regreso)",
       filas: mixersUsados.map((mid) => ({
         id: `mx-${mid}`,
         label: mixerLabel(mid),
-        barras: plantel.filas
+        barras: filasGantt
           .filter((f) => filaEfectiva(f).mixerId === mid)
           .map((f) => {
             const t = calcular(f);
@@ -802,7 +810,7 @@ function PlantelManualBloque({
         const grupos = agruparFilasPorPedido(
           plantel.filas.filter((f) => f.plantaId === planta.id),
           (f) => filaEfectiva(f).inicioCargaMs,
-          (f) => filaEfectiva(f).volumen,
+          (f) => (f.cancelado ? 0 : filaEfectiva(f).volumen),
           (f) => calcular(f)?.llegadaMs ?? filaEfectiva(f).inicioCargaMs,
         );
         const filas = grupos.filter((g) => !colapsados.has(g.pedidoId)).flatMap((g) => g.filas);
@@ -953,7 +961,14 @@ function PlantelManualBloque({
                           <span className="w-24 shrink-0 whitespace-nowrap text-right text-sm">
                             <strong className="font-bold text-ink">{g.totalM3} m³</strong>
                             <span className="block text-[11px] text-muted">
-                              {g.filas.length} viaje{g.filas.length === 1 ? "" : "s"}
+                              {g.filas.filter((f) => !f.cancelado).length} viaje
+                              {g.filas.filter((f) => !f.cancelado).length === 1 ? "" : "s"}
+                              {g.filas.some((f) => f.cancelado) && (
+                                <span className="text-red-600">
+                                  {" "}
+                                  · {g.filas.filter((f) => f.cancelado).length} cancelado
+                                </span>
+                              )}
                             </span>
                           </span>
 
@@ -1010,13 +1025,16 @@ function PlantelManualBloque({
                       const ef = filaEfectiva(f);
                       const t = calcular(f);
                       const rojo = idsRojos.has(f.id);
+                      // Un viaje CANCELADO en Despacho sigue en el programa publicado,
+                      // pero no se vuelve a planear: la fila va de solo lectura.
+                      const editable = puedeEditar && !f.cancelado;
                       const choca = chocaCargaCon.get(f.id);
                       return (
                         <tr
                           key={f.id}
                           className={`border-b border-border/50 tabular-nums last:border-0 hover:bg-content/20 ${
                             rojo ? "bg-red-50 hover:bg-red-50" : ""
-                          } ${editandoId === f.id ? "ring-1 ring-inset ring-accent" : ""}`}
+                          } ${f.cancelado ? "text-muted line-through decoration-1" : ""} ${editandoId === f.id ? "ring-1 ring-inset ring-accent" : ""}`}
                         >
                           <td className="px-2 py-1 text-xs text-muted/70">{i + 1}</td>
                           {/* El cliente ya va en la cabecera del bloque: aqui solo el
@@ -1027,6 +1045,11 @@ function PlantelManualBloque({
                               Viaje {g.filas.indexOf(f) + 1}{" "}
                               <span className="text-muted">de {g.filas.length}</span>
                             </span>
+                            {f.cancelado && (
+                              <span className="mt-0.5 block text-[11px] font-medium text-red-600">
+                                Cancelado en despacho
+                              </span>
+                            )}
                             {choca && (
                               <span className="mt-0.5 block text-[11px] font-medium text-red-600">
                                 Choca con la carga de las {fmtHM(choca.conMs)} — se encima {choca.solapeMin} min
@@ -1034,7 +1057,7 @@ function PlantelManualBloque({
                             )}
                           </td>
                           <td className="px-2 py-1">
-                            {puedeEditar ? (
+                            {editable ? (
                               <select
                                 value={ef.mixerId ?? ""}
                                 disabled={ocupado}
@@ -1058,7 +1081,7 @@ function PlantelManualBloque({
                             )}
                           </td>
                           <td className="px-2 py-1">
-                            {puedeEditar ? (
+                            {editable ? (
                               <input
                                 ref={(el) => {
                                   if (el) celdas.current.set(`${planta.id}:${i}:volumen`, el);
@@ -1089,7 +1112,7 @@ function PlantelManualBloque({
                             )}
                           </td>
                           <td className="px-2 py-1">
-                            {puedeEditar ? (
+                            {editable ? (
                               <input
                                 ref={(el) => {
                                   if (el) celdas.current.set(`${planta.id}:${i}:hora`, el);
@@ -1123,7 +1146,7 @@ function PlantelManualBloque({
                           </td>
                           <td className="whitespace-nowrap px-2 py-1 text-muted">{t ? fmtHM(t.salidaMs) : "—"}</td>
                           <td className="px-2 py-1">
-                            {puedeEditar && t ? (
+                            {editable && t ? (
                               /* Hora comprometida con el cliente: al escribirla, el servidor
                                  calcula hacia atras la carga y recorre la cola del cliente. */
                               <input
@@ -1168,7 +1191,7 @@ function PlantelManualBloque({
                           </td>
                           <td className="whitespace-nowrap px-2 py-1 text-muted">{t ? `${fmtHM(t.inicioDescargaMs)}–${fmtHM(t.finDescargaMs)}` : "—"}</td>
                           <td className="whitespace-nowrap px-2 py-1 text-muted">{t ? fmtHM(t.regresoMs) : "—"}</td>
-                          {puedeEditar && (
+                          {editable && (
                             <td className="px-2 py-1">
                               <button
                                 onClick={() => commitHoraFija(f, !f.horaFija)}
@@ -1186,7 +1209,7 @@ function PlantelManualBloque({
                               </button>
                             </td>
                           )}
-                          {puedeEditar && (
+                          {editable && (
                             <td className="px-2 py-1">
                               <button
                                 onClick={() => eliminarUno(f)}

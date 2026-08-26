@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import {
   ETIQUETA_PUESTO_SINGULAR,
   PUESTOS_MOTORISTA_MIXER,
+  PUESTOS_OPERADOR_BOMBA,
   type Puesto,
 } from "@/lib/planilla/puestos";
 import { exigirGestionFlota } from "@/lib/auth/guard";
@@ -242,4 +243,69 @@ export async function asignarMixerOperadorAction(
   } catch (e) {
     return { ok: false, mensaje: e instanceof Error ? e.message : "Error inesperado." };
   }
+}
+
+/**
+ * Fija QUIÉNES operan una bomba. Son varios a propósito: se relevan por turno dentro del
+ * mismo día, y el reparto del trabajo entre ellos sale de la jornada de cada uno en
+ * Asistencia — no hay que capturar el turno aparte.
+ */
+export async function fijarOperadoresBombaAction(
+  bombaId: number,
+  operadorIds: number[],
+): Promise<{ ok: boolean; mensaje?: string }> {
+  const g = await exigirGestionFlota();
+  if (!g.ok) return g;
+
+  const bomba = await prisma.bombas.findUnique({
+    where: { id: bombaId },
+    select: { identificador: true, operadores: { select: { operador: { select: { nombre: true } } } } },
+  });
+  if (!bomba) return { ok: false, mensaje: "Bomba no encontrada." };
+
+  const ids = [...new Set(operadorIds)].filter((x) => Number.isInteger(x) && x > 0);
+  const personas = await prisma.operadores.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, nombre: true, puesto: true },
+  });
+  if (personas.length !== ids.length) return { ok: false, mensaje: "Alguna persona no existe." };
+  // La tabla `operadores` guarda a todo el personal operativo: un dosificador no opera
+  // la bomba, y si entrara aquí el Gantt le atribuiría descargas que no son suyas.
+  const ajeno = personas.find((p) => !PUESTOS_OPERADOR_BOMBA.includes(p.puesto));
+  if (ajeno) {
+    return {
+      ok: false,
+      mensaje: `${ajeno.nombre} no tiene puesto de operador de bomba: no puede quedar asignado a una.`,
+    };
+  }
+
+  const antes = bomba.operadores.map((o) => o.operador.nombre).join(", ") || "sin operadores";
+  await prisma.$transaction([
+    prisma.bombas_operadores.deleteMany({ where: { bomba_id: bombaId } }),
+    ...(ids.length
+      ? [
+          prisma.bombas_operadores.createMany({
+            data: ids.map((operador_id) => ({ bomba_id: bombaId, operador_id })),
+          }),
+        ]
+      : []),
+  ]);
+
+  const despues = personas.map((p) => p.nombre).join(", ") || "sin operadores";
+  const sesion = await auth();
+  await prisma.bitacora_auditoria.create({
+    data: {
+      tabla_afectada: "bombas",
+      registro_id: bombaId,
+      usuario: sesion?.user?.name ?? sesion?.user?.email ?? "sistema",
+      campo_modificado: "operadores",
+      valor_anterior: antes,
+      valor_nuevo: despues,
+      motivo: `Operadores de la bomba ${bomba.identificador}`,
+    },
+  });
+
+  revalidatePath("/flota");
+  revalidatePath("/asistencia");
+  return { ok: true };
 }

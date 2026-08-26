@@ -16,6 +16,14 @@ import { leerMargenHueco } from "@/lib/motor/config-runtime";
 import { leerAperturaDefault, textoHoraMin } from "@/lib/motor/apertura";
 import { leerConfigBloqueo } from "@/lib/programacion/bloqueo";
 import { ETIQUETA_TIPO_DIA, TIPOS_DIA, textoMin } from "@/lib/planilla/recargos";
+import {
+  ETIQUETA_PUESTO_SINGULAR,
+  ORDEN_PUESTOS,
+  PUESTOS,
+  etiquetaPuesto,
+  type Puesto,
+} from "@/lib/planilla/puestos";
+import { PUESTOS_SIN_MEDICION } from "@/lib/asistencia/gantt-datos";
 import { HorariosPlanta, type FilaPlantaHorario } from "./horarios-planta";
 import { leerCostoFicha, leerUmbralExtra } from "@/lib/extraordinario/metricas";
 
@@ -29,6 +37,7 @@ const TABS: { key: string; label: string }[] = [
   { key: "capacidades", label: "Capacidades reducidas" },
   { key: "recargos", label: "Recargos de ley" },
   { key: "horarios", label: "Horario de planta" },
+  { key: "umbrales", label: "Tiempo sin viaje" },
   { key: "ajustes", label: "Ajustes del motor" },
   { key: "usuarios", label: "Usuarios y roles" },
 ];
@@ -427,6 +436,53 @@ async function renderTab(tab: string, ctx: Ctx) {
       }));
       return (
         <HorariosPlanta filas={filasHorario} costoFicha={costoFicha} umbralPct={umbralPct} />
+      );
+    }
+    case "umbrales": {
+      const filas0 = await prisma.umbrales_ocio_puesto.findMany();
+      const rank = (p: string) => ORDEN_PUESTOS.indexOf(p as Puesto);
+      const filas: FilaCatalogo[] = [...filas0]
+        .sort((a, b) => rank(a.puesto) - rank(b.puesto) || a.puesto.localeCompare(b.puesto))
+        .map((u) => ({
+          id: u.id,
+          celdas: {
+            puesto: etiquetaPuesto(u.puesto),
+            hueco: `${u.minutos_hueco} min`,
+            semaforo: `verde < ${u.verde_pct} % · amarillo hasta ${u.amarillo_pct} % · rojo arriba`,
+          },
+          valores: {
+            puesto: u.puesto,
+            minutos_hueco: String(u.minutos_hueco),
+            verde_pct: String(u.verde_pct),
+            amarillo_pct: String(u.amarillo_pct),
+          },
+        }));
+      return bloque(
+        "umbrales_ocio_puesto",
+        "umbral por puesto",
+        "Cuando se DIBUJA un tramo sin viaje en la linea de tiempo de Asistencia, y los cortes del semaforo del porcentaje. Cada puesto lleva su propia escala: un motorista ocupa ~90 min por ciclo completo y un dosificador ~15-20 min por carga, asi que con el mismo ritmo de trabajo el dosificador marca un porcentaje sin viaje mucho mayor. El total de tiempo sin viaje suma TODOS los tramos, tambien los mas cortos que el umbral (el umbral es solo para el dibujo).",
+        [
+          { key: "puesto", label: "Puesto" },
+          { key: "hueco", label: "Se dibuja desde" },
+          { key: "semaforo", label: "Semaforo del % sin viaje" },
+        ],
+        [
+          {
+            name: "puesto",
+            label: "Puesto",
+            tipo: "select",
+            opciones: PUESTOS.filter((p) => !PUESTOS_SIN_MEDICION.includes(p)).map((p) => ({
+              value: p,
+              label: ETIQUETA_PUESTO_SINGULAR[p],
+            })),
+            requerido: true,
+          },
+          { name: "minutos_hueco", label: "Dibujar el tramo desde (min)", tipo: "number", requerido: true },
+          { name: "verde_pct", label: "Verde por debajo de (%)", tipo: "number", requerido: true },
+          { name: "amarillo_pct", label: "Amarillo hasta (%)", tipo: "number", requerido: true },
+        ],
+        filas,
+        true, // sin importacion CSV
       );
     }
     case "ajustes": {

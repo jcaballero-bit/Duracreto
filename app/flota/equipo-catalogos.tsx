@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { PUESTOS_OPERADOR_BOMBA } from "@/lib/planilla/puestos";
 import {
   CatalogoAdmin,
   type CampoDef,
@@ -29,9 +30,19 @@ export async function EquipoCatalogos({ equipo }: { equipo: string }) {
   ]);
   const opcPlanteles = planteles.map((p) => ({ value: String(p.id), label: `${p.nombre} (${p.zona})` }));
   const opcOperadores = operadores.map((o) => ({ value: String(o.id), label: o.nombre }));
+  // Para la bomba solo se ofrecen los puestos que la operan: la tabla `operadores`
+  // guarda a todo el personal operativo, y un dosificador no opera la bomba.
+  const opcOperadoresBomba = operadores
+    .filter((o) => PUESTOS_OPERADOR_BOMBA.includes(o.puesto))
+    .map((o) => ({ value: String(o.id), label: o.nombre }));
   const nombrePlantel = (id: number) => planteles.find((p) => p.id === id)?.nombre ?? "—";
 
-  const bloque = await construir(sub, { opcPlanteles, opcOperadores, nombrePlantel });
+  const bloque = await construir(sub, {
+    opcPlanteles,
+    opcOperadores,
+    opcOperadoresBomba,
+    nombrePlantel,
+  });
 
   return (
     <div>
@@ -61,6 +72,7 @@ export async function EquipoCatalogos({ equipo }: { equipo: string }) {
         campos={bloque.campos}
         filas={bloque.filas}
         estadoRapido={{ unidadTipo: bloque.unidadTipo, opciones: ESTADO_UNIDAD }}
+        {...(sub === "bombas" ? { operadoresBomba: { opciones: opcOperadoresBomba } } : {})}
       />
     </div>
   );
@@ -69,6 +81,7 @@ export async function EquipoCatalogos({ equipo }: { equipo: string }) {
 interface Ctx {
   opcPlanteles: { value: string; label: string }[];
   opcOperadores: { value: string; label: string }[];
+  opcOperadoresBomba: { value: string; label: string }[];
   nombrePlantel: (id: number) => string;
 }
 
@@ -141,21 +154,38 @@ async function construir(
   }
 
   if (sub === "bombas") {
-    const bombas = await prisma.bombas.findMany({ orderBy: { id: "asc" } });
+    const bombas = await prisma.bombas.findMany({
+      orderBy: { id: "asc" },
+      include: { operadores: { select: { operador: { select: { id: true, nombre: true } } } } },
+    });
     const filas: FilaCatalogo[] = bombas.map((b) => ({
       id: b.id,
-      celdas: { identificador: b.identificador, estado: b.estado, plantel: ctx.nombrePlantel(b.plantel_base_id) },
-      valores: { identificador: b.identificador, estado: b.estado, plantel_base_id: String(b.plantel_base_id) },
+      celdas: {
+        identificador: b.identificador,
+        estado: b.estado,
+        plantel: ctx.nombrePlantel(b.plantel_base_id),
+        // La celda la renderiza OperadoresBombaCelda (editor inline); este texto es el
+        // respaldo si no se pasara `operadoresBomba`.
+        operadores: b.operadores.map((o) => o.operador.nombre).join(", ") || "—",
+      },
+      valores: {
+        identificador: b.identificador,
+        estado: b.estado,
+        plantel_base_id: String(b.plantel_base_id),
+        operadores_ids: b.operadores.map((o) => o.operador.id).join(","),
+      },
     }));
     return {
       catalogo: "bombas",
       unidadTipo: "Bomba",
       singular: "bomba",
-      subtitulo: "Bombas de concreto por plantel base (pluma o estacionaria).",
+      subtitulo:
+        "Bombas de concreto por plantel base (pluma o estacionaria). En la columna de operadores se marca a TODOS los que la operan: se relevan por turno dentro del mismo día, y a cada uno le corresponden las descargas que caen en su jornada de Asistencia (el turno no se captura aparte).",
       columnas: [
         { key: "identificador", label: "Identificador" },
         { key: "estado", label: "Estado" },
         { key: "plantel", label: "Plantel base" },
+        { key: "operadores", label: "Operadores (se relevan por turno)" },
       ],
       campos: [
         { name: "identificador", label: "Identificador", tipo: "text", requerido: true },

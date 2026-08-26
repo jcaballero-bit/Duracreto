@@ -47,6 +47,8 @@ export interface OpcionesModal {
 
 export interface ViajeVista {
   id: number;
+  /** Cancelado en Despacho. Sigue en el programa publicado; se muestra marcado. */
+  cancelado: boolean;
   codigoViaje: string; // identificador del sistema, ej. "V-000045"
   numClienteDia: number | null; // número de viaje del cliente ese día (1..N); null si no aplica
   totalClienteDia: number; // total de viajes del cliente ese día
@@ -621,12 +623,24 @@ function DetalleViajes({ viajes }: { viajes: ViajeVista[] }) {
         </thead>
         <tbody>
           {viajes.map((v) => (
-            <tr key={v.id} className="border-t border-border/60">
+            <tr
+              key={v.id}
+              className={
+                "border-t border-border/60 " + (v.cancelado ? "bg-red-50/60 text-muted" : "")
+              }
+            >
               <td className="py-1 pr-3">
-                <span className="font-mono">{v.codigoViaje}</span>
+                <span className={"font-mono" + (v.cancelado ? " line-through" : "")}>
+                  {v.codigoViaje}
+                </span>
                 {v.numClienteDia != null && (
                   <div className="text-muted">
                     Viaje {v.numClienteDia} de {v.totalClienteDia}
+                  </div>
+                )}
+                {v.cancelado && (
+                  <div className="mt-0.5">
+                    <Badge tono="danger">Cancelado en despacho</Badge>
                   </div>
                 )}
               </td>

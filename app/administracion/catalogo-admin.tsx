@@ -12,6 +12,7 @@ import {
 import {
   asignarMixerOperadorAction,
   cambiarEstadoUnidadAction,
+  fijarOperadoresBombaAction,
   historialEstadoUnidad,
   type CambioEstadoUnidad,
 } from "../flota/actions";
@@ -60,6 +61,7 @@ export function CatalogoAdmin({
   sinImport = false,
   estadoRapido,
   mixerAsignado,
+  operadoresBomba,
 }: {
   catalogo: Catalogo;
   singular: string;
@@ -74,6 +76,10 @@ export function CatalogoAdmin({
   // inline para asignar el MIXER habitual del operador (F5). `mixers` = todos los
   // mixers; la celda filtra por el plantel asignado del operador.
   mixerAsignado?: { mixers: MixerOpc[] };
+  // Cuando se define, la columna "operadores" (catálogo bombas) es un editor inline de
+  // QUIÉNES operan la bomba. Son varios a propósito: se relevan por turno el mismo día
+  // y el reparto sale de la jornada de cada uno en Asistencia.
+  operadoresBomba?: { opciones: OpcionCampo[] };
 }) {
   const router = useRouter();
   const [abierto, setAbierto] = useState(false);
@@ -156,6 +162,15 @@ export function CatalogoAdmin({
                           unidadId={f.id}
                           valor={f.valores.estado ?? f.celdas.estado ?? ""}
                           opciones={estadoRapido.opciones}
+                        />
+                      ) : operadoresBomba && c.key === "operadores" ? (
+                        <OperadoresBombaCelda
+                          bombaId={f.id}
+                          idsActuales={(f.valores.operadores_ids ?? "")
+                            .split(",")
+                            .filter(Boolean)
+                            .map(Number)}
+                          opciones={operadoresBomba.opciones}
                         />
                       ) : mixerAsignado && c.key === "mixer" ? (
                         <MixerAsignadoCelda
@@ -462,5 +477,110 @@ function EstadoRapidoCelda({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Editor inline de los operadores de una bomba. Varios a propósito: se relevan por turno
+ * dentro del mismo día, y a cada uno le corresponden las descargas que caen en SU jornada
+ * de Asistencia — así el turno no se captura aparte.
+ */
+function OperadoresBombaCelda({
+  bombaId,
+  idsActuales,
+  opciones,
+}: {
+  bombaId: number;
+  idsActuales: number[];
+  opciones: OpcionCampo[];
+}) {
+  const router = useRouter();
+  const [abierto, setAbierto] = useState(false);
+  const [pendiente, startTransition] = useTransition();
+  const [ids, setIds] = useState<number[]>(idsActuales);
+
+  const nombres = idsActuales
+    .map((id) => opciones.find((o) => o.value === String(id))?.label ?? `#${id}`)
+    .join(", ");
+
+  const guardar = () => {
+    startTransition(async () => {
+      const r = await fijarOperadoresBombaAction(bombaId, ids);
+      if (!r.ok) alert(r.mensaje ?? "No se pudieron guardar los operadores.");
+      else {
+        setAbierto(false);
+        router.refresh();
+      }
+    });
+  };
+
+  return (
+    <span className="relative block">
+      <button
+        type="button"
+        onClick={() => {
+          setIds(idsActuales);
+          setAbierto((a) => !a);
+        }}
+        title="Cambiar quiénes operan esta bomba"
+        className="flex w-full items-center gap-1 text-left text-sm text-ink hover:text-accent"
+      >
+        <span className="truncate">{nombres || "— Sin operadores —"}</span>
+        <Pencil size={12} className="shrink-0 text-muted" />
+      </button>
+
+      {abierto && (
+        <div className="absolute top-full left-0 z-20 mt-1 w-64 rounded-lg border border-border bg-surface p-2 shadow-lg">
+          <div className="mb-1.5 text-[11px] text-muted">
+            Marca a todos los que la operan. El turno de cada uno sale de su jornada en
+            Asistencia.
+          </div>
+          <div className="max-h-56 space-y-1 overflow-auto">
+            {opciones.length === 0 && (
+              <p className="text-xs text-muted">
+                No hay personal con puesto de operador de bomba. Se define en Flota › Operadores.
+              </p>
+            )}
+            {opciones.map((o) => {
+              const id = Number(o.value);
+              const marcado = ids.includes(id);
+              return (
+                <label key={o.value} className="flex items-center gap-2 text-xs text-ink">
+                  <input
+                    type="checkbox"
+                    checked={marcado}
+                    disabled={pendiente}
+                    onChange={(e) =>
+                      setIds((prev) =>
+                        e.target.checked ? [...prev, id] : prev.filter((x) => x !== id),
+                      )
+                    }
+                    className="accent-accent"
+                  />
+                  {o.label}
+                </label>
+              );
+            })}
+          </div>
+          <div className="mt-2 flex items-center justify-end gap-1">
+            <button
+              type="button"
+              onClick={() => setAbierto(false)}
+              className="rounded-lg px-2 py-1 text-[11px] text-muted hover:text-ink"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={guardar}
+              disabled={pendiente}
+              className="rounded-lg bg-accent px-2.5 py-1 text-[11px] font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+            >
+              {pendiente ? "…" : "Guardar"}
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
   );
 }

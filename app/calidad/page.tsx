@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import { requerirAcceso } from "@/lib/auth/guard";
+import {
+  WHERE_PEDIDO_CON_DESPACHO,
+  WHERE_VIAJE_DESPACHADO,
+} from "@/lib/calidad/seleccion";
 import { textoTemperatura } from "@/lib/calidad/config";
 import { formatearRevenimiento } from "@/lib/calidad/fraccion";
 import {
@@ -98,7 +102,11 @@ export default async function CalidadPage({
         include: { laboratorista: { select: { name: true, email: true } } },
       },
       viajes: {
-        where: { mixer_id: { not: null } },
+        // SOLO los viajes DESPACHADOS de planta: el reporte de calidad documenta
+        // concreto que salió. Un viaje cancelado (o que nunca salió) no se ensayó, así
+        // que no tiene nada que hacer aquí — aunque siga en Programación y en el
+        // DPCR-08, que son el programa publicado y no cambian porque un viaje se caiga.
+        where: WHERE_VIAJE_DESPACHADO,
         orderBy: [{ hora_inicio_carga: "asc" }, { id: "asc" }],
         include: {
           mixer: { select: { identificador: true, id: true } },
@@ -109,11 +117,17 @@ export default async function CalidadPage({
     },
   });
 
-  // Opciones del selector de cliente = clientes con programa ese día en el alcance.
-  // (Se consulta aparte, sin el filtro de cliente, para poblar el desplegable.)
+  // Opciones del selector de cliente = clientes con al menos un viaje DESPACHADO ese
+  // día en el alcance. Si un cliente canceló todo su suministro no tiene nada que
+  // ensayar, así que no aparece en el desplegable ni en el reporte.
   const paraDropdown = clienteSel
     ? await prisma.pedidos.findMany({
-        where: { hora_solicitada: { gte: ini, lt: fin }, estado_pedido: "Activo", AND: [scopePedido] },
+        where: {
+          hora_solicitada: { gte: ini, lt: fin },
+          estado_pedido: "Activo",
+          ...WHERE_PEDIDO_CON_DESPACHO,
+          AND: [scopePedido],
+        },
         select: { cliente_id: true, cliente: { select: { empresa: true } } },
       })
     : pedidos.map((p) => ({ cliente_id: p.cliente_id, cliente: { empresa: p.cliente.empresa } }));
@@ -123,7 +137,9 @@ export default async function CalidadPage({
     .map(([id, nombre]) => ({ id, nombre }))
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
 
-  const pedidosVista = clienteSel ? pedidos : [];
+  // Un pedido sin ningún viaje despachado no se documenta: o se canceló completo, o
+  // todavía no ha salido nada de planta. En ambos casos no hay concreto que reportar.
+  const pedidosVista = clienteSel ? pedidos.filter((p) => p.viajes.length > 0) : [];
   // Quién dosificó cada planta ese día y quién controló su salida (para el pie del
   // documento). Se consulta una sola vez para toda la fecha.
   const [dosifPorPlanta, labPorPlanta] = pedidosVista.length
@@ -154,7 +170,9 @@ export default async function CalidadPage({
         </p>
       ) : pedidosVista.length === 0 ? (
         <p className="no-print rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted">
-          No hay programas de ese cliente en esta fecha (dentro de tu alcance).
+          {pedidos.length === 0
+            ? "No hay programas de ese cliente en esta fecha (dentro de tu alcance)."
+            : "El programa de ese cliente no tiene viajes despachados de planta en esta fecha: se cancelaron o todavía no ha salido nada. No hay concreto que documentar."}
         </p>
       ) : (
         <>

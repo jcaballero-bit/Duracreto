@@ -11,6 +11,9 @@ import {
 import { PersonalTabs } from "../components/personal-tabs";
 import { TablaAsistencia, type PersonaAsistencia } from "./tabla-asistencia";
 import { ControlesAsistencia } from "./controles";
+import { GanttJornada } from "./gantt-view";
+import { VistaToggleAsistencia } from "./vista-toggle";
+import { datosGantt, leerUmbrales, personasParaGantt } from "@/lib/asistencia/gantt-datos";
 
 export const dynamic = "force-dynamic";
 
@@ -40,10 +43,14 @@ function diaDesdeISO(texto: string | undefined): Date | null {
 export default async function AsistenciaPage({
   searchParams,
 }: {
-  searchParams: Promise<{ fecha?: string; plantel?: string }>;
+  searchParams: Promise<{ fecha?: string; plantel?: string; vista?: string }>;
 }) {
   const alcance = await requerirAcceso("/asistencia");
   const sp = await searchParams;
+
+  // Dos vistas de la MISMA información: la tabla de captura y la línea de tiempo que
+  // la cruza con los viajes. No es una ruta nueva.
+  const timeline = sp.vista === "timeline";
 
   const hoy = new Date();
   const dia = diaDesdeISO(sp.fecha) ?? new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
@@ -103,6 +110,15 @@ export default async function AsistenciaPage({
     },
   });
 
+  // ── Datos de la línea de tiempo (solo si es la vista activa) ─────────────
+  let gantt: Awaited<ReturnType<typeof datosGantt>> | null = null;
+  if (timeline) {
+    // El alcance del rol ya está resuelto arriba: null = todos (Administrador).
+    const plantelIds =
+      plantelFiltro != null ? [plantelFiltro] : ambito.todos ? null : ambito.plantelIds;
+    gantt = await datosGantt(dia, await personasParaGantt(plantelIds), await leerUmbrales());
+  }
+
   const filas: PersonaAsistencia[] = personas.map((p) => {
     const a = p.asistencias[0];
     const salida = a?.hora_salida ?? null;
@@ -156,7 +172,11 @@ export default async function AsistenciaPage({
   const anterior = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate() - 1);
   const siguiente = diaSiguiente;
   const href = (d: Date, plantel: number | null) =>
-    `/asistencia?fecha=${iso(d)}${plantel != null ? `&plantel=${plantel}` : ""}`;
+    `/asistencia?fecha=${iso(d)}${plantel != null ? `&plantel=${plantel}` : ""}` +
+    (timeline ? "&vista=timeline" : "");
+  const hrefVista = (d: Date, plantel: number | null, vista: "tabla" | "timeline") =>
+    `/asistencia?fecha=${iso(d)}${plantel != null ? `&plantel=${plantel}` : ""}` +
+    (vista === "timeline" ? "&vista=timeline" : "");
 
   return (
     <>
@@ -166,6 +186,12 @@ export default async function AsistenciaPage({
       />
 
       <PersonalTabs activo="/asistencia" roles={alcance.roles} />
+
+      <VistaToggleAsistencia
+        hrefTabla={hrefVista(dia, plantelFiltro, "tabla")}
+        hrefTimeline={hrefVista(dia, plantelFiltro, "timeline")}
+        activa={timeline ? "timeline" : "tabla"}
+      />
 
       <Card className="mb-4 p-4">
         <ControlesAsistencia
@@ -182,7 +208,9 @@ export default async function AsistenciaPage({
         />
       </Card>
 
-      {filas.length === 0 ? (
+      {timeline ? (
+        <GanttJornada datos={gantt!} fechaTexto={`${dia.getDate()} de ${MESES[dia.getMonth()]}`} />
+      ) : filas.length === 0 ? (
         <Card className="p-6 text-sm text-muted">
           No hay personal activo en tu alcance
           {plantelFiltro != null ? " para el plantel elegido" : ""}. El personal se da de alta en

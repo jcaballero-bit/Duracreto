@@ -263,7 +263,14 @@ model operadores {
   plantel_asignado_id Int?
   plantel_asignado    planteles? @relation("OperadorPlantel", fields: [plantel_asignado_id], references: [id])
 
+  // Usuario del sistema de esta persona, si tiene (mismo patron que asesores). Hace
+  // falta para el Dosificador: su planta del dia vive en el USUARIO, no aqui.
+  usuario_id String? @unique
+  usuario    User?   @relation("PersonalUsuario", fields: [usuario_id], references: [id], onDelete: SetNull)
+
   mixers_asignados mixers[] @relation("OperadorMixer") // mixers cuyo motorista habitual es este
+  bombas_asignadas bombas[]            @relation("BombaOperador") // OBSOLETO (ver bombas_operadores)
+  bombas_operadas  bombas_operadores[] // bombas que opera (con otros, por turno)
   viajes           viajes[] // viajes donde va este motorista
   asistencias      asistencia_operativos[] // asistencia diaria para la planilla
 
@@ -420,12 +427,20 @@ model bombas {
   estado          String @default("Disponible") // "Disponible" | "En mantenimiento" | "Fuera de servicio"
   plantel_base_id Int
 
+  // OBSOLETA: la bomba puede tener VARIOS operadores (cambian por turno el mismo dia),
+  // asi que la fuente unica es `bombas_operadores`. La columna se conserva vacia para no
+  // hacer DDL destructivo (igual que pedidos.bomba_id tras pedidos_bombas).
+  operador_asignado_id Int?
+  operador_asignado    operadores? @relation("BombaOperador", fields: [operador_asignado_id], references: [id], onDelete: SetNull)
+
   plantel_base planteles @relation("BombaBase", fields: [plantel_base_id], references: [id])
   pedidos      pedidos[] // OBSOLETO (ver pedidos.bomba_id); el vinculo real es pedidos_bombas
   asignaciones pedidos_bombas[]
+  operadores   bombas_operadores[] // quienes la operan (varios: cambian por turno)
 
   @@index([plantel_base_id])
   @@index([estado])
+  @@index([operador_asignado_id])
 }
 
 // Camiones: vehículo que remolca/mueve las bombas ESTACIONARIAS (no las pluma,
@@ -914,6 +929,7 @@ model User {
   control_calidad_viajes  control_calidad_viaje[]   @relation("ControlCalidadViajeLab")
   control_calidad_generales control_calidad_general[] @relation("ControlCalidadGeneralLab")
   reasignaciones_dosificador reasignaciones_dosificador_planta[] // reasignaciones de planta por día (si es Dosificador)
+  personal operadores? @relation("PersonalUsuario") // ficha de personal operativo vinculada
 }
 
 // Un usuario puede tener más de un rol activo a la vez.
@@ -1037,4 +1053,37 @@ model cobros_sobretiempo {
   creado_en     DateTime  @default(now())
 
   @@index([fecha])
+}
+
+/// Umbrales de "tiempo sin viaje" POR PUESTO, editables desde Administracion.
+///
+/// Los porcentajes NO son comparables entre puestos: un motorista ocupa ~90 min por
+/// ciclo completo y un dosificador ~15-20 min por carga, asi que con el mismo ritmo de
+/// trabajo el dosificador marca un ocio mucho mayor. Por eso cada puesto tiene su
+/// propia escala y la vista lo advierte.
+model umbrales_ocio_puesto {
+  id            Int    @id @default(autoincrement())
+  puesto        String @unique
+  /// A partir de cuantos minutos se DIBUJA el hueco (el total ocioso incluye todos).
+  minutos_hueco Int    @default(45)
+  /// Cortes del semaforo del % ocioso; por encima del amarillo, rojo.
+  verde_pct     Int    @default(20)
+  amarillo_pct  Int    @default(40)
+}
+
+/// Quienes operan una bomba. Varios por bomba: cambian por TURNO dentro del mismo dia.
+///
+/// El turno no se captura aparte: a cada operador le corresponden las descargas de su
+/// bomba que caen dentro de SU jornada de `asistencia_operativos`. Asi el reparto sale
+/// del dato que ya se registra, sin digitacion diaria nueva.
+model bombas_operadores {
+  id          Int        @id @default(autoincrement())
+  bomba_id    Int
+  bomba       bombas     @relation(fields: [bomba_id], references: [id], onDelete: Cascade)
+  operador_id Int
+  operador    operadores @relation(fields: [operador_id], references: [id], onDelete: Cascade)
+
+  @@unique([bomba_id, operador_id])
+  @@index([bomba_id])
+  @@index([operador_id])
 }

@@ -475,7 +475,11 @@ function FilaViaje({
       {/* Captura de la muestra (revenimiento + temperatura). Solo con Laboratorista
           asignado y rol de calidad. Se abre sola al marcar "Llegada"; NO bloquea el
           avance del viaje (Descargando/Regresando no dependen de estos valores). */}
-      {(v.puedeSalidaPlanta || (puedeCapturarCalidad && v.tieneLab)) && (
+      {/* Un viaje CANCELADO no se ensaya: queda fuera del Reporte de Calidad, así que
+          tampoco se ofrece capturar revenimiento ni temperatura (sería un dato que no
+          va a ninguna parte). El viaje sigue visible aquí y en el programa publicado. */}
+      {v.estado !== "Cancelado" &&
+        (v.puedeSalidaPlanta || (puedeCapturarCalidad && v.tieneLab)) && (
         <CapturaCalidadViaje
           viajeId={v.id}
           revenimiento={v.revenimientoObra}

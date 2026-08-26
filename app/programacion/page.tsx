@@ -171,8 +171,10 @@ export default async function ProgramacionPage({
         plantel: true,
         bombas: { select: { bomba: { select: { id: true, identificador: true } } } },
         viajes: {
-          // Los viajes cancelados en Despacho (1 viaje suelto) no se listan aquí.
-          where: { estado: { not: "Cancelado" } },
+          // Los viajes CANCELADOS en Despacho SÍ se listan: el programa publicado no se
+          // reescribe porque un viaje se caiga (misma regla del DPCR-08). Se marcan como
+          // cancelados y quedan fuera de los números que describen el plan vivo
+          // (confirmación, cadencia real, llegada y la tabla editable del modo manual).
           // Orden CRONOLÓGICO por hora de carga programada (no por id), para que el
           // detalle liste "Viaje 1, 2, 3…" en secuencia y las horas queden en orden.
           orderBy: [{ hora_inicio_carga: "asc" }, { id: "asc" }],
@@ -253,9 +255,11 @@ export default async function ProgramacionPage({
     { nombre: string; zona: string; total: number; pedidos: PedidoVista[] }
   >();
   for (const p of pedidos) {
+    // Los viajes vivos son los que describen el plan de hoy; un viaje cancelado no
+    // vuelve a "desconfirmar" el pedido ni distorsiona la cadencia real.
+    const vivos = p.viajes.filter((v) => v.estado !== "Cancelado");
     const confirmado =
-      p.viajes.length > 0 &&
-      p.viajes.every((v) => v.estado_confirmacion === "Confirmado");
+      vivos.length > 0 && vivos.every((v) => v.estado_confirmacion === "Confirmado");
     const sinCubrirVol =
       Math.round(
         p.viajes
@@ -306,7 +310,7 @@ export default async function ProgramacionPage({
       horaCargaManualLocal: p.hora_carga_manual ? toLocalInput(p.hora_carga_manual) : null,
       // "Llegada" = hora de llegada al proyecto (lo que se solicita). Se toma la
       // llegada calculada de la cascada; si aún no hay horario, la solicitada.
-      horaTxt: fmtHM(horaLlegadaMin(p.viajes) ?? p.hora_solicitada),
+      horaTxt: fmtHM(horaLlegadaMin(vivos) ?? p.hora_solicitada),
       empresa: p.cliente.empresa,
       proyecto: p.cliente.proyecto ?? "",
       disenoCodigo: p.diseno.codigo,
@@ -320,7 +324,7 @@ export default async function ProgramacionPage({
       sinCubrir,
       sinCubrirVol,
       frecuenciaSolicitadaMin: p.frecuencia_entre_camiones_min,
-      frecuenciaRealMin: frecuenciaRealMin(p.viajes),
+      frecuenciaRealMin: frecuenciaRealMin(vivos),
       sugerencias,
       viajes: p.viajes
         .filter((v) => v.motivo_asignacion !== "Sin cubrir" || v.mixer_id == null)
@@ -328,6 +332,7 @@ export default async function ProgramacionPage({
           const numInfo = v.mixer_id != null ? numViajeClienteProg.get(v.id) : undefined;
           return {
           id: v.id,
+          cancelado: v.estado === "Cancelado",
           codigoViaje: `V-${String(v.id).padStart(6, "0")}`,
           numClienteDia: numInfo?.num ?? null,
           totalClienteDia: numInfo?.total ?? 0,
@@ -617,9 +622,12 @@ export default async function ProgramacionPage({
             a.hora_solicitada.getTime() - b.hora_solicitada.getTime(),
         )
         .map((p) => {
-          const conMixer = p.viajes.filter((v) => v.mixer_id != null);
+          // Un viaje cancelado no describe el plan vivo: no confirma, no marca la
+          // llegada y no cuenta como cobertura.
+          const activos = p.viajes.filter((v) => v.estado !== "Cancelado");
+          const conMixer = activos.filter((v) => v.mixer_id != null);
           const sinCubrir =
-            p.viajes.some((v) => v.motivo_asignacion === "Sin cubrir") || conMixer.length === 0;
+            activos.some((v) => v.motivo_asignacion === "Sin cubrir") || conMixer.length === 0;
           const confirmado =
             conMixer.length > 0 && conMixer.every((v) => v.estado_confirmacion === "Confirmado");
           const estado: EstadoCliente = sinCubrir ? "danger" : confirmado ? "ok" : "warn";
@@ -633,10 +641,10 @@ export default async function ProgramacionPage({
             orden: p.orden_dia ?? 0,
             empresa: p.cliente.empresa,
             proyecto: p.cliente.proyecto ?? "",
-            plantaNombre: nombrePlanta(p.viajes[0]?.planta_id ?? p.planta_id),
+            plantaNombre: nombrePlanta(activos[0]?.planta_id ?? p.planta_id),
             estado,
             frase,
-            horaTxt: fmtHM(horaLlegadaMin(p.viajes)),
+            horaTxt: fmtHM(horaLlegadaMin(activos)),
           };
         });
 
@@ -714,6 +722,9 @@ export default async function ProgramacionPage({
       for (const v of p.viajes) {
         // Solo viajes con horario y con planta: los "Sin cubrir" no se colocan en la tabla.
         if (!v.hora_inicio_carga || v.planta_id == null || v.motivo_asignacion === "Sin cubrir") continue;
+        // Un viaje cancelado se muestra, pero de solo lectura: es un hecho del programa
+        // publicado, no algo que se vuelva a planear.
+        const cancelado = v.estado === "Cancelado";
         const transporteMin =
           p.tiempo_transporte_min ?? p.cliente.tiempo_viaje_referencia_min ?? DEFAULT_TIEMPO_VIAJE_MIN;
         const arr = filasPorPlantel.get(p.plantel_id) ?? [];
@@ -732,6 +743,7 @@ export default async function ProgramacionPage({
           disenoId: p.diseno_id,
           transporteMin,
           horaFija: v.hora_fija,
+          cancelado,
         });
         filasPorPlantel.set(p.plantel_id, arr);
       }

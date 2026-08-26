@@ -63,3 +63,9 @@ export function etiquetaPuesto(v: string): string {
  * el desplegable de motorista de Despacho.
  */
 export const PUESTOS_MOTORISTA_MIXER: Puesto[] = ["Motorista_Mixer", "Otro"];
+
+/**
+ * Puestos que pueden quedar como operador HABITUAL de una bomba. Se usa para que el
+ * selector del catálogo de Bombas no ofrezca, por ejemplo, a un dosificador.
+ */
+export const PUESTOS_OPERADOR_BOMBA: string[] = ["Operador_Bomba", "Otro"];

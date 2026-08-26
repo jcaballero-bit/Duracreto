@@ -18,7 +18,8 @@ export type Catalogo =
   | "asesores"
   | "disenos"
   | "capacidades_reducidas"
-  | "configuracion_recargos";
+  | "configuracion_recargos"
+  | "umbrales_ocio_puesto";
 
 type Datos = Record<string, string>;
 type Res = { ok: boolean; mensaje?: string };
@@ -99,6 +100,8 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         identificador: s(d.identificador),
         estado: s(d.estado) || "Disponible",
         plantel_base_id: int(d.plantel_base_id),
+        // Los OPERADORES de la bomba no van aqui: son varios (se relevan por turno) y
+        // viven en `bombas_operadores`, con su editor inline en el catalogo.
       };
     case "camiones":
     case "pickups":
@@ -141,6 +144,13 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         capacidad_nominal_m3: int(d.capacidad_nominal_m3),
         capacidad_efectiva_m3: int(d.capacidad_efectiva_m3),
       };
+    case "umbrales_ocio_puesto":
+      return {
+        puesto: s(d.puesto),
+        minutos_hueco: int(d.minutos_hueco),
+        verde_pct: int(d.verde_pct),
+        amarillo_pct: int(d.amarillo_pct),
+      };
     case "configuracion_recargos":
       return {
         tipo_dia: s(d.tipo_dia),
@@ -166,6 +176,7 @@ function modelo(catalogo: Catalogo) {
     disenos: prisma.disenos_mezcla,
     capacidades_reducidas: prisma.capacidades_reducidas,
     configuracion_recargos: prisma.configuracion_recargos,
+    umbrales_ocio_puesto: prisma.umbrales_ocio_puesto,
   } as const;
   return mapa[catalogo];
 }

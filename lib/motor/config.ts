@@ -158,6 +158,28 @@ export const SECUENCIA_ESTADOS_VIAJE = [
 ] as const;
 
 /**
+ * Estados en los que el camión YA SALIÓ de la planta. Es la definición de "viaje
+ * despachado de planta" y vive aquí, en un solo lugar, porque la usan cosas que no
+ * pueden desalinearse: el avance de "Clientes en atención" (Despacho) y qué viajes
+ * entran al Reporte de Control de Calidad.
+ *
+ * "Cancelado" NO está en la lista a propósito: un viaje cancelado no se despachó,
+ * aunque hubiera alcanzado a salir antes de cancelarse.
+ */
+export const ESTADOS_DESPACHADO = [
+  "En ruta",
+  "Llegada",
+  "Descargando",
+  "Regresando",
+  "Completado",
+] as const;
+
+/** ¿Este viaje ya salió de la planta? */
+export function fueDespachado(estado: string): boolean {
+  return (ESTADOS_DESPACHADO as readonly string[]).includes(estado);
+}
+
+/**
  * Umbrales (minutos) del semáforo de desvío real vs programado en Despacho.
  * A tiempo/adelantado ≤ VERDE → verde; ≤ AMARILLO → amarillo; mayor → rojo.
  */

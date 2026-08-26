@@ -5,6 +5,7 @@ import { especDiseno, textoHielo } from "@/lib/formato";
 import {
   DESVIO_AMARILLO_MAX_MIN,
   DESVIO_VERDE_MAX_MIN,
+  ESTADOS_DESPACHADO,
 } from "@/lib/motor/config";
 import { unidadesEnMantenimiento, type CampoTsReal } from "@/lib/motor/asignacion";
 import {
@@ -518,7 +519,7 @@ export default async function DespachoPage({
   // "Programado") y que todavía no están 100% completados. El avance se mide por
   // viaje DESPACHADO = el camión ya SALIÓ de planta (En ruta en adelante), no por
   // viaje completado: así la barra sube en cuanto el concreto sale hacia la obra.
-  const DESPACHADO = new Set(["En ruta", "Llegada", "Descargando", "Regresando", "Completado"]);
+  const DESPACHADO = new Set<string>(ESTADOS_DESPACHADO);
   const ACTIVOS_EN_CURSO = new Set(["En carga", "En ruta", "Llegada", "Descargando", "Regresando"]);
   const atencion: AtencionCliente[] = pedidos
     .flatMap((p) => {
