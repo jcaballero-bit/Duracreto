@@ -40,6 +40,11 @@ import {
 
 export const dynamic = "force-dynamic";
 
+/** "YYYY-MM-DD" de una fecha local, para el rango del latido. */
+const isoDia = (x: Date) =>
+  `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+
+
 function ymdLocal(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
@@ -207,22 +212,90 @@ export default async function DespachoPage({
             plantelFiltro !== "todos" ? { plantel_id: Number(plantelFiltro) } : {},
           ],
         },
-        include: {
-          cliente: true,
-          plantel: true,
-          diseno: true,
+        // `select` y no `include`: la pantalla se relee sola cada medio minuto, así que
+        // traer la fila COMPLETA de cliente, plantel, diseño y control de calidad
+        // (columnas que aquí no se muestran) se paga en transferencia una y otra vez.
+        // Medido en un día de 41 viajes: 61 KB con include, 27 KB con este select.
+        select: {
+          id: true,
+          cliente_id: true,
+          volumen_total_m3: true,
+          hora_solicitada: true,
+          tipo_descarga: true,
+          elemento: true,
+          sacos_hielo_por_m3: true,
+          observaciones: true,
+          plantel_id: true,
+          planta_id: true,
+          diseno_id: true,
+          revenimiento: true,
+          cliente: {
+            select: {
+              empresa: true,
+              proyecto: true,
+              google_maps_url: true,
+              latitud: true,
+              longitud: true,
+            },
+          },
+          plantel: { select: { id: true, nombre: true, zona: true } },
+          diseno: {
+            select: {
+              codigo: true,
+              resistencia_psi: true,
+              etiqueta_resistencia: true,
+              tamano_agregado: true,
+              revenimiento: true,
+            },
+          },
           bombas: { select: { bomba: { select: { identificador: true } } } },
           // Control de calidad: si hay Laboratorista(s) asignado(s) (para mostrar la
           // captura en la tarjeta) y las preguntas generales ya guardadas del pedido.
           asignaciones_lab: { select: { laboratorista_id: true } },
-          control_calidad_general: true,
+          control_calidad_general: {
+            select: {
+              observaciones: true,
+              humedecio_area: true,
+              vibro_concreto: true,
+              m3_programados: true,
+              m3_colocados: true,
+              aplico_aditivo: true,
+              aditivo_unidades: true,
+              uso_curador: true,
+              existe_reclamo: true,
+              detalle_reclamo: true,
+            },
+          },
           viajes: {
             where: {
               mixer_id: { not: null },
               // El Dosificador solo ve los viajes de SU planta.
               ...(plantaDosificador != null ? { planta_id: plantaDosificador } : {}),
             },
-            include: {
+            select: {
+              id: true,
+              estado: true,
+              estado_confirmacion: true,
+              volumen_asignado_m3: true,
+              volumen_real_m3: true,
+              capacidad_asignada_m3: true,
+              motivo_asignacion: true,
+              planta_id: true,
+              operador_id: true,
+              hora_inicio_carga: true,
+              hora_fin_carga: true,
+              hora_salida_planta: true,
+              hora_llegada_proyecto: true,
+              hora_inicio_descarga: true,
+              hora_fin_descarga: true,
+              hora_regreso_planta: true,
+              ts_inicio_carga_real: true,
+              ts_fin_carga_real: true,
+              ts_salida_real: true,
+              ts_llegada_real: true,
+              ts_inicio_descarga_real: true,
+              ts_fin_descarga_real: true,
+              ts_regreso_real: true,
               mixer: {
                 select: {
                   id: true,
@@ -234,7 +307,17 @@ export default async function DespachoPage({
               },
               operador: { select: { id: true, nombre: true } },
               planta: { select: { id: true, nombre: true } },
-              control_calidad: true, // revenimiento/temperatura ya capturados
+              // revenimiento/temperatura ya capturados (solo lo que se muestra)
+              control_calidad: {
+                select: {
+                  revenimiento_obra: true,
+                  temperatura_concreto: true,
+                  revenimiento_planta: true,
+                  temperatura_planta: true,
+                  muestra_planta: true,
+                  muestra_obra: true,
+                },
+              },
             },
           },
         },
@@ -592,7 +675,11 @@ export default async function DespachoPage({
 
   return (
     <>
-      <AutoRefresh intervalMs={10000} />
+      {/* El tick pregunta al latido (~100 bytes) y solo refresca la pantalla cuando
+          algo cambió de verdad. 30 s es suficiente para la operación: un avance de
+          estado lo hace el propio despachador y su acción ya refresca al instante; el
+          latido es para que los DEMÁS lo vean. */}
+      <AutoRefresh intervalMs={30000} desdeISO={isoDia(ini)} />
       <PageHeader
         titulo="Despacho en vivo"
         descripcion={

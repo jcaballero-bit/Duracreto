@@ -22,7 +22,14 @@ vi.mock("@/lib/auth/guard", () => ({
   exigirGestionFlota: async () => ({ ok: true, userId: "u1" }),
   requerirPasswordAlDia: async () => {},
 }));
-vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
+// La caché de catálogos es un paso directo en pruebas: cada consulta va a la base, así
+// las aserciones ven el dato fresco (en producción `unstable_cache` la sirve de memoria).
+vi.mock("next/cache", () => ({
+  revalidatePath: () => {},
+  revalidateTag: () => {},
+  updateTag: () => {},
+  unstable_cache: (fn: unknown) => fn,
+}));
 
 const { ajustarLlegadaManualAction } = await import("@/app/actions");
 

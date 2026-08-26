@@ -29,6 +29,13 @@ import { calcularHuecos } from "@/lib/motor/organizador";
 import { leerMargenHueco } from "@/lib/motor/config-runtime";
 import { HORA_APERTURA_DEFAULT_MIN, leerAperturasDeDia, textoHoraMin } from "@/lib/motor/apertura";
 import { estadoBloqueoPrograma } from "@/lib/programacion/bloqueo";
+import {
+  asesoresCatalogo,
+  bombasDisponibles,
+  clientesActivos,
+  disenosCatalogo,
+  mixersCatalogo,
+} from "@/lib/catalogos-cache";
 import { PendientesDelDia, type PendienteVista } from "./pendientes-panel";
 import {
   TablaPedidos,
@@ -37,6 +44,11 @@ import {
 } from "./tabla-pedidos";
 
 export const dynamic = "force-dynamic";
+
+/** "YYYY-MM-DD" de una fecha local, para el rango del latido. */
+const isoDia = (x: Date) =>
+  `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+
 
 function ymdLocal(d: Date): string {
   const y = d.getFullYear();
@@ -147,13 +159,13 @@ export default async function ProgramacionPage({
       orderBy: { nombre: "asc" },
       include: { plantas: { orderBy: { nombre: "asc" } } },
     }),
-    prisma.clientes.findMany({ where: { activo: true }, orderBy: { empresa: "asc" } }),
-    prisma.disenos_mezcla.findMany({ orderBy: { codigo: "asc" } }),
-    prisma.bombas.findMany({
-      where: { estado: "Disponible" },
-      orderBy: { identificador: "asc" },
-    }),
-    prisma.asesores.findMany({ orderBy: { nombre: "asc" } }),
+    // Catálogos desde la caché: cambian una vez por semana y antes se releían de la
+    // base en cada render (unos 20 KB por refresco). Las acciones que los modifican
+    // invalidan la caché, así que un cliente recién creado aparece de inmediato.
+    clientesActivos(),
+    disenosCatalogo(),
+    bombasDisponibles(),
+    asesoresCatalogo(),
     prisma.pedidos.findMany({
       where: {
         hora_solicitada: { gte: ini, lt: fin },
@@ -165,10 +177,56 @@ export default async function ProgramacionPage({
           plantelFiltro !== "todos" ? { plantel_id: Number(plantelFiltro) } : {},
         ],
       },
-      include: {
-        cliente: true,
-        diseno: true,
-        plantel: true,
+      // `select` y no `include`: esta pantalla también se relee sola, así que traer la
+      // fila completa de cliente, diseño y plantel (columnas que no se muestran) se paga
+      // en transferencia en cada refresco.
+      select: {
+        id: true,
+        cliente_id: true,
+        diseno_id: true,
+        plantel_id: true,
+        planta_id: true,
+        volumen_total_m3: true,
+        volumen_programado: true,
+        hora_solicitada: true,
+        hora_carga_manual: true,
+        hora_bloqueada: true,
+        tipo_descarga: true,
+        tipo_servicio: true,
+        elemento: true,
+        observaciones: true,
+        revenimiento: true,
+        sacos_hielo_por_m3: true,
+        orden_dia: true,
+        frecuencia_entre_camiones_min: true,
+        tiempo_transporte_min: true,
+        usar_ambas_plantas: true,
+        carga_simultanea: true,
+        carga_reducida: true,
+        asesor_id: true,
+        es_adicion: true,
+        cliente: {
+          select: {
+            id: true,
+            empresa: true,
+            proyecto: true,
+            google_maps_url: true,
+            latitud: true,
+            longitud: true,
+            tiempo_viaje_referencia_min: true,
+          },
+        },
+        diseno: {
+          select: {
+            id: true,
+            codigo: true,
+            resistencia_psi: true,
+            etiqueta_resistencia: true,
+            tamano_agregado: true,
+            revenimiento: true,
+          },
+        },
+        plantel: { select: { id: true, nombre: true, zona: true, hub_id: true } },
         bombas: { select: { bomba: { select: { id: true, identificador: true } } } },
         viajes: {
           // Los viajes CANCELADOS en Despacho SÍ se listan: el programa publicado no se
@@ -178,7 +236,24 @@ export default async function ProgramacionPage({
           // Orden CRONOLÓGICO por hora de carga programada (no por id), para que el
           // detalle liste "Viaje 1, 2, 3…" en secuencia y las horas queden en orden.
           orderBy: [{ hora_inicio_carga: "asc" }, { id: "asc" }],
-          include: {
+          select: {
+            id: true,
+            estado: true,
+            estado_confirmacion: true,
+            mixer_id: true,
+            planta_id: true,
+            volumen_asignado_m3: true,
+            capacidad_asignada_m3: true,
+            motivo_asignacion: true,
+            ruta_por_defecto: true,
+            hora_fija: true,
+            hora_inicio_carga: true,
+            hora_fin_carga: true,
+            hora_salida_planta: true,
+            hora_llegada_proyecto: true,
+            hora_inicio_descarga: true,
+            hora_fin_descarga: true,
+            hora_regreso_planta: true,
             mixer: {
               select: {
                 id: true,
@@ -695,11 +770,9 @@ export default async function ProgramacionPage({
   if (puedeManual) {
     const [mixersTodos, mantMixers] = await Promise.all([
       // TODOS los mixers (cualquier estado) para el panel lateral; los seleccionables
-      // se derivan filtrando estado Disponible y sin mantenimiento del día.
-      prisma.mixers.findMany({
-        select: { id: true, identificador: true, capacidad_m3: true, plantel_base_id: true, estado: true },
-        orderBy: { identificador: "asc" },
-      }),
+      // se derivan filtrando estado Disponible y sin mantenimiento del día. Desde la
+      // caché: la flota no cambia entre un refresco y el siguiente, y Flota invalida.
+      mixersCatalogo(),
       unidadesEnMantenimiento("Mixer", ini),
     ]);
     // Apertura vigente de cada planta ESE dia: excepcion del dia si la hay, si no el
@@ -805,7 +878,9 @@ export default async function ProgramacionPage({
 
   return (
     <>
-      <AutoRefresh />
+      {/* Programación cambia mucho menos que Despacho: 60 s, y con el latido un tick
+          sin novedades no cuesta nada. */}
+      <AutoRefresh intervalMs={60000} desdeISO={isoDia(ini)} />
       <PageHeader
         titulo="Programación de pedidos"
         descripcion="Registro de pedidos con asignación automática de mixers, bombas y ventana de despacho."

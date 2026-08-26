@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { revalidarCatalogos } from "@/lib/catalogos-cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { calcularAlcance } from "@/lib/auth/acceso";
@@ -184,6 +185,7 @@ export async function crearClienteAction(datos: Datos): Promise<Res> {
     await registrarUbicacion(creado.id, ctx.quien, datos);
     revalidatePath("/clientes");
     revalidatePath("/clientes/semana");
+    revalidarCatalogos();
     return { ok: true, id: creado.id };
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };
@@ -208,6 +210,7 @@ export async function actualizarClienteAction(id: number, datos: Datos): Promise
     await auditar(id, ctx.quien, "edición", null, s(datos.empresa), "Edición de cliente");
     await registrarUbicacion(id, ctx.quien, datos);
     revalidatePath("/clientes");
+    revalidarCatalogos();
     return { ok: true };
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };
@@ -421,6 +424,7 @@ export async function alternarActivoClienteAction(
     );
     revalidatePath("/clientes");
     revalidatePath("/clientes/semana");
+    revalidarCatalogos();
     return { ok: true };
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };
@@ -439,6 +443,7 @@ export async function eliminarClienteAction(id: number): Promise<Res> {
     await prisma.clientes.delete({ where: { id } });
     await auditar(id, ctx.quien, "baja", cliente?.empresa ?? null, null, "Baja de cliente");
     revalidatePath("/clientes");
+    revalidarCatalogos();
     return { ok: true };
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };

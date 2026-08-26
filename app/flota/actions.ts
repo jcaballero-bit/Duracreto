@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { revalidarCatalogos } from "@/lib/catalogos-cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import {
@@ -68,6 +69,7 @@ export async function programarMantenimientoAction(
     },
   });
   revalidatePath("/flota");
+  revalidarCatalogos();
   return { ok: true };
 }
 
@@ -96,6 +98,7 @@ export async function cambiarEstadoMantenimientoAction(
     },
   });
   revalidatePath("/flota");
+  revalidarCatalogos();
   return { ok: true };
 }
 
@@ -120,6 +123,7 @@ export async function cambiarEstadoUnidadAction(
   const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
   const res = await cambiarEstadoUnidad(unidadTipo, unidadId, nuevoEstado, quien);
   if (res.ok) revalidatePath("/flota");
+  revalidarCatalogos();
   return res;
 }
 
@@ -239,6 +243,7 @@ export async function asignarMixerOperadorAction(
     });
 
     revalidatePath("/flota");
+    revalidarCatalogos();
     return { ok: true };
   } catch (e) {
     return { ok: false, mensaje: e instanceof Error ? e.message : "Error inesperado." };
@@ -307,5 +312,6 @@ export async function fijarOperadoresBombaAction(
 
   revalidatePath("/flota");
   revalidatePath("/asistencia");
+  revalidarCatalogos();
   return { ok: true };
 }

@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { revalidarCatalogos as invalidarCacheCatalogos } from "@/lib/catalogos-cache";
 import { prisma } from "@/lib/prisma";
 import { alcanceActual } from "@/lib/auth/guard";
 import { normalizarEncabezado } from "./columnas";
@@ -200,10 +201,13 @@ function traducirError(e: unknown): string {
   return e instanceof Error ? e.message : "Error inesperado.";
 }
 
-/** Refresca las dos vistas donde viven los catálogos (Admin y Flota). */
+/** Refresca las dos vistas donde viven los catálogos (Admin y Flota) y su caché. */
 function revalidarCatalogos() {
   revalidatePath("/administracion");
   revalidatePath("/flota");
+  // Los desplegables de Programación leen estos catálogos desde la caché: hay que
+  // invalidarla o un alta tardaría hasta un minuto en aparecer.
+  invalidarCacheCatalogos();
 }
 
 /**

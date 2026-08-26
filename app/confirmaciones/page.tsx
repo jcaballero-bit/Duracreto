@@ -11,6 +11,11 @@ import { ListaConfirmaciones, type PedidoConfirm } from "./lista";
 
 export const dynamic = "force-dynamic";
 
+/** "YYYY-MM-DD" de una fecha local, para el rango del latido. */
+const isoDia = (x: Date) =>
+  `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+
+
 export default async function ConfirmacionesPage() {
   const alcance = await requerirAcceso("/confirmaciones");
   const sesion = await auth();
@@ -103,7 +108,9 @@ export default async function ConfirmacionesPage() {
 
   return (
     <>
-      <AutoRefresh />
+      {/* Cubre mañana (o domingo+lunes si hoy es sábado): el latido recibe el rango
+          completo para no perderse un cambio del segundo día. */}
+      <AutoRefresh intervalMs={60000} desdeISO={isoDia(ini)} hastaISO={isoDia(fin)} />
       <PageHeader
         titulo={esSupervisor ? "Confirmaciones" : "Mis confirmaciones"}
         descripcion={

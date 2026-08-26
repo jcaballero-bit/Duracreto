@@ -696,6 +696,8 @@ model pedidos {
   fecha_cancelacion    DateTime?
   creado_por        String // [fase futura] pasará a FK usuarios; por ahora texto libre
   creado_en         DateTime @default(now())
+  /// Ultima modificacion (Prisma la pone en cada update). La usa el LATIDO.
+  actualizado_en    DateTime? @updatedAt
   // asesor_id -> [fase futura] relación a asesores (Fase 4)
 
   cliente clientes       @relation(fields: [cliente_id], references: [id])
@@ -806,6 +808,10 @@ model viajes {
   // `pedidos.hora_bloqueada` es la regla equivalente a nivel de pedido en el motor
   // automatico.
   hora_fija            Boolean @default(false)
+
+  /// Ultima modificacion (Prisma la pone en cada update). La usa el LATIDO de las
+  /// pantallas en vivo para saber si hay algo nuevo sin releer toda la pagina.
+  actualizado_en DateTime? @updatedAt
   // true = viaje de ADICION: agregado con "Agregar viaje" en Despacho a un pedido de
   // programa (o cualquier viaje de un pedido es_adicion). Cuenta como adicion en las
   // metricas (via volumen suministrado) y NO se muestra en el Programa DPCR-08.
