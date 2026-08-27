@@ -86,7 +86,13 @@ function etiquetaSemana(inicioMs: number): string {
   return `${f(ini)} – ${f(fin)}`;
 }
 
-/** Precisión de proyección: 100% = exacta; baja según la desviación relativa. */
+/**
+ * Precisión de proyección: 100 % = el asesor proyectó exactamente lo que se suministró;
+ * baja según la desviación relativa, y llega a 0 % si se desvió el 100 % o más.
+ *
+ * `null` (la pantalla muestra "—") cuando no hay nada proyectado que medir: ningún
+ * pedido del periodo venía de una proyección, o los que venían siguen en curso.
+ */
 function precision(proyectado: number, real: number): number | null {
   if (proyectado <= 0) return null;
   const desv = Math.abs(real - proyectado) / proyectado;
@@ -247,14 +253,26 @@ export async function calcularDesempeno(f: FiltroComercial): Promise<ResumenCome
 
     // Contribuciones de este pedido (se suman al total mensual y a su semana).
     const m3 = volumenDespachado(p.viajes);
-    const proj = p.solicitud?.volumen_estimado_m3 ?? 0;
-    // "Real" para medir la precisión de la PROYECCIÓN = lo PROGRAMADO (línea base),
-    // no `volumen_total_m3` (que crece con adiciones del día y penalizaría al asesor
-    // por algo que no fue un error de proyección).
-    const real =
-      p.solicitud?.volumen_estimado_m3 != null
-        ? (p.volumen_programado ?? p.volumen_total_m3)
-        : 0;
+
+    // ── Precisión de proyección ────────────────────────────────────────────────
+    // Compara lo que el ASESOR proyectó en el Programa Semana contra lo que el cliente
+    // REALMENTE suministró.
+    //
+    // Antes el "real" era lo PROGRAMADO, y eso hacía la métrica tautológica: el
+    // formulario de "Convertir a pedido" PRE-LLENA el volumen con el de la proyección,
+    // así que el Programador casi nunca lo cambia y la precisión salía siempre 100 %
+    // (medido: 14 de 15 pedidos con el programado idéntico al proyectado). Daba 100 %
+    // al mismo tiempo que las tarjetas de adiciones y cancelaciones mostraban cientos
+    // de m³ de desviación — que es justo la desviación que esta métrica debía capturar.
+    //
+    // Solo entran los pedidos ya CERRADOS (`cerrado`, la misma definición que usan las
+    // cancelaciones): mientras el día sigue en curso lo suministrado es parcial y
+    // marcaría un faltante que todavía no existe. Un pedido en curso no cuenta ni a
+    // favor ni en contra; si ninguno cerró, la métrica se muestra vacía en vez de
+    // inventar un número.
+    const mideProyeccion = p.solicitud?.volumen_estimado_m3 != null && cerrado;
+    const proj = mideProyeccion ? (p.solicitud?.volumen_estimado_m3 ?? 0) : 0;
+    const real = mideProyeccion ? suministrado : 0;
     const reales = p.viajes.filter((v) => v.mixer_id != null);
     const todosConfirmados =
       reales.length > 0 && reales.every((v) => v.estado_confirmacion === "Confirmado");

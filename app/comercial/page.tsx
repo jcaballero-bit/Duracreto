@@ -151,7 +151,11 @@ export default async function ComercialPage({
           <div className={`mt-1 text-3xl font-bold ${tono(resumen.precisionPct, 90, 75)}`}>
             {resumen.precisionPct == null ? "—" : `${resumen.precisionPct.toFixed(0)}%`}
           </div>
-          <div className="mt-1 text-xs text-muted">Proyectado vs. real (Programa Semana)</div>
+          <div className="mt-1 text-xs text-muted">
+            {resumen.precisionPct == null
+              ? "Todavía no hay nada que medir: ningún programa del periodo venía de una proyección del Programa Semana y ya cerró."
+              : "Proyectado en el Programa Semana vs. m³ realmente suministrados (solo programas ya cerrados)."}
+          </div>
         </Card>
 
         <Card className="p-4">
