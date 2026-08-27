@@ -25,6 +25,7 @@ import { etiquetaPuesto } from "@/lib/planilla/puestos";
 import { etiquetaAusencia } from "@/lib/planilla/ausencias";
 import {
   cruzarJornada,
+  perteneceAlDia,
   rangoEje,
   type ResumenJornada,
   type Tramo,
@@ -330,7 +331,10 @@ export async function datosGantt(
 ): Promise<DatosGantt> {
   const inicioDia = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate());
   const finDia = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate() + 1);
-  // Ventana amplia: un ciclo o una jornada pueden terminar pasada la medianoche.
+  // La consulta trae una ventana AMPLIA (medio día más) porque un turno de noche puede
+  // seguir cargando pasada la medianoche y esos viajes son de la jornada de este día.
+  // El recorte fino lo hace `perteneceAlDia` por persona: lo que arranque el día
+  // siguiente y no toque su jornada NO se dibuja aquí.
   const finAmplio = new Date(finDia.getTime() + 12 * 60 * 60_000);
 
   const plantelIds = [
@@ -440,9 +444,17 @@ export async function datosGantt(
       for (const v of mios) {
         const t = tramoDeViaje(v, segmento);
         if (!t) {
-          viajesSinHorario += 1;
+          // Sin horario no se puede ubicar en el tiempo, pero su carga sí tiene fecha
+          // (la consulta filtra por ella): si arrancó otro día, no es asunto de hoy.
+          const arranque = (v.ts_inicio_carga_real ?? v.hora_inicio_carga)?.getTime();
+          if (arranque != null && arranque >= inicioDia.getTime() && arranque < finDia.getTime()) {
+            viajesSinHorario += 1;
+          }
           continue;
         }
+        // Solo el trabajo de ESTE día: lo que arrancó hoy (aunque termine de madrugada)
+        // más lo que cae en una jornada de hoy que cruza la medianoche.
+        if (!perteneceAlDia(t, inicioDia.getTime(), finDia.getTime(), jornada)) continue;
         // Para dosificador y operador de bomba, un viaje fuera de su jornada es del
         // turno de otra persona: no se le atribuye ni se marca como anomalía.
         if (soloDentroDeJornada && jornada) {
@@ -516,7 +528,10 @@ export async function datosGantt(
     const alguien = bombasConGente
       .flatMap((b) => operadoresDeBomba.get(b) ?? [])
       .some((id) => cubre(id, t));
-    if (!alguien) descargasSinOperador += 1;
+    // Solo este día: una descarga del día siguiente no es una alerta de hoy.
+    if (!alguien && perteneceAlDia(t, inicioDia.getTime(), finDia.getTime(), null)) {
+      descargasSinOperador += 1;
+    }
   }
 
   const paraEje: Tramo[] = [];

@@ -180,6 +180,36 @@ function nuevoHueco(
   return { inicioMs, finMs, minutos: mins, marcado: mins >= umbralMin, viajeAntes, viajeDespues };
 }
 
+/**
+ * ¿Este tramo de trabajo pertenece al día que se está viendo?
+ *
+ * La regla que pidió el usuario: se muestran los viajes DEL DÍA SELECCIONADO, con una
+ * excepción — un suministro que ARRANCÓ ese día y terminó de madrugada del siguiente
+ * (cargó el 26 a las 23:00 y regresó el 27 a las 4:00) sigue siendo trabajo del 26 y se
+ * dibuja completo. Por eso lo que decide es el INICIO del tramo, no su fin: el bloque
+ * puede pasarse de la medianoche cuanto haga falta.
+ *
+ * Segunda excepción, por el turno de noche: si la jornada de la persona empezó ese día
+ * y cruza la medianoche (entra el 26 a las 18:00 y sale el 27 a las 4:00), los viajes
+ * que carga ya pasada la medianoche son de ESA jornada, así que también le pertenecen.
+ *
+ * Lo que queda fuera —y es el defecto que esto corrige— es el trabajo del día
+ * SIGUIENTE: un viaje que arranca el 27 a las 9:00 no tiene nada que ver con el 26,
+ * aunque la consulta lo haya traído en la ventana amplia.
+ */
+export function perteneceAlDia(
+  tramo: Tramo,
+  diaInicioMs: number,
+  diaFinMs: number,
+  jornada: Tramo | null,
+): boolean {
+  // Arrancó dentro del día: cuenta completo, termine cuando termine.
+  if (tramo.inicioMs >= diaInicioMs && tramo.inicioMs < diaFinMs) return true;
+  // Turno de noche: cae dentro de la jornada que empezó este día.
+  if (jornada && tramo.inicioMs < jornada.finMs && tramo.finMs > jornada.inicioMs) return true;
+  return false;
+}
+
 /** "3h 40m" · "45m" · "—" */
 export function textoDuracion(mins: number): string {
   if (mins <= 0) return "—";

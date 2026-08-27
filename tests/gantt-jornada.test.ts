@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   cruzarJornada,
   fusionarTramos,
+  perteneceAlDia,
   rangoEje,
   textoDuracion,
   tonoOcio,
@@ -191,5 +192,49 @@ describe("semáforo y formato", () => {
     expect(textoDuracion(45)).toBe("45m");
     expect(textoDuracion(120)).toBe("2h");
     expect(textoDuracion(0)).toBe("—");
+  });
+});
+
+describe("qué viajes pertenecen al día que se está viendo", () => {
+  // El defecto reportado: el Gantt del 26 dibujaba bloques a las 09:00 del 27 (el eje
+  // llegaba hasta las 14 del día siguiente). La consulta trae una ventana amplia para
+  // no perder el turno de noche, pero el recorte fino faltaba.
+  const DIA_INI = new Date(2026, 7, 26).getTime();
+  const DIA_FIN = new Date(2026, 7, 27).getTime();
+  const t = (d: number, h: number, m2: number, d2: number, h2: number, m3 = 0) => ({
+    inicioMs: new Date(2026, 7, d, h, m2).getTime(),
+    finMs: new Date(2026, 7, d2, h2, m3).getTime(),
+  });
+
+  it("un viaje normal del día sí pertenece", () => {
+    expect(perteneceAlDia(t(26, 8, 0, 26, 9, 30), DIA_INI, DIA_FIN, null)).toBe(true);
+  });
+
+  it("un suministro que arrancó el 26 y regresó el 27 a las 4 a.m. pertenece al 26", () => {
+    // Es la excepción que pidió el usuario: manda el INICIO, no el fin.
+    expect(perteneceAlDia(t(26, 23, 0, 27, 4, 0), DIA_INI, DIA_FIN, null)).toBe(true);
+  });
+
+  it("un viaje que arranca el 27 a las 9 a.m. NO pertenece al 26", () => {
+    expect(perteneceAlDia(t(27, 9, 0, 27, 10, 30), DIA_INI, DIA_FIN, null)).toBe(false);
+  });
+
+  it("tampoco pertenece si la jornada del 26 ya había terminado", () => {
+    const jornada = { inicioMs: new Date(2026, 7, 26, 7, 0).getTime(), finMs: new Date(2026, 7, 26, 17, 0).getTime() };
+    expect(perteneceAlDia(t(27, 9, 0, 27, 10, 30), DIA_INI, DIA_FIN, jornada)).toBe(false);
+  });
+
+  it("turno de noche: un viaje cargado a la 1 a.m. del 27 pertenece a la jornada que empezó el 26", () => {
+    const jornada = { inicioMs: new Date(2026, 7, 26, 18, 0).getTime(), finMs: new Date(2026, 7, 27, 4, 0).getTime() };
+    expect(perteneceAlDia(t(27, 1, 0, 27, 2, 30), DIA_INI, DIA_FIN, jornada)).toBe(true);
+  });
+
+  it("un viaje del día ANTERIOR no se cuela", () => {
+    expect(perteneceAlDia(t(25, 8, 0, 25, 9, 30), DIA_INI, DIA_FIN, null)).toBe(false);
+  });
+
+  it("el borde: arrancar exactamente a las 00:00 del día cuenta; a las 00:00 del siguiente no", () => {
+    expect(perteneceAlDia(t(26, 0, 0, 26, 1, 0), DIA_INI, DIA_FIN, null)).toBe(true);
+    expect(perteneceAlDia(t(27, 0, 0, 27, 1, 0), DIA_INI, DIA_FIN, null)).toBe(false);
   });
 });

@@ -555,3 +555,102 @@ describe("alcance por rol", () => {
     expect(d.resumen.horasProductivas + d.resumen.horasSinViaje).toBe(d.resumen.horasJornada);
   });
 });
+
+describe("el Gantt es del DÍA seleccionado", () => {
+  // Defecto reportado con captura: el Gantt del día dibujaba bloques a las 09:00 del día
+  // SIGUIENTE (el eje se estiraba hasta las 14 h del otro día). La consulta usa una
+  // ventana amplia para no perder el turno de noche; faltaba el recorte por persona.
+  async function base() {
+    const { plantelId, plantaId } = await crearPlantel({
+      nombre: "SM Dia",
+      zona: "Norte",
+      esHub: true,
+    });
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const mixer = await prisma.mixers.create({
+      data: { marca: "T", capacidad_m3: 12, plantel_base_id: plantelId, identificador: "M-D1" },
+    });
+    const personaId = await crearPersona("Motorista Dia", "Motorista_Mixer", plantelId);
+    return {
+      plantelId,
+      viaje: { plantelId, plantaId, clienteId, disenoId, operadorId: personaId, mixerId: mixer.id },
+      personaId,
+    };
+  }
+
+  it("un viaje que arranca el día SIGUIENTE no se dibuja", async () => {
+    const b = await base();
+    await jornada(b.personaId, en(7), en(17));
+    await crearViaje({ ...b.viaje, carga: en(8), finCarga: en(8, 20), regreso: en(9, 30) });
+    // Trabajo del día siguiente: no es de este Gantt.
+    await crearViaje({
+      ...b.viaje,
+      carga: enDia20(9),
+      finCarga: enDia20(9, 20),
+      regreso: enDia20(10, 30),
+    });
+
+    const d = await gantt([b.plantelId]);
+    const f = d.filas.find((x) => x.personaId === b.personaId)!;
+    expect(f.resumen.tramos).toHaveLength(1);
+    expect(f.viajes).toHaveLength(1);
+    // Y el eje no se estira al día siguiente.
+    expect(d.ejeHastaMs!).toBeLessThanOrEqual(enDia20(0).getTime());
+  });
+
+  it("un suministro que arrancó hoy y regresó de madrugada SÍ se dibuja completo", async () => {
+    const b = await base();
+    await jornada(b.personaId, en(15), enDia20(2));
+    await crearViaje({
+      ...b.viaje,
+      carga: en(23),
+      finCarga: en(23, 20),
+      regreso: enDia20(1, 0),
+    });
+
+    const d = await gantt([b.plantelId]);
+    const f = d.filas.find((x) => x.personaId === b.personaId)!;
+    expect(f.resumen.tramos).toHaveLength(1);
+    // El bloque conserva su fin de madrugada: no se recorta a la medianoche.
+    expect(f.resumen.tramos[0].finMs).toBe(enDia20(1, 0).getTime());
+    expect(f.resumen.minutosProductivos).toBe(120);
+  });
+
+  it("turno de noche: un viaje cargado de madrugada cae en la jornada que empezó hoy", async () => {
+    const b = await base();
+    await jornada(b.personaId, en(18), enDia20(4));
+    await crearViaje({
+      ...b.viaje,
+      carga: enDia20(1),
+      finCarga: enDia20(1, 20),
+      regreso: enDia20(2, 30),
+    });
+
+    const d = await gantt([b.plantelId]);
+    const f = d.filas.find((x) => x.personaId === b.personaId)!;
+    expect(f.resumen.tramos).toHaveLength(1);
+    expect(f.resumen.minutosProductivos).toBe(90);
+  });
+
+  it("sin jornada capturada, el viaje del día siguiente tampoco aparece", async () => {
+    const b = await base();
+    // Es el caso de la captura: filas con "falta la jornada" y un bloque del otro día.
+    await crearViaje({ ...b.viaje, carga: en(11), finCarga: en(11, 20), regreso: en(12, 30) });
+    await crearViaje({
+      ...b.viaje,
+      carga: enDia20(9),
+      finCarga: enDia20(9, 20),
+      regreso: enDia20(10, 30),
+    });
+
+    const d = await gantt([b.plantelId]);
+    const f = d.filas.find((x) => x.personaId === b.personaId)!;
+    expect(f.faltaJornada).toBe(true);
+    // Sin jornada no hay nada que restar: los tramos se devuelven tal cual, y aquí
+    // debe quedar SOLO el de hoy (es la fila de la captura del usuario).
+    expect(f.resumen.tramos).toHaveLength(1);
+    expect(f.resumen.tramos[0].finMs).toBe(en(12, 30).getTime());
+    expect(f.viajes).toHaveLength(1);
+  });
+});
