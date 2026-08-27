@@ -72,6 +72,8 @@ interface OpcionesViaje {
   /** false = sin hora real (se clasifica con la programada y cuenta como estimado). */
   real?: boolean;
   volumenReal?: number;
+  /** Estado del viaje. Por defecto Completado (ya salió de planta). */
+  estado?: string;
 }
 
 /** Crea un pedido con un viaje que salió de planta a la hora indicada. */
@@ -104,7 +106,7 @@ async function crearViaje(o: OpcionesViaje) {
       hora_solicitada: o.salida,
       hora_salida_planta: o.salida,
       ts_salida_real: o.real === false ? null : o.salida,
-      estado: "Completado",
+      estado: o.estado ?? "Completado",
     },
   });
 }
@@ -585,5 +587,93 @@ describe("rango y exportación", () => {
     expect(csv).toContain("Volumen en horario extraordinario (m3);15");
     expect(csv).toContain("769.5"); // considerado en ficha
     expect(csv).toContain("TOTAL");
+  });
+});
+
+describe("solo cuenta lo que SALIÓ de planta", () => {
+  // El defecto que originó esta regla: un viaje todavía Programado tiene su
+  // `hora_salida_planta` programada, así que se colaba al reporte por el respaldo de
+  // "si no hay hora real, usa la programada". El total decía "volumen despachado" pero
+  // incluía el plan del día, y quedaba muy por encima del volumen real de Comercial.
+  it("un viaje todavía Programado NO cuenta, aunque tenga hora de salida programada", async () => {
+    const { norte, clienteId, disenoId } = await escenario();
+    const base = { plantelId: norte.plantelId, plantaId: norte.plantaId, clienteId, disenoId };
+    await crearViaje({ ...base, salida: en(18, 16, 30), volumen: 9, estado: "Completado" });
+    await crearViaje({
+      ...base,
+      salida: en(18, 17, 30),
+      volumen: 10,
+      estado: "Programado",
+      real: false,
+    });
+
+    const r = await calcularExtraordinario({ ...RANGO, plantelIds: [norte.plantelId] });
+    expect(r.ejecutivo.viajesTotal).toBe(1);
+    expect(r.ejecutivo.volumenTotal).toBe(9);
+  });
+
+  it("un viaje En carga tampoco cuenta: no ha salido", async () => {
+    const { norte, clienteId, disenoId } = await escenario();
+    const base = { plantelId: norte.plantelId, plantaId: norte.plantaId, clienteId, disenoId };
+    await crearViaje({
+      ...base,
+      salida: en(18, 17, 30),
+      volumen: 10,
+      estado: "En carga",
+      real: false,
+    });
+
+    const r = await calcularExtraordinario({ ...RANGO, plantelIds: [norte.plantelId] });
+    expect(r.ejecutivo.viajesTotal).toBe(0);
+    expect(r.ejecutivo.volumenTotal).toBe(0);
+  });
+
+  it("un viaje que salió pero sigue en ruta SÍ cuenta, y sin hora real va como estimado", async () => {
+    const { norte, clienteId, disenoId } = await escenario();
+    const base = { plantelId: norte.plantelId, plantaId: norte.plantaId, clienteId, disenoId };
+    await crearViaje({
+      ...base,
+      salida: en(18, 17, 30),
+      volumen: 10,
+      estado: "En ruta",
+      real: false,
+    });
+
+    const r = await calcularExtraordinario({ ...RANGO, plantelIds: [norte.plantelId] });
+    expect(r.ejecutivo.viajesTotal).toBe(1);
+    expect(r.ejecutivo.volumenTotal).toBe(10);
+    expect(r.ejecutivo.viajesEstimados).toBe(1);
+    // Salió a las 17:30, después del cierre de las 15:00.
+    expect(r.ejecutivo.volumenExtra).toBe(10);
+  });
+
+  it("los 5 estados de despacho cuentan y los 3 que no salieron quedan fuera", async () => {
+    const { norte, clienteId, disenoId } = await escenario();
+    const base = { plantelId: norte.plantelId, plantaId: norte.plantaId, clienteId, disenoId };
+    for (const estado of ["En ruta", "Llegada", "Descargando", "Regresando", "Completado"]) {
+      await crearViaje({ ...base, salida: en(18, 16, 30), volumen: 5, estado });
+    }
+    for (const estado of ["Programado", "En carga", "Cancelado"]) {
+      await crearViaje({ ...base, salida: en(18, 16, 30), volumen: 5, estado });
+    }
+
+    const r = await calcularExtraordinario({ ...RANGO, plantelIds: [norte.plantelId] });
+    expect(r.ejecutivo.viajesTotal).toBe(5);
+    expect(r.ejecutivo.volumenTotal).toBe(25);
+  });
+
+  it("el total del reporte no puede quedar por debajo de lo entregado (viajes Completado)", async () => {
+    const { norte, clienteId, disenoId } = await escenario();
+    const base = { plantelId: norte.plantelId, plantaId: norte.plantaId, clienteId, disenoId };
+    await crearViaje({ ...base, salida: en(18, 8), volumen: 8, estado: "Completado" });
+    await crearViaje({ ...base, salida: en(18, 16, 30), volumen: 9, estado: "Completado" });
+    await crearViaje({ ...base, salida: en(19, 17), volumen: 7, estado: "En ruta", real: false });
+    await crearViaje({ ...base, salida: en(19, 18), volumen: 12, estado: "Programado", real: false });
+
+    const r = await calcularExtraordinario({ ...RANGO, plantelIds: [norte.plantelId] });
+    // Entregado (Completado) = 17; el reporte suma además el que va en ruta = 24.
+    // Lo que NO puede pasar es que incluya los 12 que nunca salieron.
+    expect(r.ejecutivo.volumenTotal).toBe(24);
+    expect(r.ejecutivo.volumenTotal).toBeGreaterThanOrEqual(17);
   });
 });

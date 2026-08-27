@@ -4,9 +4,14 @@
  * comparado con lo que la ficha de costos absorbe.
  *
  * Definiciones que usa TODO el reporte (para que las 8 secciones cuadren entre sí):
- *  · Universo: viajes con mixer, no cancelados, de pedidos activos, cuya SALIDA DE
- *    PLANTA efectiva cae en el rango. Incluye las adiciones de Despacho: se
- *    despacharon de verdad y su sobretiempo se pagó igual.
+ *  · Universo: viajes con mixer que YA SALIERON DE PLANTA (`ESTADOS_DESPACHADO`), de
+ *    pedidos activos, cuya SALIDA DE PLANTA efectiva cae en el rango. Incluye las
+ *    adiciones de Despacho: se despacharon de verdad y su sobretiempo se pagó igual.
+ *    Un viaje todavía en `Programado` o `En carga` NO se cuenta: no ha salido, así que
+ *    no causó trabajo fuera de horario. Esto es lo que hace que el reporte diga
+ *    "volumen despachado" y no "volumen programado" — antes se colaba el plan del día
+ *    (un viaje sin despachar igual tiene `hora_salida_planta` programada) y el total
+ *    quedaba muy por encima del volumen real de Gerencia Comercial.
  *  · Salida efectiva: `ts_salida_real`; si no existe, la programada
  *    `hora_salida_planta`, y ese viaje se marca como ESTIMADO.
  *  · Volumen: el REAL (`volumen_real_m3 ?? volumen_asignado_m3`), o sea lo que de
@@ -21,6 +26,7 @@ import { costoHorasExtra, sumarTotales, totalesCero, totalesDeFila } from "@/lib
 import { etiquetaPuesto } from "@/lib/planilla/puestos";
 import { redondearMonto } from "@/lib/planilla/salario";
 import { leerBandas } from "@/lib/planilla/consulta";
+import { ESTADOS_DESPACHADO } from "@/lib/motor/config";
 import {
   esExtraordinario,
   horarioDe,
@@ -211,7 +217,9 @@ export async function calcularExtraordinario(
     prisma.viajes.findMany({
       where: {
         mixer_id: { not: null },
-        estado: { not: "Cancelado" },
+        // Solo lo que de verdad salió de la planta. Un viaje Cancelado queda fuera por
+        // no estar en la lista, igual que uno todavía Programado o En carga.
+        estado: { in: [...ESTADOS_DESPACHADO] },
         pedido: { estado_pedido: "Activo", ...scopePlantel },
         // La salida EFECTIVA cae en el rango: la real si existe, si no la programada.
         OR: [

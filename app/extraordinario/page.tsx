@@ -639,6 +639,18 @@ export default async function ExtraordinarioPage({
           programada y ese viaje se cuenta como estimado (se reporta arriba). El volumen es el que
           realmente salió de la planta, y cada viaje se atribuye al día de su salida.
         </p>
+        <p className="mb-1">
+          Solo se cuentan los viajes que <strong>ya salieron de la planta</strong> (En ruta,
+          Llegada, Descargando, Regresando o Completado). Un viaje todavía programado o en carga no
+          aparece aquí: no ha salido, así que no causó trabajo fuera de horario.
+        </p>
+        <p className="mb-1">
+          Por eso este total <strong>no es el mismo</strong> que los &ldquo;m³ vendidos&rdquo; de
+          Gerencia Comercial, y no tiene por qué serlo: allá se cuenta solo lo{" "}
+          <strong>entregado</strong> (viajes Completado) y atribuido al día del pedido, mientras que
+          aquí se cuenta todo lo que <strong>salió de planta</strong> —incluido lo que aún va en
+          ruta— atribuido al día de la salida.
+        </p>
         <p>
           El pago de sobretiempo es <strong>costo bruto</strong>: no incluye deducciones (IHSS,
           RAP, INFOP, impuesto sobre la renta) ni neto a pagar.
