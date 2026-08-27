@@ -469,6 +469,12 @@ export default async function DespachoPage({
       // El Admin está corrigiendo un viaje que ya salió: la interfaz lo dice, para
       // que quede claro que es una corrección de registro y no una programación.
       const volumenCorreccionAdmin = volumenEditable && !editableNormal;
+      // Igual con la PLANTA: normalmente solo se mueve un viaje que no ha empezado a
+      // cargar; el Administrador puede corregirla después para dejar registrado de
+      // dónde salió de verdad. La interfaz lo marca distinto y el servidor aplica la
+      // misma regla (el privilegio lo toma de la sesión).
+      const plantaYaDespachada = v.ts_inicio_carga_real != null || v.estado === "Completado";
+      const plantaCorreccionAdmin = alcance.esAdmin && plantaYaDespachada;
 
       const fila: ViajeDespacho = {
         id: v.id,
@@ -500,6 +506,7 @@ export default async function DespachoPage({
         volumen: v.volumen_real_m3 ?? v.volumen_asignado_m3,
         volumenEditable,
         volumenCorreccionAdmin,
+        plantaCorreccionAdmin,
         volumenBloqueoMsg: volumenEditable ? null : "No editable: carga ya finalizada",
         mixerId: v.mixer.id,
         mixerLabel: v.mixer.identificador ?? `#${v.mixer.id}`,
@@ -508,7 +515,10 @@ export default async function DespachoPage({
         operadorNombre: v.operador?.nombre ?? null,
         plantaId: v.planta_id,
         plantaNombre: v.planta?.nombre ?? "—",
-        plantasOpciones: plantasPorPlantel.get(p.plantel_id) ?? [],
+        plantasOpciones:
+          plantaYaDespachada && !alcance.esAdmin
+            ? [] // ya salió y no es Admin: no se ofrece (el servidor lo rechazaría)
+            : (plantasPorPlantel.get(p.plantel_id) ?? []),
         estado: v.estado,
         // Programado (línea base, Hito 2) vs real (ts_*_real) por hito.
         hitos: [

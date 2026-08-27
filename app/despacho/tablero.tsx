@@ -60,6 +60,8 @@ export interface ViajeDespacho {
   volumenEditable: boolean;
   /** El viaje ya salió de planta y quien edita es el Admin: es una CORRECCIÓN. */
   volumenCorreccionAdmin: boolean;
+  /** El Admin está corrigiendo la planta de un viaje que ya salió de planta. */
+  plantaCorreccionAdmin: boolean;
   volumenBloqueoMsg: string | null;
   mixerId: number;
   mixerLabel: string;
@@ -445,6 +447,7 @@ function FilaViaje({
             plantaNombre={v.plantaNombre}
             opciones={v.plantasOpciones}
             editable={puedeCambiarPlanta}
+            correccionAdmin={v.plantaCorreccionAdmin}
           />
         </Campo>
       </div>
@@ -765,12 +768,15 @@ function CampoPlanta({
   plantaNombre,
   opciones,
   editable,
+  correccionAdmin = false,
 }: {
   viajeId: number;
   plantaId: number | null;
   plantaNombre: string;
   opciones: { id: number; nombre: string }[];
   editable: boolean;
+  /** El viaje ya salió de planta y quien edita es el Admin: es una corrección. */
+  correccionAdmin?: boolean;
 }) {
   const router = useRouter();
   const [editando, setEditando] = useState(false);
@@ -815,8 +821,14 @@ function CampoPlanta({
       <span className="whitespace-nowrap text-sm font-semibold text-ink">{plantaNombre}</span>
       <button
         onClick={() => setEditando(true)}
-        title="Cambiar planta dosificadora"
-        className="text-muted hover:text-accent"
+        title={
+          correccionAdmin
+            ? "Corregir la planta (el viaje ya salió de planta)"
+            : "Cambiar planta dosificadora"
+        }
+        className={
+          correccionAdmin ? "text-amber-600 hover:text-amber-700" : "text-muted hover:text-accent"
+        }
       >
         <RefreshCw size={12} />
       </button>

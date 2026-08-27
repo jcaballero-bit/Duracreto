@@ -1176,8 +1176,13 @@ export async function reasignarMixerAction(
  * Server action: cambia la PLANTA dosificadora de un viaje (Despacho en vivo). Lo
  * usa el Despachador (o Admin/Jefe de Planta) cuando una planta se satura/falla y
  * hay que mover viajes pendientes a la otra planta del plantel. El Dosificador NO
- * (está acotado a su planta). Revalida (planta del mismo plantel), recalcula la
- * cascada del plantel y registra en bitácora.
+ * (está acotado a su planta). Revalida (planta del mismo plantel) y registra en
+ * bitácora; NO recalcula la cascada (el despacho no reescribe el programa).
+ *
+ * El **Administrador** además puede corregirla cuando el viaje YA SALIÓ de planta o
+ * está Completado, para que el registro cuadre con lo que pasó en el patio. La bitácora
+ * lo distingue con su propio motivo. El privilegio se toma de la sesión, nunca de la
+ * pantalla.
  */
 export async function cambiarPlantaViajeAction(
   viajeId: number,
@@ -1190,8 +1195,11 @@ export async function cambiarPlantaViajeAction(
     if (!a || !(a.esAdmin || a.esDespachador || a.esJefePlanta)) {
       return { ok: false, mensaje: "Tu rol no permite cambiar la planta del viaje." };
     }
-    const res = await cambiarPlantaViaje(viajeId, plantaId);
+    // El privilegio de corregir un viaje YA DESPACHADO sale de la SESIÓN, no de la
+    // pantalla: un no-admin no puede saltárselo llamando la acción directo.
+    const res = await cambiarPlantaViaje(viajeId, plantaId, a.esAdmin);
     if (!res.ok) return { ok: false, mensaje: res.mensaje };
+    const yaDespachado = res.viajeYaDespachado === true;
 
     const sesion = await auth();
     const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
@@ -1203,7 +1211,9 @@ export async function cambiarPlantaViajeAction(
         campo_modificado: "planta_id",
         valor_anterior: res.plantaAnterior ?? null,
         valor_nuevo: res.plantaNueva ?? String(plantaId),
-        motivo: "Cambio de planta dosificadora (despacho)",
+        motivo: yaDespachado
+          ? "Corrección de planta por el Administrador (el viaje ya salió de planta)"
+          : "Cambio de planta dosificadora (despacho)",
       },
     });
 

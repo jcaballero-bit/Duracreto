@@ -3282,6 +3282,8 @@ export interface ResultadoCambioPlanta {
   alertasMargen: AlertaMargen[];
   plantaAnterior?: string; // nombres para la bitácora
   plantaNueva?: string;
+  /** El viaje ya había salido de planta: fue una corrección de registro (Admin). */
+  viajeYaDespachado?: boolean;
 }
 
 /**
@@ -3295,6 +3297,18 @@ export interface ResultadoCambioPlanta {
 export async function cambiarPlantaViaje(
   viajeId: number,
   nuevaPlantaId: number,
+  /**
+   * SOLO ADMINISTRADOR. Deja corregir la planta aunque el viaje ya haya iniciado su
+   * carga o esté Completado: sirve para dejar registrado de DÓNDE se cargó de verdad
+   * cuando el dato quedó mal y el camión ya salió (o ya volvió). Es el mismo privilegio
+   * que la corrección de volumen, y por el mismo motivo: el registro histórico debe
+   * poder cuadrar con lo que pasó en el patio.
+   *
+   * Lo que NO cambia con este permiso: la planta sigue teniendo que ser del plantel del
+   * pedido, y NO se recalcula la cascada (ver el comentario de abajo). O sea, corregir
+   * el registro nunca reescribe el programa ni mueve horarios.
+   */
+  permitirDespachado = false,
 ): Promise<ResultadoCambioPlanta> {
   const viaje = await prisma.viajes.findUniqueOrThrow({
     where: { id: viajeId },
@@ -3303,11 +3317,16 @@ export async function cambiarPlantaViaje(
       pedido: { select: { plantel_id: true, hora_solicitada: true } },
     },
   });
-  if (viaje.estado === ESTADO_VIAJE_COMPLETADO) {
-    return { ok: false, mensaje: "No se puede cambiar la planta de un viaje ya completado.", alertasMargen: [] };
+  if (viaje.estado === "Cancelado") {
+    return { ok: false, mensaje: "El viaje está cancelado.", alertasMargen: [] };
   }
-  if (viaje.ts_inicio_carga_real != null) {
-    return { ok: false, mensaje: "El viaje ya inició su carga; no se puede mover de planta.", alertasMargen: [] };
+  if (!permitirDespachado) {
+    if (viaje.estado === ESTADO_VIAJE_COMPLETADO) {
+      return { ok: false, mensaje: "No se puede cambiar la planta de un viaje ya completado.", alertasMargen: [] };
+    }
+    if (viaje.ts_inicio_carga_real != null) {
+      return { ok: false, mensaje: "El viaje ya inició su carga; no se puede mover de planta.", alertasMargen: [] };
+    }
   }
   const destino = await prisma.plantas.findUnique({
     where: { id: nuevaPlantaId },
@@ -3336,6 +3355,8 @@ export async function cambiarPlantaViaje(
     alertasMargen: await detectarAlertasMargen(viaje.pedido.hora_solicitada),
     plantaAnterior: viaje.planta?.nombre ?? "—",
     plantaNueva: destino.nombre,
+    viajeYaDespachado:
+      viaje.ts_inicio_carga_real != null || viaje.estado === ESTADO_VIAJE_COMPLETADO,
   };
 }
 
