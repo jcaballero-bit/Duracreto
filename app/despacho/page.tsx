@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/prisma";
-import { PUESTOS_MOTORISTA_MIXER } from "@/lib/planilla/puestos";
 import { auth } from "@/auth";
 import { especDiseno, textoHielo } from "@/lib/formato";
 import {
@@ -23,6 +22,14 @@ import {
   plantasDelLaboratorista,
 } from "@/lib/calidad/planta-lab";
 import { compararPlanteles } from "@/lib/planteles-orden";
+import {
+  asesoresCatalogo,
+  bombasDisponibles,
+  clientesActivos,
+  disenosCatalogo,
+  mixersCatalogo,
+  motoristasDisponibles,
+} from "@/lib/catalogos-cache";
 import { Card, PageHeader } from "../components/ui";
 import { AutoRefresh } from "../components/auto-refresh";
 import { Filtros } from "../programacion/filtros";
@@ -168,39 +175,32 @@ export default async function DespachoPage({
     estadosEditables = [];
   }
 
-  const [planteles, clientes, disenos, bombas, asesoresLista, mixersDisp, operadoresDisp, pedidos] =
+  // Los catálogos (clientes, diseños, bombas, asesores, mixers, motoristas) cambian una
+  // vez por semana y alimentan desplegables. Se leen de la CACHÉ, no de la base: esta
+  // pantalla se relee sola cada medio minuto y antes esas seis consultas costaban ~27 KB
+  // por refresco. Se invalidan solas cuando alguien edita un catálogo.
+  const [planteles, clientes, disenos, bombas, asesoresLista, mixersTodos, motoristas, pedidos] =
     await Promise.all([
       prisma.planteles.findMany({
         where: filtroPlantelPorZona(alcance),
         orderBy: { nombre: "asc" },
-        include: { plantas: { orderBy: { nombre: "asc" } } },
-      }),
-      prisma.clientes.findMany({ where: { activo: true }, orderBy: { empresa: "asc" } }),
-      prisma.disenos_mezcla.findMany({ orderBy: { codigo: "asc" } }),
-      prisma.bombas.findMany({
-        where: { estado: "Disponible" },
-        orderBy: { identificador: "asc" },
-      }),
-      prisma.asesores.findMany({ orderBy: { nombre: "asc" } }),
-      prisma.mixers.findMany({
-        // Reasignación limitada a mixers de la(s) zona(s) del usuario.
-        where: { estado: "Disponible", plantel_base: filtroPlantelPorZona(alcance) },
-        include: { plantel_base: { select: { nombre: true } } },
-        orderBy: { id: "asc" },
-      }),
-      prisma.operadores.findMany({
-        // La tabla `operadores` guarda a TODO el personal operativo (dosificadores,
-        // operadores de cargadora...), asi que el desplegable de motorista se limita a
-        // los puestos que pueden manejar un mixer. Se incluye igual a quien ya va en un
-        // viaje de hoy, para no borrar de la lista un dato ya capturado.
-        where: {
-          OR: [
-            { estado: "Disponible", puesto: { in: PUESTOS_MOTORISTA_MIXER } },
-            { viajes: { some: { hora_solicitada: { gte: ini, lt: fin } } } },
-          ],
+        select: {
+          id: true,
+          nombre: true,
+          zona: true,
+          hub_id: true,
+          plantas: {
+            orderBy: { nombre: "asc" },
+            select: { id: true, nombre: true, capacidad_m3h: true },
+          },
         },
-        orderBy: { nombre: "asc" },
       }),
+      clientesActivos(),
+      disenosCatalogo(),
+      bombasDisponibles(),
+      asesoresCatalogo(),
+      mixersCatalogo(),
+      motoristasDisponibles(),
       prisma.pedidos.findMany({
         where: {
           hora_solicitada: { gte: ini, lt: fin },
@@ -331,16 +331,34 @@ export default async function DespachoPage({
     unidadesEnMantenimiento("Mixer", ini),
     unidadesEnMantenimiento("Bomba", ini),
   ]);
-  const mixers: MixerOpcion[] = mixersDisp
-    .filter((m) => !mixEnMant.has(m.id))
+  // El filtro por zona lo hacen los planteles ya consultados con el alcance del rol:
+  // un mixer es elegible si su plantel base está entre los que el usuario ve.
+  const nombrePlantel = new Map(planteles.map((p) => [p.id, p.nombre]));
+  const mixers: MixerOpcion[] = mixersTodos
+    .filter(
+      (m) =>
+        m.estado === "Disponible" &&
+        m.plantel_base_id != null &&
+        nombrePlantel.has(m.plantel_base_id) &&
+        !mixEnMant.has(m.id),
+    )
     .map((m) => ({
       id: m.id,
-      etiqueta: `${m.identificador ?? `#${m.id}`} · ${m.capacidad_m3}m³ · ${m.plantel_base.nombre}`,
+      etiqueta: `${m.identificador ?? `#${m.id}`} · ${m.capacidad_m3}m³ · ${nombrePlantel.get(m.plantel_base_id!)}`,
     }));
-  const operadores: OperadorOpcion[] = operadoresDisp.map((o) => ({
-    id: o.id,
-    nombre: o.nombre,
-  }));
+
+  // Motoristas del desplegable = los disponibles (caché) MÁS los que ya van en un viaje
+  // de hoy, para no borrar de la lista un dato ya capturado. Los segundos salen de los
+  // viajes que esta misma pantalla ya cargó: no hace falta otra consulta.
+  const porNombre = new Map<number, string>(motoristas.map((o) => [o.id, o.nombre]));
+  for (const p of pedidos) {
+    for (const v of p.viajes) {
+      if (v.operador && !porNombre.has(v.operador.id)) porNombre.set(v.operador.id, v.operador.nombre);
+    }
+  }
+  const operadores: OperadorOpcion[] = [...porNombre.entries()]
+    .map(([id, nombre]) => ({ id, nombre }))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
 
   // Plantas por plantel (opciones del selector de planta por viaje). Solo tiene
   // sentido editar donde el plantel tenga 2+ plantas (Santa Marta, Tegucigalpa).
@@ -679,7 +697,7 @@ export default async function DespachoPage({
           algo cambió de verdad. 30 s es suficiente para la operación: un avance de
           estado lo hace el propio despachador y su acción ya refresca al instante; el
           latido es para que los DEMÁS lo vean. */}
-      <AutoRefresh intervalMs={30000} desdeISO={isoDia(ini)} />
+      <AutoRefresh intervalMs={30000} desdeISO={isoDia(ini)} plantel={plantelFiltro} />
       <PageHeader
         titulo="Despacho en vivo"
         descripcion={

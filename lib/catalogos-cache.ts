@@ -13,6 +13,7 @@
  */
 import { unstable_cache, updateTag } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { PUESTOS_MOTORISTA_MIXER } from "@/lib/planilla/puestos";
 
 export const TAG_CATALOGOS = "catalogos";
 
@@ -116,5 +117,49 @@ export const mixersCatalogo = unstable_cache(
       },
     }),
   ["catalogo-mixers"],
+  opciones,
+);
+
+/**
+ * Motoristas de mixer disponibles, para el desplegable de motorista en Despacho.
+ *
+ * `operadores` guarda a TODO el personal operativo (dosificadores, operadores de
+ * cargadora…), así que aquí se limita a los puestos que pueden manejar un mixer.
+ * Los que YA van en un viaje de hoy no salen de aquí: se derivan de los viajes que la
+ * pantalla ya cargó, así no hace falta una consulta aparte dependiente del día (que
+ * además no se podría cachear).
+ */
+export const motoristasDisponibles = unstable_cache(
+  async () =>
+    prisma.operadores.findMany({
+      where: { estado: "Disponible", puesto: { in: [...PUESTOS_MOTORISTA_MIXER] } },
+      orderBy: { nombre: "asc" },
+      select: { id: true, nombre: true },
+    }),
+  ["catalogo-motoristas-disponibles"],
+  opciones,
+);
+
+/**
+ * Planteles con sus plantas. Cambian una o dos veces al año, y casi todas las pantallas
+ * los necesitan; el alcance por rol se aplica DESPUÉS, en memoria, con
+ * `plantelesDelFiltro`.
+ */
+export const plantelesCatalogo = unstable_cache(
+  async () =>
+    prisma.planteles.findMany({
+      orderBy: { nombre: "asc" },
+      select: {
+        id: true,
+        nombre: true,
+        zona: true,
+        hub_id: true,
+        plantas: {
+          orderBy: { nombre: "asc" },
+          select: { id: true, nombre: true, capacidad_m3h: true },
+        },
+      },
+    }),
+  ["catalogo-planteles"],
   opciones,
 );

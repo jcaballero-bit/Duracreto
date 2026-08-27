@@ -211,6 +211,28 @@ export function filtroPlantelPorZona(
   return { zona: { in: alcance.zonasPermitidas } };
 }
 
+/**
+ * Resuelve el filtro de planteles a la LISTA de ids que el usuario ve. `null` = todos.
+ *
+ * No vuelve a decidir nada: INTERPRETA lo que devolvió `filtroPlantelPorZona`, así que
+ * no puede desviarse de la regla — si la regla cambia, esto la sigue sola. Existe para
+ * poder aplicar el mismo alcance donde no se puede pasar un `where` de Prisma: el
+ * latido, que es una consulta SQL cruda y se corre cada medio minuto.
+ */
+export function plantelesDelFiltro(
+  filtro: ReturnType<typeof filtroPlantelPorZona>,
+  planteles: { id: number; zona: string }[],
+): number[] | null {
+  if (filtro.id !== undefined) {
+    return typeof filtro.id === "number" ? [filtro.id] : [...filtro.id.in];
+  }
+  if (filtro.zona !== undefined) {
+    const zonas = new Set(filtro.zona.in);
+    return planteles.filter((p) => zonas.has(p.zona)).map((p) => p.id);
+  }
+  return null; // sin límite
+}
+
 /** Filtro Prisma para `pedidos` por zona/plantel del alcance. NO cubre Asesor ni
  *  Laboratorista (esos se limitan por cliente/proyecto; usar sus filtros). */
 export function filtroPedidoPorZona(

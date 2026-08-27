@@ -1,5 +1,8 @@
 import { auth } from "@/auth";
 import { diaDesdeISO, firmaLatido } from "@/lib/latido";
+import { alcanceActual } from "@/lib/auth/guard";
+import { filtroPlantelPorZona, plantelesDelFiltro } from "@/lib/auth/acceso";
+import { plantelesCatalogo } from "@/lib/catalogos-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,7 +30,22 @@ export async function GET(req: Request) {
   const hasta =
     hastaParam ?? new Date(desde.getFullYear(), desde.getMonth(), desde.getDate() + 1);
 
-  const v = await firmaLatido({ desde, hasta });
+  // Alcance: la firma vigila SOLO los planteles que este usuario ve, y si además tiene
+  // un plantel elegido en la pantalla, solo ese. Sin esto, a un Despachador del Norte le
+  // recargaba la pantalla completa cada vez que cambiaba algo en Centro Sur.
+  //
+  // El alcance se calcula en el SERVIDOR a partir de la sesión: el parámetro de la URL
+  // solo puede ACOTAR (se intersecta), nunca ampliar.
+  const alcance = await alcanceActual();
+  if (!alcance) return new Response("No autorizado", { status: 401 });
+  const permitidos = plantelesDelFiltro(filtroPlantelPorZona(alcance), await plantelesCatalogo());
+  const pedido = Number(url.searchParams.get("plantel"));
+  let plantelIds: number[] | null = permitidos;
+  if (Number.isInteger(pedido) && pedido > 0) {
+    plantelIds = permitidos === null || permitidos.includes(pedido) ? [pedido] : permitidos;
+  }
+
+  const v = await firmaLatido({ desde, hasta, plantelIds });
 
   return new Response(JSON.stringify({ v }), {
     headers: {
