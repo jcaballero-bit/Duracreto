@@ -882,7 +882,13 @@ function PlantelManualBloque({
                         acciones). Se minimiza con el chevron. */}
                     <tr className="border-y border-border bg-content/60">
                       <td colSpan={puedeEditar ? 11 : 9} className="px-2 py-2">
-                        <div className="flex items-center gap-3">
+                        {/* `flex-wrap` es la valvula de seguridad: los anchos fijos de
+                            esta franja sumaban mas que la tabla, asi que el nombre del
+                            cliente (el unico elemento elastico) se comprimia hasta unos
+                            90 px y la fila desbordaba, obligando a la barra horizontal.
+                            Ahora, si no cabe todo en una linea, lo ultimo baja a una
+                            segunda linea y el nombre conserva su ancho minimo. */}
+                        <div className="flex flex-wrap items-center gap-2">
                           <button
                             onClick={() =>
                               setColapsados((prev) => {
@@ -913,31 +919,53 @@ function PlantelManualBloque({
                             {fmtHM(Math.min(...g.filas.map((f) => calcular(f)?.llegadaMs ?? filaEfectiva(f).inicioCargaMs)))}
                           </span>
 
-                          <span className="flex min-w-0 flex-1 items-start gap-2">
+                          {/* El cliente es lo que hay que poder leer: se le garantiza un
+                              ancho minimo (con `flex-wrap` arriba, lo demas baja de linea
+                              antes que comprimirlo) y crece con el espacio que sobre. El
+                              `title` deja ver el nombre completo si aun asi se corta. */}
+                          <span className="flex min-w-[12rem] flex-1 items-start gap-2">
                             <span
                               className="mt-1.5 inline-block h-3 w-3 shrink-0 rounded-full"
                               style={{ backgroundColor: colorPorCliente(g.clienteId) }}
                             />
                             <span className="min-w-0">
-                              <span className="block truncate font-semibold text-ink">{g.empresa}</span>
+                              <span
+                                className="block truncate font-semibold text-ink"
+                                title={g.empresa}
+                              >
+                                {g.empresa}
+                              </span>
                               {g.proyecto && (
-                                <span className="block truncate text-xs text-link">{g.proyecto}</span>
+                                <span
+                                  className="block truncate text-xs text-link"
+                                  title={g.proyecto}
+                                >
+                                  {g.proyecto}
+                                </span>
                               )}
                             </span>
                           </span>
 
                           {pedidoPorId.get(g.pedidoId) && (
                             <>
-                              <span className="hidden w-36 shrink-0 text-xs leading-tight text-muted lg:block">
-                                <strong className="block font-semibold text-ink">
+                              <span
+                                className="hidden w-24 shrink-0 text-xs leading-tight text-muted lg:block"
+                                title={`${pedidoPorId.get(g.pedidoId)!.disenoCodigo} · ${pedidoPorId.get(g.pedidoId)!.disenoEspec}`}
+                              >
+                                <strong className="block truncate font-semibold text-ink">
                                   {pedidoPorId.get(g.pedidoId)!.disenoCodigo}
                                 </strong>
-                                {pedidoPorId.get(g.pedidoId)!.disenoEspec}
+                                <span className="block truncate">
+                                  {pedidoPorId.get(g.pedidoId)!.disenoEspec}
+                                </span>
                               </span>
-                              <span className="hidden w-24 shrink-0 truncate text-xs text-ink xl:block">
+                              <span
+                                className="hidden w-20 shrink-0 truncate text-xs text-ink xl:block"
+                                title={pedidoPorId.get(g.pedidoId)!.elemento || undefined}
+                              >
                                 {pedidoPorId.get(g.pedidoId)!.elemento || "—"}
                               </span>
-                              <span className="hidden w-32 shrink-0 xl:block">
+                              <span className="hidden w-28 shrink-0 xl:block">
                                 <BombasCelda
                                   pedidoId={g.pedidoId}
                                   etiqueta={pedidoPorId.get(g.pedidoId)!.tipoDescarga}
@@ -952,7 +980,10 @@ function PlantelManualBloque({
                                   ocupado={ocupado}
                                 />
                               </span>
-                              <span className="hidden w-36 shrink-0 truncate text-xs text-muted 2xl:block">
+                              <span
+                                className="hidden w-28 shrink-0 truncate text-xs text-muted 2xl:block"
+                                title={pedidoPorId.get(g.pedidoId)!.hieloTxt}
+                              >
                                 {pedidoPorId.get(g.pedidoId)!.hieloTxt}
                               </span>
                             </>
