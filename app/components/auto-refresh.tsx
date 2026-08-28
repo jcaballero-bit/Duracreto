@@ -28,8 +28,9 @@ import { useRouter } from "next/navigation";
  *    Al volver, se comprueba de INMEDIATO (no se espera al siguiente tick).
  *
  * 2. ESPACIADO PROGRESIVO. Mientras la firma no cambia, el intervalo se va alargando
- *    hasta `MAX_ESPERA_MS`. Una tarde tranquila deja de costar un latido cada 30 s. En
- *    cuanto algo cambia —o el usuario interactúa— vuelve al intervalo base.
+ *    hasta `MAX_ESPERA_MS` (9 min, a propósito por encima de la ventana de autosuspensión
+ *    de la base). Una tarde tranquila deja de costar un latido por minuto. En cuanto algo
+ *    cambia —o el usuario interactúa— vuelve al intervalo base.
  *
  * 3. SOLO CON LA PESTAÑA VISIBLE. Una pestaña en segundo plano no consulta nada.
  *
@@ -43,9 +44,21 @@ import { useRouter } from "next/navigation";
  */
 
 /** Sin señales de vida durante este tiempo, se deja de preguntar. */
-const INACTIVIDAD_MS = 5 * 60_000;
-/** Tope del espaciado progresivo cuando no pasa nada. */
-const MAX_ESPERA_MS = 4 * 60_000;
+const INACTIVIDAD_MS = 4 * 60_000;
+/**
+ * Tope del espaciado progresivo cuando no pasa nada.
+ *
+ * Está DELIBERADAMENTE por encima de los 5 min que la base gratuita tarda en
+ * autosuspenderse. Con un tope de 4 min pasaba algo que no se ve pero se paga: una
+ * pestaña abierta con alguien sentado al lado, sin que cambiara nada, preguntaba cada
+ * 4 min y con eso la base NUNCA llegaba a dormirse — y las horas de cómputo del plan se
+ * consumen por tiempo despierto, no por consultas. Con 9 min hay una ventana real de
+ * silencio entre latidos y la base alcanza a suspenderse.
+ *
+ * No degrada la operación: el espaciado solo crece tras varios latidos seguidos sin
+ * novedad, y CUALQUIER interacción del usuario lo devuelve al intervalo base.
+ */
+const MAX_ESPERA_MS = 9 * 60_000;
 
 function editandoUnCampo(): boolean {
   const el = document.activeElement as HTMLElement | null;

@@ -26,7 +26,14 @@ export const config = {
   // Protege todo excepto la API de auth, los estáticos de Next, el favicon y los
   // archivos estáticos de /public (imágenes como el logo). Sin excluir imágenes,
   // el logo del login se redirigía a /login por no haber sesión.
+  //
+  // `api/latido` también queda FUERA, y no por comodidad: es la ruta que más se llama de
+  // todo el sistema (una por pestaña abierta cada minuto) y en el despliegue este
+  // middleware es una Edge Function que se factura POR INVOCACIÓN. La ruta hace su
+  // propia autenticación (`auth()` y 401 sin sesión), así que pasar por aquí solo
+  // duplicaba el costo sin agregar seguridad. Cualquier ruta nueva de /api que se
+  // excluya tiene que autenticarse ella misma, igual que esta.
   matcher: [
-    "/((?!api/auth|_next/static|_next/image|favicon.ico|manifest.webmanifest|sw.js|.*\\.(?:png|jpg|jpeg|svg|gif|webp|ico|css|js|woff|woff2|ttf|webmanifest)).*)",
+    "/((?!api/auth|api/latido|_next/static|_next/image|favicon.ico|manifest.webmanifest|sw.js|.*\\.(?:png|jpg|jpeg|svg|gif|webp|ico|css|js|woff|woff2|ttf|webmanifest)).*)",
   ],
 };

@@ -713,7 +713,7 @@ export default async function DespachoPage({
           algo cambió de verdad. 30 s es suficiente para la operación: un avance de
           estado lo hace el propio despachador y su acción ya refresca al instante; el
           latido es para que los DEMÁS lo vean. */}
-      <AutoRefresh intervalMs={30000} desdeISO={isoDia(ini)} plantel={plantelFiltro} />
+      <AutoRefresh intervalMs={60000} desdeISO={isoDia(ini)} plantel={plantelFiltro} />
       <PageHeader
         titulo="Despacho en vivo"
         descripcion={

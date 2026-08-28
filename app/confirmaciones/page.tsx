@@ -110,7 +110,7 @@ export default async function ConfirmacionesPage() {
     <>
       {/* Cubre mañana (o domingo+lunes si hoy es sábado): el latido recibe el rango
           completo para no perderse un cambio del segundo día. */}
-      <AutoRefresh intervalMs={60000} desdeISO={isoDia(ini)} hastaISO={isoDia(fin)} />
+      <AutoRefresh intervalMs={90000} desdeISO={isoDia(ini)} hastaISO={isoDia(fin)} />
       <PageHeader
         titulo={esSupervisor ? "Confirmaciones" : "Mis confirmaciones"}
         descripcion={

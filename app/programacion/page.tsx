@@ -886,7 +886,7 @@ export default async function ProgramacionPage({
     <>
       {/* Programación cambia mucho menos que Despacho: 60 s, y con el latido un tick
           sin novedades no cuesta nada. */}
-      <AutoRefresh intervalMs={60000} desdeISO={isoDia(ini)} plantel={plantelFiltro} />
+      <AutoRefresh intervalMs={90000} desdeISO={isoDia(ini)} plantel={plantelFiltro} />
       <PageHeader
         titulo="Programación de pedidos"
         descripcion="Registro de pedidos con asignación automática de mixers, bombas y ventana de despacho."
