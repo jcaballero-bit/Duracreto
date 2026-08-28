@@ -29,6 +29,7 @@ import {
   disenosCatalogo,
   mixersCatalogo,
   motoristasDisponibles,
+  elementosCatalogo,
 } from "@/lib/catalogos-cache";
 import { Card, PageHeader } from "../components/ui";
 import { AutoRefresh } from "../components/auto-refresh";
@@ -665,6 +666,9 @@ export default async function DespachoPage({
         a.cliente.localeCompare(b.cliente),
     );
 
+  // Catálogo del desplegable con buscador de "Elemento" (Administración › Elementos).
+  const elementosDisponibles = (await elementosCatalogo()).map((e) => e.nombre);
+
   const opciones = {
     clientes: clientes.map((c) => ({
       id: c.id,
@@ -697,6 +701,8 @@ export default async function DespachoPage({
         etiqueta: b.identificador,
         plantelId: b.plantel_base_id,
       })),
+    // Catálogo del desplegable con buscador de "Elemento" (Administración › Elementos).
+    elementos: elementosDisponibles,
     asesores: asesoresLista.map((a) => ({ id: a.id, etiqueta: a.nombre })),
     esAdmin: alcance.esAdmin, // volumen con step libre solo para Admin
   };

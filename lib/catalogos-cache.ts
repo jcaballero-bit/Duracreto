@@ -163,3 +163,19 @@ export const plantelesCatalogo = unstable_cache(
   ["catalogo-planteles"],
   opciones,
 );
+
+/**
+ * Elementos de obra ACTIVOS, para el desplegable con buscador del campo "Elemento".
+ * Es un catálogo de sugerencias: el campo sigue aceptando texto libre, así que un
+ * elemento que no esté aquí no bloquea nada.
+ */
+export const elementosCatalogo = unstable_cache(
+  async () =>
+    prisma.elementos.findMany({
+      where: { activo: true },
+      orderBy: { nombre: "asc" },
+      select: { nombre: true },
+    }),
+  ["catalogo-elementos"],
+  opciones,
+);

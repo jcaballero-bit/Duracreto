@@ -133,6 +133,13 @@ export function resolverFila(catalogo: Catalogo, r: Fila, m: Mapas): Resuelto {
         },
       };
     }
+    case "elementos": {
+      const nombre = req(r.nombre);
+      if (!nombre) return { error: "nombre requerido" };
+      // `activo` vacio = activo. Solo "false" o "no" lo desactivan.
+      const a = (r.activo ?? "").trim().toLowerCase();
+      return { data: { nombre, activo: !(a === "false" || a === "no" || a === "0") } };
+    }
     case "capacidades_reducidas": {
       const nom = entero(r.capacidad_nominal_m3);
       const efe = entero(r.capacidad_efectiva_m3);

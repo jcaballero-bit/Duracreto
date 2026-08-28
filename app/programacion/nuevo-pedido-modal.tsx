@@ -29,6 +29,7 @@ export function NuevoPedidoModal({
   planteles,
   bombas,
   asesores,
+  elementos,
   plantelInicial,
   fechaInicial,
   esAdicion = false,
@@ -39,6 +40,7 @@ export function NuevoPedidoModal({
   planteles: PlantelOpcion[];
   bombas: BombaOpcion[];
   asesores: Opcion[];
+  elementos: string[];
   plantelInicial?: number;
   fechaInicial?: string;
   // true en "Despacho en vivo": el pedido es una ADICIÓN (fuera del programa/DPCR-08).
@@ -82,6 +84,7 @@ export function NuevoPedidoModal({
                 planteles={planteles}
                 bombas={bombas}
                 asesores={asesores}
+                elementos={elementos}
                 plantelInicial={plantelInicial}
                 fechaInicial={fechaInicial}
                 esAdicion={esAdicion}

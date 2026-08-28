@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useMemo, useRef, useState } from "react";
+import { ComboLibre } from "@/app/components/combo-libre";
 import { AlertTriangle, Check, Plus, X } from "lucide-react";
 import {
   analizarFrecuenciaAction,
@@ -96,6 +97,7 @@ export function PedidoForm({
   planteles,
   bombas,
   asesores,
+  elementos,
   plantelInicial,
   fechaInicial,
   pedidoId,
@@ -111,6 +113,8 @@ export function PedidoForm({
   planteles: PlantelOpcion[];
   bombas: BombaOpcion[];
   asesores: Opcion[];
+  /** Catálogo de elementos del desplegable con buscador (Administración › Elementos). */
+  elementos: string[];
   plantelInicial?: number;
   fechaInicial?: string; // "YYYY-MM-DD" (fecha del filtro). El campo sigue editable.
   pedidoId?: number; // si viene, el formulario está en modo EDICIÓN
@@ -149,6 +153,7 @@ export function PedidoForm({
   const clienteInicial =
     valores?.cliente_id ?? preset?.cliente_id ?? clientes[0]?.id ?? 0;
   const [clienteId, setClienteId] = useState<number>(clienteInicial);
+  const [elemento, setElemento] = useState(valores?.elemento ?? preset?.elemento ?? "");
   const [asesorId, setAsesorId] = useState<string>(
     valores?.asesor_id != null
       ? String(valores.asesor_id)
@@ -785,11 +790,18 @@ export function PedidoForm({
         </Campo>
 
         <Campo label="Elemento estructural">
-          <input
+          {/* Mismo desplegable con buscador del Programa Semana, con el mismo catálogo
+              (Administración › Elementos): si aquí quedara texto libre suelto, el
+              elemento que el asesor eligió de la lista se podría reescribir de diez
+              maneras al convertir la proyección en pedido. Sigue aceptando uno que no
+              esté en la lista. */}
+          <ComboLibre
             name="elemento"
-            className={inputCls}
-            defaultValue={valores?.elemento ?? preset?.elemento ?? ""}
+            valor={elemento}
+            onChange={setElemento}
+            opciones={elementos}
             placeholder="Ej. Losa, columna, zapata"
+            etiquetaNuevo="se guardará tal como lo escribiste"
           />
         </Campo>
 

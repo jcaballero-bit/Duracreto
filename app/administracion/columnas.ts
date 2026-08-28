@@ -17,6 +17,7 @@ export const COLUMNAS_ESPERADAS: Record<Catalogo, string[]> = {
   asesores: ["nombre", "correo"],
   disenos: ["codigo", "resistencia", "tamano_agregado", "revenimiento", "aditivo"],
   capacidades_reducidas: ["capacidad_nominal_m3", "capacidad_efectiva_m3"],
+  elementos: ["nombre", "activo"],
   // Se gestiona solo en Administración (sin importación CSV), pero el mapa es total.
   configuracion_recargos: ["tipo_dia", "hora_desde_min", "hora_hasta_min", "porcentaje_recargo"],
   umbrales_ocio_puesto: ["puesto", "minutos_hueco", "verde_pct", "amarillo_pct"],

@@ -34,6 +34,7 @@ const TABS: { key: string; label: string }[] = [
   { key: "plantas", label: "Plantas" },
   { key: "asesores", label: "Asesores" },
   { key: "disenos", label: "Diseños de mezcla" },
+  { key: "elementos", label: "Elementos" },
   { key: "capacidades", label: "Capacidades reducidas" },
   { key: "recargos", label: "Recargos de ley" },
   { key: "horarios", label: "Horario de planta" },
@@ -328,6 +329,39 @@ async function renderTab(tab: string, ctx: Ctx) {
           { name: "tamano_agregado", label: "Tamaño de agregado", tipo: "text", placeholder: '3/4"' },
           { name: "revenimiento", label: "Revenimiento", tipo: "text", requerido: true },
           { name: "aditivo_especial", label: "Aditivo especial", tipo: "text" },
+        ],
+        filas,
+      );
+    }
+    case "elementos": {
+      const filas0 = await prisma.elementos.findMany({
+        // Activos primero (son los que se ofrecen), alfabetico dentro de cada grupo.
+        orderBy: [{ activo: "desc" }, { nombre: "asc" }],
+      });
+      const filas: FilaCatalogo[] = filas0.map((e) => ({
+        id: e.id,
+        celdas: { nombre: e.nombre, activo: e.activo ? "Sí" : "No" },
+        valores: { nombre: e.nombre, activo: String(e.activo) },
+      }));
+      return bloque(
+        "elementos",
+        "elemento",
+        "Los elementos que ofrece el desplegable de 'Elemento' en el Programa Semana y en Nuevo pedido. Es un catálogo de SUGERENCIAS: el campo sigue aceptando texto libre, así que en obra se puede escribir uno que no esté aquí. Poner un elemento en 'Activo: No' lo saca del desplegable sin borrar el historial de lo ya programado.",
+        [
+          { key: "nombre", label: "Elemento" },
+          { key: "activo", label: "Activo" },
+        ],
+        [
+          { name: "nombre", label: "Nombre del elemento", tipo: "text", requerido: true },
+          {
+            name: "activo",
+            label: "Activo (se ofrece en el desplegable)",
+            tipo: "select",
+            opciones: [
+              { value: "true", label: "Sí" },
+              { value: "false", label: "No" },
+            ],
+          },
         ],
         filas,
       );

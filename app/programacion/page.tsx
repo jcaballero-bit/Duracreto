@@ -35,6 +35,7 @@ import {
   clientesActivos,
   disenosCatalogo,
   mixersCatalogo,
+  elementosCatalogo,
 } from "@/lib/catalogos-cache";
 import { PendientesDelDia, type PendienteVista } from "./pendientes-panel";
 import {
@@ -271,6 +272,9 @@ export default async function ProgramacionPage({
     }),
   ]);
 
+  // Catálogo del desplegable con buscador de "Elemento" (Administración › Elementos).
+  const elementosDisponibles = (await elementosCatalogo()).map((e) => e.nombre);
+
   const opciones: OpcionesModal = {
     clientes: clientes.map((c) => ({
       id: c.id,
@@ -301,6 +305,8 @@ export default async function ProgramacionPage({
       etiqueta: b.identificador,
       plantelId: b.plantel_base_id,
     })),
+    // Catálogo del desplegable con buscador de "Elemento" (Administración › Elementos).
+    elementos: elementosDisponibles,
     asesores: asesores.map((a) => ({ id: a.id, etiqueta: a.nombre })),
     esAdmin: alcance.esAdmin, // volumen con step libre solo para Admin
   };

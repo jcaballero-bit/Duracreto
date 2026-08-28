@@ -1,5 +1,6 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { elementosCatalogo } from "@/lib/catalogos-cache";
 import { filtroClientePorAsesor } from "@/lib/auth/acceso";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { Card, PageHeader } from "../../components/ui";
@@ -224,6 +225,10 @@ export default async function ProgramaSemanaPage({
     asesorNombre: c.asesor?.nombre ?? "Sin asesor",
   }));
 
+  // Catálogo de elementos para el desplegable con buscador de la celda (Administración
+  // › Elementos). Va en caché: cambia una vez al mes y esta pantalla se abre a diario.
+  const elementos = (await elementosCatalogo()).map((e) => e.nombre);
+
   return (
     <>
       <PageHeader
@@ -239,6 +244,7 @@ export default async function ProgramaSemanaPage({
           filas={filas}
           candidatos={candidatos}
           planteles={plantelesOpc}
+          elementos={elementos}
           esAdmin={alcance.esAdmin}
           resaltarEditables={alcance.esAsesor}
           soloLectura={esSupervisor}

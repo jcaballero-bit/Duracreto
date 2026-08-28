@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { prisma } from "@/lib/prisma";
+import { elementosCatalogo } from "@/lib/catalogos-cache";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { registroAdicionesCancelaciones, type RegistroAsesor } from "@/lib/comercial/metricas";
 import { Badge, Card, PageHeader } from "../../../components/ui";
@@ -226,6 +227,7 @@ async function ProgramacionSemana({
         filas={[...filasMap.values()]}
         candidatos={[]}
         planteles={planteles.map((pl) => ({ id: pl.id, nombre: pl.nombre, abbr: abreviar(pl.nombre) }))}
+        elementos={(await elementosCatalogo()).map((e) => e.nombre)}
         esAdmin={false}
         resaltarEditables={false}
         puedeCrearCliente={false}

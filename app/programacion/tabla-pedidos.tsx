@@ -41,6 +41,8 @@ export interface OpcionesModal {
   planteles: PlantelOpcion[];
   bombas: BombaOpcion[];
   asesores: Opcion[];
+  /** Catálogo de elementos del desplegable con buscador (Administración › Elementos). */
+  elementos: string[];
   // Solo el Admin puede ingresar volúmenes fuera del paso de 0.5 m³ (step libre).
   esAdmin?: boolean;
 }

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
+import { ComboLibre } from "@/app/components/combo-libre";
 import { ChevronLeft, ChevronRight, Plus, Trash2, X } from "lucide-react";
 import { eliminarSolicitudAction, guardarSolicitudAction } from "../solicitudes-actions";
 import { ClienteFormModal, type Opcion } from "../cliente-form-modal";
@@ -60,6 +61,7 @@ export function GridSemana({
   filas,
   candidatos,
   planteles,
+  elementos,
   esAdmin,
   resaltarEditables,
   puedeCrearCliente,
@@ -75,6 +77,8 @@ export function GridSemana({
   filas: ClienteFila[];
   candidatos: ClienteOpc[];
   planteles: PlantelOpc[];
+  /** Catálogo de elementos que ofrece el desplegable (Administración › Elementos). */
+  elementos: string[];
   esAdmin: boolean;
   // true para el Asesor: resalta sutilmente su área editable (sus clientes).
   resaltarEditables: boolean;
@@ -322,6 +326,7 @@ export function GridSemana({
                   totalPorFila={totalPorFila}
                   filtroPlantel={filtroPlantel}
                   planteles={planteles}
+                  elementos={elementos}
                   resaltarEditables={resaltarEditables}
                   soloLectura={soloLectura}
                   editando={editando}
@@ -449,6 +454,7 @@ export function GridSemana({
                           entradas={entradas}
                           editable={editable}
                           planteles={planteles}
+              elementos={elementos}
                           abbrDe={abbrDe}
                           editando={editando}
                           onEditar={(cid, iso, sid) =>
@@ -514,6 +520,7 @@ function FragmentoGrupo({
   totalPorFila,
   filtroPlantel,
   planteles,
+  elementos,
   resaltarEditables,
   soloLectura,
   editando,
@@ -530,6 +537,7 @@ function FragmentoGrupo({
   totalPorFila: Map<number, number>;
   filtroPlantel: number;
   planteles: PlantelOpc[];
+  elementos: string[];
   resaltarEditables: boolean;
   soloLectura: boolean;
   editando: { clienteId: number; iso: string; solicitudId: number | null } | null;
@@ -582,6 +590,7 @@ function FragmentoGrupo({
                   entradas={entradas}
                   editable={editable}
                   planteles={planteles}
+              elementos={elementos}
                   abbrDe={abbrDe}
                   editando={editando}
                   onEditar={onEditar}
@@ -614,6 +623,7 @@ function CeldasDia({
   entradas,
   editable,
   planteles,
+  elementos,
   abbrDe,
   editando,
   onEditar,
@@ -626,6 +636,7 @@ function CeldasDia({
   entradas: Celda[];
   editable: boolean;
   planteles: PlantelOpc[];
+  elementos: string[];
   abbrDe: Map<number, string>;
   editando: { clienteId: number; iso: string; solicitudId: number | null } | null;
   onEditar: (clienteId: number, iso: string, solicitudId: number | null) => void;
@@ -646,6 +657,7 @@ function CeldasDia({
             solicitudId={entrada.id}
             celda={entrada}
             planteles={planteles}
+            elementos={elementos}
             onCancelar={onCerrar}
             onGuardado={onGuardado}
           />
@@ -668,6 +680,7 @@ function CeldasDia({
           solicitudId={null}
           celda={null}
           planteles={planteles}
+          elementos={elementos}
           onCancelar={onCerrar}
           onGuardado={onGuardado}
         />
@@ -815,6 +828,7 @@ function CeldaEditor({
   solicitudId,
   celda,
   planteles,
+  elementos,
   onCancelar,
   onGuardado,
 }: {
@@ -823,6 +837,7 @@ function CeldaEditor({
   solicitudId: number | null; // null = nueva proyección
   celda: Celda | null;
   planteles: PlantelOpc[];
+  elementos: string[];
   onCancelar: () => void;
   onGuardado: () => void;
 }) {
@@ -904,11 +919,16 @@ function CeldaEditor({
           </option>
         ))}
       </select>
-      <input
-        className={inputCls}
+      {/* Elemento: desplegable con buscador que ADEMÁS acepta uno que no esté en la
+          lista. La lista la administra el Admin (Administración › Elementos); en obra
+          aparecen elementos que nadie dio de alta, así que el campo nunca deja de ser
+          texto libre. */}
+      <ComboLibre
+        valor={elemento}
+        onChange={setElemento}
+        opciones={elementos}
         placeholder="Elemento (pavimento, losa…)"
-        value={elemento}
-        onChange={(e) => setElemento(e.target.value)}
+        etiquetaNuevo="se guardará tal como lo escribiste"
       />
       <select className={inputCls} value={tipoDescarga} onChange={(e) => setTipoDescarga(e.target.value)}>
         <option value="">Descarga…</option>

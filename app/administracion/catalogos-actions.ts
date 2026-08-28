@@ -20,7 +20,8 @@ export type Catalogo =
   | "disenos"
   | "capacidades_reducidas"
   | "configuracion_recargos"
-  | "umbrales_ocio_puesto";
+  | "umbrales_ocio_puesto"
+  | "elementos";
 
 type Datos = Record<string, string>;
 type Res = { ok: boolean; mensaje?: string };
@@ -140,6 +141,13 @@ function construir(catalogo: Catalogo, d: Datos): Record<string, unknown> {
         revenimiento: s(d.revenimiento) || "-",
         aditivo_especial: sNull(d.aditivo_especial),
       };
+    case "elementos":
+      return {
+        nombre: s(d.nombre),
+        // Inactivo = deja de ofrecerse en el desplegable, pero NO se borra: los pedidos
+        // y las proyecciones que ya lo usan guardan el texto, no una llave.
+        activo: s(d.activo) === "" ? true : s(d.activo) !== "false",
+      };
     case "capacidades_reducidas":
       return {
         capacidad_nominal_m3: int(d.capacidad_nominal_m3),
@@ -178,6 +186,7 @@ function modelo(catalogo: Catalogo) {
     capacidades_reducidas: prisma.capacidades_reducidas,
     configuracion_recargos: prisma.configuracion_recargos,
     umbrales_ocio_puesto: prisma.umbrales_ocio_puesto,
+    elementos: prisma.elementos,
   } as const;
   return mapa[catalogo];
 }

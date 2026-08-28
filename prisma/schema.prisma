@@ -404,6 +404,19 @@ model capacidades_reducidas {
   capacidad_efectiva_m3 Int // carga real utilizable con acceso difícil
 }
 
+// ── Catalogo de ELEMENTOS de obra ──────────────────────────────────────────
+// Los elementos que se funden (pavimento, losa, muro, zapata…). Es un catalogo de
+// SUGERENCIAS, no una llave: `pedidos.elemento` y `solicitudes_anticipadas.elemento`
+// siguen siendo texto libre a proposito, porque en obra aparecen elementos que nadie
+// dio de alta y el asesor no puede quedarse sin poder escribirlos. El catalogo existe
+// para que lo habitual se elija de una lista y no se escriba de diez maneras distintas.
+model elementos {
+  id        Int      @id @default(autoincrement())
+  nombre    String   @unique
+  activo    Boolean  @default(true) // inactivo = no se ofrece, pero no se borra el historial
+  creado_en DateTime @default(now())
+}
+
 // ── Bombas ─────────────────────────────────────────────────────────────────
 // Bombas asignadas a un pedido. Un pedido puede necesitar VARIAS (obras grandes con
 // dos o mas equipos de bombeo colocando a la vez) y una bomba atiende varios pedidos
