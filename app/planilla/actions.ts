@@ -10,7 +10,13 @@ import {
   type DatosAsistencia,
 } from "@/lib/asistencia/registro";
 
-export type { DatosAsistencia };
+// OJO: aquí NO se puede re-exportar el tipo (`export type { DatosAsistencia }`). Un
+// archivo `"use server"` solo puede exportar funciones async: el loader de acciones de
+// Next genera un re-export por CADA export que encuentra y lo trata como VALOR, así que
+// un tipo re-exportado se vuelve `export { DatosAsistencia }` y al evaluar el módulo
+// revienta con `ReferenceError: DatosAsistencia is not defined`. `tsc` no lo detecta
+// (el re-export de tipos es válido para él); solo se ve al usar la pantalla.
+// Quien necesite el tipo lo importa de `@/lib/asistencia/registro`.
 
 type Res = { ok: boolean; mensaje?: string };
 
