@@ -17,7 +17,13 @@ import {
   ymdLocal,
 } from "@/lib/produccion/calendario";
 import { produccionDelMes, type ProduccionMes } from "@/lib/produccion/consulta";
-import { accesoCalendario } from "@/lib/produccion/acceso";
+import { accesoCalendario, accesoTendencia, acotarSeleccion } from "@/lib/produccion/acceso";
+import { plantelesCatalogo } from "@/lib/catalogos-cache";
+import { colorPorPlantel } from "@/lib/color-plantel";
+import { COOKIE_TENDENCIA, leerPreferencia } from "@/lib/produccion/tendencia";
+import { datosTendenciaAction } from "./tendencia-actions";
+import { TendenciaProduccion } from "./tendencia-produccion";
+import { cookies } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
@@ -126,6 +132,31 @@ export default async function Panel({
       hijos: x.plantas.map((pa) => ({ etiqueta: pa.nombre, m3: pa.m3, viajes: pa.viajes })),
     }));
   }
+  // ── Gráfico de tendencia (a la derecha del calendario) ────────────────────
+  // Su acceso es propio (`accesoTendencia`): el eje es por PLANTEL, así que el Asesor
+  // —cuyo alcance es por cliente— no lo ve; su calendario sigue mostrando lo suyo.
+  // La preferencia (granularidad + selección) viaja en una cookie y se lee AQUÍ, en el
+  // servidor, para que el gráfico abra donde el usuario lo dejó y sin parpadeo.
+  const catalogoPlanteles = (await plantelesCatalogo()).map((p) => ({
+    id: p.id,
+    nombre: p.nombre,
+    zona: p.zona,
+  }));
+  const accTend = accesoTendencia(alcance, catalogoPlanteles);
+  const pref = leerPreferencia((await cookies()).get(COOKIE_TENDENCIA)?.value);
+  const selInicial = acotarSeleccion(pref.sel, accTend);
+  // El gráfico abre en el MISMO periodo que el calendario de la izquierda: en modo
+  // Semana eso son las semanas de ese mes, y en modo Mes los 12 meses de ese año.
+  const anclaTendencia = new Date(anio, mes - 1, 1).getTime();
+  const tendencia =
+    accTend.visible && !accTend.faltaZona
+      ? await datosTendenciaAction({
+          granularidad: pref.g,
+          refMs: anclaTendencia,
+          plantelIds: selInicial,
+        })
+      : null;
+
   const mesIso = `${anio}-${String(mes).padStart(2, "0")}`;
   const enlaceProd = (mesIso: string, zona: string | undefined) => {
     const q = new URLSearchParams();
@@ -177,9 +208,13 @@ export default async function Panel({
         />
       </div>
 
+      {/* Producción: calendario a la izquierda y tendencia a la derecha. Se ponen en
+          fila desde `xl` y no desde `lg`: en una laptop de 1024 px cada mitad quedaría
+          más angosta que la cuadrícula del calendario (420 px) y aparecería scroll
+          horizontal. En tablet y celular se apilan. */}
+      <div className="mt-6 flex flex-col gap-4 xl:flex-row xl:items-start">
       {acceso.visible && (
-        /* La mitad del ancho en pantallas grandes; completo en tablet/celular. */
-        <Card className="mt-6 p-4 lg:w-1/2">
+        <Card className="p-4 xl:w-1/2">
           {acceso.faltaZona ? (
             <p className="text-sm text-muted">
               Tu usuario no tiene una zona asignada, así que no se puede mostrar la
@@ -212,10 +247,39 @@ export default async function Panel({
                   : []
               }
               hoyIso={ymdLocal(new Date())}
+              // Comparte la fila con el gráfico: etiquetas de una letra y m³ enteros.
+              compacto={accTend.visible}
             />
           )}
         </Card>
       )}
+
+      {accTend.visible && (
+        <Card className="p-4 xl:w-1/2">
+          {accTend.faltaZona ? (
+            <p className="text-sm text-muted">
+              Tu usuario no tiene una zona asignada, así que no se puede mostrar la
+              tendencia. Pídele a un administrador que te asigne una zona.
+            </p>
+          ) : tendencia?.ok && tendencia.datos ? (
+            <TendenciaProduccion
+              inicial={tendencia.datos}
+              planteles={accTend.planteles.map((p) => ({
+                id: p.id,
+                nombre: p.nombre,
+                color: colorPorPlantel(p.id),
+              }))}
+              etiquetaTotal={accTend.etiquetaTotal}
+              seleccionInicial={selInicial}
+            />
+          ) : (
+            <p className="text-sm text-muted">
+              {tendencia?.mensaje ?? "No se pudo cargar la tendencia de producción."}
+            </p>
+          )}
+        </Card>
+      )}
+      </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <AccesoRapido

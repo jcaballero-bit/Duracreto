@@ -108,3 +108,108 @@ export function accesoCalendario(
   // 5. Laboratorista, Dosificador y cualquier rol futuro: no lo ven.
   return OCULTO;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────
+// Gráfico de TENDENCIA (a la derecha del calendario)
+// ─────────────────────────────────────────────────────────────────────────────────────
+
+export interface AccesoTendencia {
+  /** false = el rol no ve el gráfico (no se consulta ni se renderiza). */
+  visible: boolean;
+  /** Planteles que puede graficar, ya acotados a su alcance. Vacío = ninguno. */
+  planteles: { id: number; nombre: string; zona: string }[];
+  /** Texto del botón de total, para que no se confunda con el nacional. */
+  etiquetaTotal: string;
+  /** El rol se limita por zona pero el usuario no tiene zona asignada. */
+  faltaZona: boolean;
+}
+
+const SIN_TENDENCIA: AccesoTendencia = {
+  visible: false,
+  planteles: [],
+  etiquetaTotal: "",
+  faltaZona: false,
+};
+
+/**
+ * Qué planteles puede GRAFICAR cada rol, y cómo se llama su "total".
+ *
+ * Sigue el mismo orden de reglas que `accesoCalendario` (gana el rol más amplio) y hay
+ * una prueba que comprueba que los dos coinciden: los planteles que este selector ofrece
+ * son exactamente los que el filtro del calendario dejaría pasar.
+ *
+ * Una diferencia deliberada: el **Asesor** NO ve el gráfico. Su alcance es por CLIENTE,
+ * no por plantel, así que un eje de planteles le mostraría volumen de clientes que no son
+ * suyos — y "Total" sería el total de la empresa. Su calendario sigue mostrando lo suyo,
+ * que es la vista que le corresponde.
+ *
+ * El "total" se nombra según el alcance ("Total nacional" / "Total Zona Norte" / "Total
+ * de tus planteles") para que nadie lea un total de zona como si fuera el de la empresa.
+ */
+export function accesoTendencia(
+  alcance: Alcance | null,
+  planteles: { id: number; nombre: string; zona: string }[],
+): AccesoTendencia {
+  if (!alcance) return SIN_TENDENCIA;
+
+  // 1. Acceso completo: todos los planteles y el total nacional.
+  if (alcance.esAdmin || alcance.esGerenteComercial || alcance.esGerenteControlCalidad) {
+    return {
+      visible: true,
+      planteles,
+      etiquetaTotal: "Total nacional",
+      faltaZona: false,
+    };
+  }
+
+  // 2. Jefe de Planta: SOLO sus planteles asignados, y el total de esos.
+  if (alcance.esJefePlanta) {
+    const suyos = new Set(alcance.plantelesAsignados);
+    const mios = planteles.filter((p) => suyos.has(p.id));
+    return {
+      visible: true,
+      planteles: mios,
+      etiquetaTotal: mios.length === 1 ? `Total ${mios[0].nombre}` : "Total de tus planteles",
+      faltaZona: false,
+    };
+  }
+
+  // 3. Roles limitados a SU zona: los planteles de esa zona, y el total de la ZONA.
+  if (
+    alcance.esProgramador ||
+    alcance.esDespachador ||
+    alcance.esJefeLaboratorio ||
+    alcance.esAlmacen
+  ) {
+    if (!alcance.zona) {
+      return { visible: true, planteles: [], etiquetaTotal: "", faltaZona: true };
+    }
+    return {
+      visible: true,
+      planteles: planteles.filter((p) => p.zona === alcance.zona),
+      etiquetaTotal: `Total Zona ${alcance.zona}`,
+      faltaZona: false,
+    };
+  }
+
+  // 4. Asesor, Laboratorista, Dosificador y cualquier rol futuro: no lo ven.
+  return SIN_TENDENCIA;
+}
+
+/**
+ * Acota una selección de planteles que llega del NAVEGADOR al alcance real del usuario.
+ *
+ * Es la validación server-side de la selección: filtrar el desplegable en la pantalla no
+ * es una restricción. Devuelve `null` (= total de su alcance) cuando la selección viene
+ * vacía o nada de lo pedido está permitido, así el gráfico nunca queda sin datos por un
+ * parámetro manipulado.
+ */
+export function acotarSeleccion(
+  pedidos: number[] | null | undefined,
+  acceso: AccesoTendencia,
+): number[] | null {
+  if (!pedidos || pedidos.length === 0) return null;
+  const permitidos = new Set(acceso.planteles.map((p) => p.id));
+  const ok = [...new Set(pedidos)].filter((id) => permitidos.has(id));
+  return ok.length > 0 ? ok.sort((a, b) => a - b) : null;
+}

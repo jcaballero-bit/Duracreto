@@ -47,6 +47,12 @@ export interface CalendarioProps {
   zonas: { valor: string; etiqueta: string; href: string }[];
   /** "YYYY-MM-DD" de hoy: la celda del día en curso se marca. */
   hoyIso: string;
+  /**
+   * Modo estrecho: el calendario comparte la fila con el gráfico de tendencia, así que
+   * las etiquetas de día van de UNA letra y los volúmenes de la celda sin decimales
+   * (el valor exacto sigue en el tooltip y en los totales de arriba). Ahorra ~90 px.
+   */
+  compacto?: boolean;
 }
 
 /**
@@ -149,13 +155,18 @@ export function CalendarioProduccion(p: CalendarioProps) {
 
       {/* ── Cuadrícula: una fila por semana, columnas domingo→sábado ── */}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[420px] table-fixed border-separate border-spacing-[2px] text-sm">
+        <table
+            className={
+              "w-full table-fixed border-separate border-spacing-[2px] text-sm " +
+              (p.compacto ? "min-w-[330px]" : "min-w-[420px]")
+            }
+          >
           <thead>
             <tr className="text-[11px] tracking-wide text-muted">
               <th className="w-11 font-medium" />
               {DIAS_SEMANA.map((d) => (
                 <th key={d} className="pb-0.5 font-medium">
-                  {d}
+                  {p.compacto ? d.charAt(0).toUpperCase() : d}
                 </th>
               ))}
               <th className="w-16 pb-0.5 text-right font-medium">total</th>
@@ -200,7 +211,7 @@ export function CalendarioProduccion(p: CalendarioProps) {
                           {d.dia}
                         </span>
                         <span className="text-[13px] leading-none font-semibold tabular-nums">
-                          {nivel > 0 ? d.m3.toFixed(1) : ""}
+                          {nivel > 0 ? (p.compacto ? Math.round(d.m3) : d.m3.toFixed(1)) : ""}
                         </span>
                       </button>
                     </td>
