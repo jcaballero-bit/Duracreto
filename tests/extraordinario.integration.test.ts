@@ -12,6 +12,7 @@ import { calcularExtraordinario, leerCostoFicha } from "@/lib/extraordinario/met
 import { alcanceDeParams, rangoDeParams } from "@/lib/extraordinario/filtro";
 import { calcularAlcance } from "@/lib/auth/acceso";
 import { reporteACsv } from "@/lib/extraordinario/csv";
+import { resumirMotoristas } from "@/lib/extraordinario/metricas";
 
 let esAdmin = true;
 
@@ -675,5 +676,113 @@ describe("solo cuenta lo que SALIÓ de planta", () => {
     // Lo que NO puede pasar es que incluya los 12 que nunca salieron.
     expect(r.ejecutivo.volumenTotal).toBe(24);
     expect(r.ejecutivo.volumenTotal).toBeGreaterThanOrEqual(17);
+  });
+});
+
+describe("pie de la tabla de motoristas: totales y promedios", () => {
+  it("los totales son la suma de las filas y el promedio se divide entre los motoristas", async () => {
+    const { norte, clienteId, disenoId } = await escenario();
+    const base = { plantelId: norte.plantelId, plantaId: norte.plantaId, clienteId, disenoId };
+    const uno = await prisma.operadores.create({ data: { nombre: "Mot Uno" } });
+    const dos = await prisma.operadores.create({ data: { nombre: "Mot Dos" } });
+    // Uno: 3 viajes en 2 dias (30 m3). Dos: 1 viaje en 1 dia (10 m3).
+    await crearViaje({ ...base, salida: en(18, 10), volumen: 10, operadorId: uno.id });
+    await crearViaje({ ...base, salida: en(18, 16, 30), volumen: 10, operadorId: uno.id });
+    await crearViaje({ ...base, salida: en(19, 10), volumen: 10, operadorId: uno.id });
+    await crearViaje({ ...base, salida: en(20, 10), volumen: 10, operadorId: dos.id });
+
+    const r = await calcularExtraordinario({ ...RANGO, plantelIds: [norte.plantelId] });
+    const rm = resumirMotoristas(r.porMotorista);
+
+    expect(rm.motoristas).toBe(2);
+    expect(rm.viajes).toBe(4);
+    expect(rm.volumen).toBe(40);
+    expect(rm.dias).toBe(3); // 2 de Uno + 1 de Dos
+    expect(rm.viajesExtra).toBe(1); // solo el de las 16:30
+
+    // Promedios POR MOTORISTA.
+    expect(rm.promViajes).toBe(2); // 4 / 2
+    expect(rm.promVolumen).toBe(20); // 40 / 2
+    expect(rm.promDias).toBe(1.5); // 3 / 2
+    expect(rm.promViajesExtra).toBe(0.5); // 1 / 2
+  });
+
+  it("viajes/dia del conjunto NO es el promedio de los promedios de cada fila", async () => {
+    // El caso que lo distingue: uno hizo 3 viajes en 1 dia (3.0/dia) y otro 1 en 1 dia
+    // (1.0/dia). El promedio de los promedios daria 2.0; el dato real del conjunto es
+    // 4 viajes / 2 dias = 2.0… así que se fuerza un caso donde SÍ difieren: 4 viajes en
+    // 1 dia y 1 viaje en 3 dias.
+    const { norte, clienteId, disenoId } = await escenario();
+    const base = { plantelId: norte.plantelId, plantaId: norte.plantaId, clienteId, disenoId };
+    const uno = await prisma.operadores.create({ data: { nombre: "Mot Intenso" } });
+    const dos = await prisma.operadores.create({ data: { nombre: "Mot Disperso" } });
+    // Uno: 4 viajes el mismo dia -> 4.0 viajes/dia.
+    for (const h of [8, 9, 10, 11]) {
+      await crearViaje({ ...base, salida: en(18, h), volumen: 5, operadorId: uno.id });
+    }
+    // Dos: 3 viajes en 3 dias distintos -> 1.0 viajes/dia.
+    for (const d of [19, 20, 21]) {
+      await crearViaje({ ...base, salida: en(d, 9), volumen: 5, operadorId: dos.id });
+    }
+
+    const r = await calcularExtraordinario({ ...RANGO, plantelIds: [norte.plantelId] });
+    const rm = resumirMotoristas(r.porMotorista);
+
+    const promDePromedios =
+      r.porMotorista.reduce((a, f) => a + f.promedioViajesDia, 0) / r.porMotorista.length;
+    expect(promDePromedios).toBeCloseTo(2.5, 5); // (4.0 + 1.0) / 2
+
+    // El dato del conjunto: 7 viajes en 4 dias.
+    expect(rm.viajes).toBe(7);
+    expect(rm.dias).toBe(4);
+    expect(rm.viajesPorDia).toBeCloseTo(1.75, 5);
+    // Y por eso no se muestra el promedio de los promedios: son numeros distintos.
+    expect(rm.viajesPorDia).not.toBeCloseTo(promDePromedios, 2);
+  });
+
+  it("sin motoristas no divide por cero", () => {
+    const rm = resumirMotoristas([]);
+    expect(rm).toMatchObject({ motoristas: 0, viajes: 0, promViajes: 0, viajesPorDia: 0 });
+  });
+
+  it("el CSV trae el mismo pie que la pantalla", async () => {
+    const { norte, clienteId, disenoId } = await escenario();
+    const base = { plantelId: norte.plantelId, plantaId: norte.plantaId, clienteId, disenoId };
+    const uno = await prisma.operadores.create({ data: { nombre: "Mot CSV" } });
+    await crearViaje({ ...base, salida: en(18, 10), volumen: 8, operadorId: uno.id });
+    await crearViaje({ ...base, salida: en(19, 16, 30), volumen: 9, operadorId: uno.id });
+
+    const r = await calcularExtraordinario({ ...RANGO, plantelIds: [norte.plantelId] });
+    const csv = reporteACsv(r, {
+      desde: "2026-08-01",
+      hasta: "2026-08-31",
+      alcance: "Plantel SM Extra",
+      generadoPor: "Admin Prueba",
+      generadoEn: "27/08/2026, 10:00",
+    });
+
+    const rm = resumirMotoristas(r.porMotorista);
+    expect(rm.viajes).toBe(2);
+    expect(rm.volumen).toBe(17);
+
+    // La línea del pie del archivo lleva los MISMOS números que la derivación que usa la
+    // pantalla: es el mismo reporte por dos caminos y no puede desviarse.
+    // Se parte por salto de linea y se limpia el retorno de carro: el CSV va con
+    // CRLF (la convencion Excel-friendly del proyecto).
+    const lineas = csv.split("\n").map((l) => l.replace("\r", ""));
+    const lineaTotal = lineas.find((l) => l.startsWith("TOTAL (1 motoristas)"));
+    expect(lineaTotal, "falta la fila TOTAL en el CSV").toBeDefined();
+    expect(lineaTotal!.split(";").slice(0, 4)).toEqual([
+      "TOTAL (1 motoristas)",
+      String(rm.viajes),
+      String(rm.volumen),
+      String(rm.dias),
+    ]);
+
+    const lineaProm = lineas.find((l) => l.startsWith("PROMEDIO POR MOTORISTA"));
+    expect(lineaProm, "falta la fila PROMEDIO en el CSV").toBeDefined();
+    // La columna de viajes/dia va VACIA en el promedio (promediar promedios no
+    // corresponde a ningun conjunto real de viajes y dias).
+    expect(lineaProm!.split(";")[4]).toBe("");
   });
 });

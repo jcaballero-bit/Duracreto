@@ -159,6 +159,54 @@ export interface ResumenExtraordinario {
 
 const DIAS_SEMANA = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
 const pad = (n: number) => String(n).padStart(2, "0");
+/** Totales y promedios del análisis por motorista (pie de la tabla). */
+export interface ResumenMotoristas {
+  motoristas: number;
+  /** Totales de la columna. */
+  viajes: number;
+  volumen: number;
+  dias: number;
+  viajesExtra: number;
+  /** Promedios POR MOTORISTA. */
+  promViajes: number;
+  promVolumen: number;
+  promDias: number;
+  promViajesExtra: number;
+  /**
+   * Viajes por día del conjunto = viajes TOTALES / días TOTALES.
+   *
+   * NO es el promedio de los promedios de cada fila: eso pesaría igual a quien trabajó un
+   * día que a quien trabajó veinte, y daría un número que no corresponde a ningún
+   * conjunto real de viajes y días.
+   */
+  viajesPorDia: number;
+}
+
+/**
+ * Deriva el pie de la tabla de motoristas. Es puro y vive aquí —no en la pantalla— para
+ * que el CSV y la vista usen la MISMA definición: son el mismo reporte por dos caminos.
+ */
+export function resumirMotoristas(filas: FilaMotorista[]): ResumenMotoristas {
+  const n = filas.length;
+  const viajes = filas.reduce((a, f) => a + f.viajes, 0);
+  const volumen = filas.reduce((a, f) => a + f.volumen, 0);
+  const dias = filas.reduce((a, f) => a + f.diasTrabajados, 0);
+  const viajesExtra = filas.reduce((a, f) => a + f.viajesExtra, 0);
+  const div = (x: number, y: number) => (y > 0 ? x / y : 0);
+  return {
+    motoristas: n,
+    viajes,
+    volumen: Math.round(volumen * 100) / 100,
+    dias,
+    viajesExtra,
+    promViajes: div(viajes, n),
+    promVolumen: div(volumen, n),
+    promDias: div(dias, n),
+    promViajesExtra: div(viajesExtra, n),
+    viajesPorDia: div(viajes, dias),
+  };
+}
+
 const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const pct = (parte: number, total: number) => (total > 0 ? r2((parte / total) * 100) : 0);

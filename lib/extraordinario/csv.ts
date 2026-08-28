@@ -6,6 +6,7 @@
  * la directiva `sep=;` y saltos CRLF, la misma convención de `lib/csv.ts`.
  */
 import { textoMin } from "@/lib/planilla/recargos";
+import { resumirMotoristas } from "@/lib/extraordinario/metricas";
 import type { ResumenExtraordinario } from "./metricas";
 
 const DELIM = ";";
@@ -32,6 +33,8 @@ export interface MetaReporte {
   generadoPor: string;
   generadoEn: string;
 }
+
+const r2 = (v: number) => Math.round(v * 100) / 100;
 
 export function reporteACsv(r: ResumenExtraordinario, meta: MetaReporte): string {
   const L: string[] = [];
@@ -111,6 +114,15 @@ export function reporteACsv(r: ResumenExtraordinario, meta: MetaReporte): string
   L.push(fila("Motorista", "Viajes totales", "Volumen total (m3)", "Dias trabajados", "Promedio viajes/dia", "Viajes en hora extra", "Plantas donde opero"));
   for (const m of r.porMotorista) {
     L.push(fila(m.nombre, m.viajes, m.volumen, m.diasTrabajados, m.promedioViajesDia, m.viajesExtra, m.plantas.join(" / ")));
+  }
+  if (r.porMotorista.length > 0) {
+    // Mismo pie que la pantalla, con la misma derivacion: el archivo no puede desviarse
+    // de lo que se ve. En "viajes/dia" el TOTAL lleva viajes totales / dias totales, y el
+    // PROMEDIO deja esa columna vacia a proposito (promediar promedios no corresponde a
+    // ningun conjunto real de viajes y dias).
+    const rm = resumirMotoristas(r.porMotorista);
+    L.push(fila(`TOTAL (${rm.motoristas} motoristas)`, rm.viajes, rm.volumen, rm.dias, r2(rm.viajesPorDia), rm.viajesExtra, ""));
+    L.push(fila("PROMEDIO POR MOTORISTA", r2(rm.promViajes), r2(rm.promVolumen), r2(rm.promDias), "", r2(rm.promViajesExtra), ""));
   }
 
   seccion("Estadisticas de hora de salida por planta");

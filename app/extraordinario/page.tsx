@@ -1,7 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { requerirAcceso } from "@/lib/auth/guard";
 import { Card, PageHeader } from "../components/ui";
-import { calcularExtraordinario } from "@/lib/extraordinario/metricas";
+import { calcularExtraordinario,
+  resumirMotoristas,
+} from "@/lib/extraordinario/metricas";
 import { alcanceDeParams, rangoDeParams } from "@/lib/extraordinario/filtro";
 import { textoMin } from "@/lib/planilla/recargos";
 import { textoLempiras } from "@/lib/planilla/salario";
@@ -73,6 +75,9 @@ export default async function ExtraordinarioPage({
 
   const e = r.ejecutivo;
   const a = r.absorcion;
+  // Pie de la tabla de motoristas (totales + promedio por motorista). La derivación vive
+  // en el módulo de métricas para que el CSV use la misma.
+  const rm = resumirMotoristas(r.porMotorista);
   const sobreUmbral = (p: number) => p > r.umbralPct;
   const filaResalta = "bg-amber-50";
 
@@ -395,7 +400,8 @@ export default async function ExtraordinarioPage({
         <h2 className="text-lg font-semibold text-ink">Análisis por motorista</h2>
         <p className="mb-3 text-xs text-muted">
           Agrupado por el motorista registrado en el viaje, no por su nombre escrito: nadie aparece
-          dos veces por una variante de escritura.
+          dos veces por una variante de escritura. Al pie, los totales del periodo y el
+          promedio por motorista.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px] text-sm">
@@ -434,6 +440,55 @@ export default async function ExtraordinarioPage({
                 </tr>
               ))}
             </tbody>
+            {r.porMotorista.length > 0 && (
+              /* Pie con TOTAL y PROMEDIO, en el mismo estilo que las otras dos tablas del
+                 reporte. El total va porque un promedio de "Viajes" no se puede juzgar
+                 sin él. */
+              <tfoot>
+                <tr className="border-t-2 border-border font-semibold">
+                  <td className="px-2 py-2 text-ink">
+                    TOTAL{" "}
+                    <span className="text-xs font-normal text-muted">
+                      ({rm.motoristas} motorista{rm.motoristas === 1 ? "" : "s"})
+                    </span>
+                  </td>
+                  <td className="px-2 py-2 text-right tabular-nums text-ink">{rm.viajes}</td>
+                  <td className="px-2 py-2 text-right tabular-nums text-ink">
+                    {rm.volumen.toFixed(2)}
+                  </td>
+                  <td className="px-2 py-2 text-right tabular-nums text-ink">{rm.dias}</td>
+                  <td className="px-2 py-2 text-right tabular-nums text-ink">
+                    {rm.viajesPorDia.toFixed(1)}
+                  </td>
+                  <td className="px-2 py-2 text-right tabular-nums text-ink">
+                    {rm.viajesExtra}
+                  </td>
+                  <td className="px-2 py-2" />
+                </tr>
+                <tr className="text-xs text-muted">
+                  <td className="px-2 py-1.5">PROMEDIO POR MOTORISTA</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {rm.promViajes.toFixed(1)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {rm.promVolumen.toFixed(2)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {rm.promDias.toFixed(1)}
+                  </td>
+                  {/* Esta celda queda vacía a propósito: el promedio de los promedios de
+                      cada fila no corresponde a ningún conjunto real de viajes y días. El
+                      dato del conjunto ya está arriba, en la fila TOTAL. */}
+                  <td className="px-2 py-1.5 text-right text-muted/50" title="Ver la fila TOTAL: viajes totales entre días totales">
+                    —
+                  </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">
+                    {rm.promViajesExtra.toFixed(1)}
+                  </td>
+                  <td className="px-2 py-1.5" />
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </Card>
