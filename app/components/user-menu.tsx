@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ChevronUp, LogOut, Settings } from "lucide-react";
+import { ChevronUp, Info, LogOut, Settings } from "lucide-react";
 import { cerrarSesionAction } from "../auth-actions";
 import { InstallApp } from "./install-app";
+import { AcercaDe } from "./acerca-de";
+import type { InfoVersion } from "@/lib/version";
 
 function iniciales(nombre: string): string {
   return (
@@ -26,12 +28,16 @@ export function UserMenu({
   nombre,
   email,
   roles,
+  version,
 }: {
   nombre: string;
   email: string;
   roles: string[];
+  /** Sello de versión del despliegue, para el panel "Acerca de". */
+  version: InfoVersion;
 }) {
   const [abierto, setAbierto] = useState(false);
+  const [acercaDe, setAcercaDe] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
 
@@ -54,6 +60,7 @@ export function UserMenu({
 
   return (
     <div className="relative px-3 pb-4 pt-2" ref={ref}>
+      {acercaDe && <AcercaDe info={version} onCerrar={() => setAcercaDe(false)} />}
       {abierto && (
         <div className="absolute inset-x-3 bottom-full mb-2 overflow-hidden rounded-xl bg-white text-slate-800 shadow-xl ring-1 ring-black/5">
           <div className="border-b border-slate-100 px-4 py-3">
@@ -68,6 +75,15 @@ export function UserMenu({
             <Settings size={16} /> Configuración
           </Link>
           <InstallApp onAccion={() => setAbierto(false)} />
+          <button
+            onClick={() => {
+              setAbierto(false);
+              setAcercaDe(true);
+            }}
+            className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+          >
+            <Info size={16} /> Acerca de DURACRETO Logistics
+          </button>
           <form action={cerrarSesionAction} className="border-t border-slate-100">
             <button
               type="submit"

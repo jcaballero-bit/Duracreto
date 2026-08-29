@@ -6,6 +6,7 @@ import { PanelLeftClose } from "lucide-react";
 import { puedeAccederRuta } from "@/lib/auth/acceso";
 import { NAV, etiquetaNav } from "./nav";
 import { UserMenu } from "./user-menu";
+import type { InfoVersion } from "@/lib/version";
 
 export interface UsuarioShell {
   nombre: string;
@@ -23,9 +24,11 @@ function esActivo(pathname: string, href: string, activePrefixes?: string[]): bo
 
 export function Sidebar({
   usuario,
+  version,
   onOcultar,
 }: {
   usuario: UsuarioShell;
+  version: InfoVersion;
   /** Oculta el menú (lo pasa el shell, que también ajusta el ancho del contenido). */
   onOcultar?: () => void;
 }) {
@@ -63,8 +66,12 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Navegación */}
-      <nav className="flex-1 space-y-1 px-3 py-2">
+      {/* Navegación. `overflow-y-auto` + `min-h-0`: la lista de ítems crece con cada
+          sección nueva y ya no cabe en pantallas bajas. Con esto la lista se desplaza
+          sola y el logo (arriba) y el menú de usuario (abajo) quedan siempre visibles.
+          El `min-h-0` es imprescindible: sin él, un hijo `flex-1` no se encoge por
+          debajo de su contenido y el scroll nunca aparece. */}
+      <nav className="nav-scroll min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
         {items.map((item) => {
           const activo = esActivo(pathname, item.href, item.activePrefixes);
           const Icon = item.icon;
@@ -87,7 +94,12 @@ export function Sidebar({
 
       {/* Menú de usuario (correo, Configuración, Cerrar sesión) */}
       <div className="border-t border-white/5">
-        <UserMenu nombre={usuario.nombre} email={usuario.email} roles={usuario.roles} />
+        <UserMenu
+          nombre={usuario.nombre}
+          email={usuario.email}
+          roles={usuario.roles}
+          version={version}
+        />
       </div>
     </aside>
   );

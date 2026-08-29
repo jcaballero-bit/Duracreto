@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { PanelLeftOpen } from "lucide-react";
 import { tituloDeRuta } from "./nav";
 import { MobileNav } from "./mobile-nav";
+import type { InfoVersion } from "@/lib/version";
 
 export interface UsuarioSesion {
   nombre: string;
@@ -14,10 +15,12 @@ export interface UsuarioSesion {
 
 export function Topbar({
   usuario,
+  version,
   menuOculto = false,
   onMostrarMenu,
 }: {
   usuario: UsuarioSesion;
+  version: InfoVersion;
   /** true = el menú lateral está oculto: aparece el botón para traerlo de vuelta. */
   menuOculto?: boolean;
   onMostrarMenu?: () => void;
@@ -28,7 +31,7 @@ export function Topbar({
   return (
     <header className="print-hide sticky top-0 z-10 flex items-center justify-between border-b border-border bg-surface px-4 py-3 md:px-6">
       <div className="flex items-center gap-2">
-        <MobileNav usuario={usuario} />
+        <MobileNav usuario={usuario} version={version} />
         {/* Solo en escritorio: en celular el menú vive en el drawer del hamburguesa. */}
         {menuOculto && onMostrarMenu && (
           <button

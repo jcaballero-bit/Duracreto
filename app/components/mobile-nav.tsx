@@ -8,6 +8,7 @@ import { puedeAccederRuta } from "@/lib/auth/acceso";
 import { NAV, etiquetaNav, type ItemNav } from "./nav";
 import { UserMenu } from "./user-menu";
 import type { UsuarioShell } from "./sidebar";
+import type { InfoVersion } from "@/lib/version";
 
 function esActivo(pathname: string, item: ItemNav): boolean {
   if (item.href === "/") return pathname === "/";
@@ -16,7 +17,13 @@ function esActivo(pathname: string, item: ItemNav): boolean {
 }
 
 /** Menú de navegación para móvil/tablet (el sidebar fijo está oculto en < md). */
-export function MobileNav({ usuario }: { usuario: UsuarioShell }) {
+export function MobileNav({
+  usuario,
+  version,
+}: {
+  usuario: UsuarioShell;
+  version: InfoVersion;
+}) {
   const [abierto, setAbierto] = useState(false);
   const pathname = usePathname();
   const items = NAV.filter((item) => puedeAccederRuta(usuario.roles, item.href));
@@ -60,7 +67,7 @@ export function MobileNav({ usuario }: { usuario: UsuarioShell }) {
               </button>
             </div>
 
-            <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
+            <nav className="nav-scroll min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
               {items.map((item) => {
                 const activo = esActivo(pathname, item);
                 const Icon = item.icon;
@@ -84,7 +91,12 @@ export function MobileNav({ usuario }: { usuario: UsuarioShell }) {
 
             {/* Menú de usuario (Configuración, Cerrar sesión) al pie del drawer */}
             <div className="border-t border-white/5">
-              <UserMenu nombre={usuario.nombre} email={usuario.email} roles={usuario.roles} />
+              <UserMenu
+                nombre={usuario.nombre}
+                email={usuario.email}
+                roles={usuario.roles}
+                version={version}
+              />
             </div>
           </aside>
         </div>

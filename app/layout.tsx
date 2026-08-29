@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { auth } from "@/auth";
 import { Shell } from "./components/shell";
+import { infoVersion } from "@/lib/version";
 import { RegistrarSW } from "./components/registrar-sw";
 import { InstallBanner } from "./components/install-banner";
 
@@ -48,7 +49,9 @@ export default async function RootLayout({
         <RegistrarSW />
         {usuario ? (
           <>
-            <Shell usuario={usuario}>{children}</Shell>
+            <Shell usuario={usuario} version={infoVersion()}>
+              {children}
+            </Shell>
             <InstallBanner />
           </>
         ) : (

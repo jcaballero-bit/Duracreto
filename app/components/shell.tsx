@@ -12,20 +12,30 @@
 import { useState, type ReactNode } from "react";
 import { Sidebar, type UsuarioShell } from "./sidebar";
 import { Topbar } from "./topbar";
+import type { InfoVersion } from "@/lib/version";
 
-export function Shell({ usuario, children }: { usuario: UsuarioShell; children: ReactNode }) {
+export function Shell({
+  usuario,
+  version,
+  children,
+}: {
+  usuario: UsuarioShell;
+  /** Sello de versión del despliegue, para el panel "Acerca de" del menú de usuario. */
+  version: InfoVersion;
+  children: ReactNode;
+}) {
   const [oculto, setOculto] = useState(false);
   const alternar = () => setOculto((prev) => !prev);
 
   return (
     <>
-      {!oculto && <Sidebar usuario={usuario} onOcultar={alternar} />}
+      {!oculto && <Sidebar usuario={usuario} version={version} onOcultar={alternar} />}
       <div
         className={
           "print-shell-wrap flex min-h-screen flex-col " + (oculto ? "" : "md:pl-[260px]")
         }
       >
-        <Topbar usuario={usuario} menuOculto={oculto} onMostrarMenu={alternar} />
+        <Topbar usuario={usuario} version={version} menuOculto={oculto} onMostrarMenu={alternar} />
         <main className="print-shell-main flex-1 px-4 py-4 md:px-6 md:py-6">{children}</main>
       </div>
     </>
