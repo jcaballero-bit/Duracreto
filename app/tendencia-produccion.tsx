@@ -20,6 +20,7 @@
 import { useCallback, useMemo, useRef, useState, useTransition } from "react";
 import { ChevronLeft, ChevronRight, Info, TrendingUp } from "lucide-react";
 import { datosTendenciaAction } from "./tendencia-actions";
+import { rutaMonotona } from "@/lib/curva-monotona";
 import {
   cortesEjeY,
   GRANULARIDADES,
@@ -319,12 +320,19 @@ export function TendenciaProduccion({
               />
             )}
 
-            {/* Líneas: 2px, uniones y extremos redondeados, sin relleno. */}
+            {/* Líneas: 2px, uniones y extremos redondeados, sin relleno.
+                El trazo es una curva MONÓTONA (`rutaMonotona`), no segmentos rectos ni una
+                Bézier libre: una curva libre puede dibujar entre dos meses un pico que
+                nunca existió —o bajar de cero entre un 0 y un valor alto— y en un gráfico
+                de producción alguien lo leería como real. La monótona pasa exactamente por
+                cada dato y nunca se sale del rango de los dos puntos que une.
+                Cada TRAMO continuo lleva su propio `path`: donde no hay dato (periodo
+                futuro) la línea se corta, la curva no se extiende hacia allá. */}
             {visibles.map((s) =>
               tramos(s.valores).map((tramo, k) => (
-                <polyline
+                <path
                   key={`${s.plantelId}-${k}`}
-                  points={tramo.map((pt) => `${x(pt.i)},${y(pt.v)}`).join(" ")}
+                  d={rutaMonotona(tramo.map((pt) => ({ x: x(pt.i), y: y(pt.v) })))}
                   fill="none"
                   stroke={s.color}
                   strokeWidth={2}
