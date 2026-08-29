@@ -29,6 +29,8 @@ export interface HitoVista {
   progTxt: string;
   realTxt: string | null;
   realLocal: string | null;
+  /** La hora real cae en otro DIA que la programada: casi siempre un error de captura. */
+  otroDia?: boolean;
   diffMin: number | null;
   tono: "ok" | "warn" | "danger" | null;
 }
@@ -921,10 +923,22 @@ function ColumnaHito({
       )}
 
       {h.diffMin != null && h.tono && (
-        <div className={`whitespace-nowrap text-[11px] font-semibold ${CLASE_DIFF[h.tono]}`}>
-          {h.diffMin > 0 ? "+" : ""}
-          {h.diffMin} min
-        </div>
+        h.otroDia ? (
+          /* Un desvio de dias no se lee en minutos: "-30571 min" no le dice nada a nadie.
+             Se muestra en dias y siempre en rojo, aunque el signo diga "adelantado". */
+          <div
+            className="whitespace-nowrap text-[11px] font-semibold text-danger"
+            title={`La hora real quedo en otra fecha que la programada (${h.diffMin} min). Revisa la fecha: casi siempre es un error de captura.`}
+          >
+            {h.diffMin > 0 ? "+" : "−"}
+            {Math.abs(Math.round(h.diffMin / 1440))} d · revisar fecha
+          </div>
+        ) : (
+          <div className={`whitespace-nowrap text-[11px] font-semibold ${CLASE_DIFF[h.tono]}`}>
+            {h.diffMin > 0 ? "+" : ""}
+            {h.diffMin} min
+          </div>
+        )
       )}
     </div>
   );

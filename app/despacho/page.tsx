@@ -61,6 +61,10 @@ function fmtHM(d: Date | null): string {
   if (!d) return "—";
   return d.toLocaleTimeString("es-HN", { hour: "2-digit", minute: "2-digit" });
 }
+/** "17/07" — solo se usa cuando la hora real cae en otro dia que la programada. */
+function fmtDM(d: Date): string {
+  return d.toLocaleDateString("es-HN", { day: "2-digit", month: "2-digit" });
+}
 function toLocalInput(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
@@ -84,13 +88,27 @@ function armarHito(
     programado && real
       ? Math.round((real.getTime() - programado.getTime()) / 60000)
       : null;
+  // Si la hora real cae en OTRO DIA que la programada, se muestra tambien la fecha.
+  // La tarjeta solo mostraba la hora, asi que un timestamp de otro dia se veia inocente
+  // ("11:00 a. m.") y la unica pista era el desvio en minutos — el caso real fue un viaje
+  // del 7 de agosto con la hora real en el 17 de julio, que salia como "-30571 min".
+  const otroDia =
+    programado != null &&
+    real != null &&
+    (real.getFullYear() !== programado.getFullYear() ||
+      real.getMonth() !== programado.getMonth() ||
+      real.getDate() !== programado.getDate());
+
   return {
     label,
     estado,
     campoReal,
     progTxt: fmtHM(programado),
-    realTxt: real ? fmtHM(real) : null,
+    realTxt: real ? (otroDia ? `${fmtDM(real)} ${fmtHM(real)}` : fmtHM(real)) : null,
     realLocal: real ? toLocalInput(real) : null,
+    // La pantalla lo marca en rojo aunque el desvio sea "adelantado": una hora real de
+    // otro dia casi siempre es un error de captura, no un viaje que salio antes.
+    otroDia,
     diffMin,
     tono: semaforo(diffMin),
   };

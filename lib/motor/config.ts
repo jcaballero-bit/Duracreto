@@ -183,5 +183,20 @@ export function fueDespachado(estado: string): boolean {
  * Umbrales (minutos) del semáforo de desvío real vs programado en Despacho.
  * A tiempo/adelantado ≤ VERDE → verde; ≤ AMARILLO → amarillo; mayor → rojo.
  */
+/**
+ * Ventana en DIAS dentro de la cual puede caer una hora real corregida a mano, medida
+ * desde el dia del viaje.
+ *
+ * Existe porque el editor de la hora real es un `datetime-local` y equivocarse en el
+ * segmento del dia o del mes es facil (son cajitas de dos digitos por las que se tabula).
+ * Un error asi guardaba en silencio una hora de semanas atras y despues el desvio salia
+ * como "-30571 min", que nadie puede interpretar.
+ *
+ * Es GENEROSA a proposito: un viaje que carga a las 23:00 y regresa a las 04:00 del dia
+ * siguiente es normal, y una correccion se puede capturar al dia siguiente. Lo que atrapa
+ * es el error de captura de dias o semanas, no el turno que cruza la medianoche.
+ */
+export const DIAS_MAX_CORRECCION_HORA_REAL = 2;
+
 export const DESVIO_VERDE_MAX_MIN = 5;
 export const DESVIO_AMARILLO_MAX_MIN = 15;

@@ -26,6 +26,7 @@ import {
   MIN_SALIDA_TRAS_CARGA,
   PERMITIR_HORA_CARGA_MANUAL,
   SECUENCIA_ESTADOS_VIAJE,
+  DIAS_MAX_CORRECCION_HORA_REAL,
 } from "./config";
 import { detectarChoques } from "./manual-horarios";
 import { planificarCombinacion, unidadLibreEnVentana } from "./planificador";
@@ -3846,6 +3847,27 @@ export async function corregirHoraReal(
     return { ok: false, mensaje: `Campo '${campo}' no es una hora real válida.` };
   }
   const viaje = await prisma.viajes.findUniqueOrThrow({ where: { id: viajeId } });
+
+  // La correccion tiene que caer en el DIA del viaje (con margen para el turno que cruza
+  // la medianoche). Sin esta guarda, equivocarse en el segmento del dia o del mes del
+  // `datetime-local` guardaba en silencio una hora de semanas atras: el caso real fue un
+  // viaje del 7 de agosto con la hora real en el 17 de julio, que en pantalla se veia
+  // como un desvio de "-30571 min" — un numero que nadie puede interpretar, y encima con
+  // la hora bien (11:00) porque la tarjeta solo muestra la hora, no la fecha.
+  const anclaDia = viaje.hora_inicio_carga ?? viaje.hora_solicitada;
+  if (anclaDia) {
+    const dias = Math.abs(nuevoValor.getTime() - anclaDia.getTime()) / 86400000;
+    if (dias > DIAS_MAX_CORRECCION_HORA_REAL) {
+      const f = (d: Date) => d.toLocaleDateString("es-HN", { day: "2-digit", month: "2-digit", year: "numeric" });
+      return {
+        ok: false,
+        mensaje:
+          `La hora corregida (${f(nuevoValor)}) queda a ${Math.round(dias)} dias del viaje, ` +
+          `que es del ${f(anclaDia)}. Revisa la FECHA: casi siempre es un error de captura ` +
+          `en el dia o el mes.`,
+      };
+    }
+  }
 
   // Construir la secuencia de reales con el valor corregido aplicado.
   const valores: (Date | null)[] = CAMPOS_TS_REAL.map((c) =>
