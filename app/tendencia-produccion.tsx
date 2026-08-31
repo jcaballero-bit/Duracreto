@@ -307,6 +307,27 @@ export function TendenciaProduccion({
               ) : null,
             )}
 
+            {/* Marca desde donde el sistema tiene datos PROPIOS: a la izquierda de esta
+                linea el volumen viene de la carga historica. */}
+            {(() => {
+              const iPrimeroPropio = datos.periodos.findIndex(
+                (p, i) => !p.historico && !p.futuro && visibles.some((s) => s.valores[i] != null),
+              );
+              if (iPrimeroPropio <= 0 || !datos.periodos.some((p) => p.historico)) return null;
+              const px = (x(iPrimeroPropio) + x(iPrimeroPropio - 1)) / 2;
+              return (
+                <line
+                  x1={px}
+                  x2={px}
+                  y1={M.arriba}
+                  y2={M.arriba + AREA_H}
+                  stroke="var(--color-border)"
+                  strokeWidth={1}
+                  strokeDasharray="2 3"
+                />
+              );
+            })()}
+
             {/* Guía vertical del punto apuntado. */}
             {hover != null && (
               <line
@@ -329,17 +350,25 @@ export function TendenciaProduccion({
                 Cada TRAMO continuo lleva su propio `path`: donde no hay dato (periodo
                 futuro) la línea se corta, la curva no se extiende hacia allá. */}
             {visibles.map((s) =>
-              tramos(s.valores).map((tramo, k) => (
-                <path
-                  key={`${s.plantelId}-${k}`}
-                  d={rutaMonotona(tramo.map((pt) => ({ x: x(pt.i), y: y(pt.v) })))}
-                  fill="none"
-                  stroke={s.color}
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              )),
+              tramos(s.valores).map((tramo, k) => {
+                // Un tramo se dibuja PUNTEADO si su volumen viene de la carga historica.
+                // No es una advertencia —el dato historico no es un error— sino una
+                // procedencia distinta: se distingue con la textura, no con el color.
+                const deHistorico = tramo.every((pt) => datos.periodos[pt.i]?.historico);
+                return (
+                  <path
+                    key={`${s.plantelId}-${k}`}
+                    d={rutaMonotona(tramo.map((pt) => ({ x: x(pt.i), y: y(pt.v) })))}
+                    fill="none"
+                    stroke={s.color}
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeDasharray={deHistorico ? "5 4" : undefined}
+                    strokeOpacity={deHistorico ? 0.75 : 1}
+                  />
+                );
+              }),
             )}
 
             {/* Punto en el ÚLTIMO valor de cada línea (dónde terminó la tendencia). */}
@@ -406,6 +435,9 @@ export function TendenciaProduccion({
               <div className="mb-0.5 font-semibold text-ink">
                 {datos.periodos[hover].etiquetaLarga}
               </div>
+              {datos.periodos[hover].historico && (
+                <div className="mb-1 text-[10px] text-muted">Carga histórica</div>
+              )}
               {datos.periodos[hover].futuro ? (
                 <div className="text-muted">Todavía no ocurre</div>
               ) : (
@@ -425,6 +457,25 @@ export function TendenciaProduccion({
             </div>
           )}
         </div>
+      )}
+
+      {datos.periodos.some((p) => p.historico) && (
+        <p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted">
+          <svg width="22" height="6" aria-hidden>
+            <line
+              x1="1"
+              y1="3"
+              x2="21"
+              y2="3"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeDasharray="5 4"
+              strokeLinecap="round"
+            />
+          </svg>
+          Tramo punteado: volumen de <strong className="font-semibold">carga histórica</strong>,
+          anterior a que el sistema registrara los viajes.
+        </p>
       )}
 
       {/* ── Leyenda (clic para ocultar una línea sin cambiar la selección) ── */}

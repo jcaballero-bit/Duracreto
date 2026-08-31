@@ -11,6 +11,7 @@ import {
 } from "./catalogo-admin";
 import type { Catalogo } from "./catalogos-actions";
 import { UsuariosTabla, type UsuarioAdmin } from "./usuarios-tabla";
+import { ProduccionHistorica } from "./produccion-historica";
 import { AjusteApertura, AjusteBloqueoEdicion, AjustesMotor } from "./ajustes-motor";
 import { leerMargenHueco } from "@/lib/motor/config-runtime";
 import { leerAperturaDefault, textoHoraMin } from "@/lib/motor/apertura";
@@ -35,6 +36,7 @@ const TABS: { key: string; label: string }[] = [
   { key: "asesores", label: "Asesores" },
   { key: "disenos", label: "Diseños de mezcla" },
   { key: "elementos", label: "Elementos" },
+  { key: "historica", label: "Producción histórica" },
   { key: "capacidades", label: "Capacidades reducidas" },
   { key: "recargos", label: "Recargos de ley" },
   { key: "horarios", label: "Horario de planta" },
@@ -49,10 +51,11 @@ const zonaOpc = ZONAS.map((z) => ({ value: z, label: z }));
 export default async function AdministracionPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; anioHist?: string }>;
 }) {
   await requerirAcceso("/administracion");
-  const tab = (await searchParams).tab ?? "planteles";
+  const sp = await searchParams;
+  const tab = sp.tab ?? "planteles";
 
   // Listas de opciones (tablas pequeñas).
   const [planteles, plantas, asesores, usuarios] = await Promise.all([
@@ -69,7 +72,7 @@ export default async function AdministracionPage({
   const opcPlantas = opc(plantas.map((p) => ({ value: String(p.id), label: `${p.plantel.nombre} · ${p.nombre}` })));
   const opcUsuarios = opc(usuarios.map((u) => ({ value: u.id, label: `${u.name ?? "?"} (${u.email ?? ""})` })));
 
-  const contenido = await renderTab(tab, {
+  const contenido = await renderTab(tab, sp, {
     planteles,
     asesores,
     usuarios,
@@ -161,7 +164,7 @@ function bloque(
   );
 }
 
-async function renderTab(tab: string, ctx: Ctx) {
+async function renderTab(tab: string, sp: { anioHist?: string }, ctx: Ctx) {
   const nombrePlantel = (id: number | null) =>
     ctx.planteles.find((p) => p.id === id)?.nombre ?? "—";
 
@@ -331,6 +334,67 @@ async function renderTab(tab: string, ctx: Ctx) {
           { name: "aditivo_especial", label: "Aditivo especial", tipo: "text" },
         ],
         filas,
+      );
+    }
+    case "historica": {
+      // Solo el Administrador llega aquí (la página entera lo exige), y las acciones lo
+      // vuelven a validar en el servidor: ocultar la pestaña no sería una restricción.
+      const anioFiltro = Number(sp?.anioHist);
+      const anio = Number.isInteger(anioFiltro) && anioFiltro > 1990 ? anioFiltro : null;
+      const cargas = await prisma.produccion_historica.findMany({
+        where: anio
+          ? { fecha: { gte: new Date(anio, 0, 1), lt: new Date(anio + 1, 0, 1) } }
+          : {},
+        include: {
+          plantel: { select: { nombre: true } },
+          planta: { select: { nombre: true } },
+        },
+        orderBy: [{ fecha: "desc" }, { plantel_id: "asc" }, { planta_id: "asc" }],
+        take: 500,
+      });
+      const todas = await prisma.produccion_historica.findMany({ select: { fecha: true } });
+      const anios = [...new Set(todas.map((f) => f.fecha.getFullYear()))].sort((a, b) => b - a);
+      const plantelesHist = await prisma.planteles.findMany({
+        // Sus plantas dosificadoras: la carga historica se puede hacer por plantel
+        // completo o por planta, y el selector se acota al plantel elegido.
+        select: {
+          id: true,
+          nombre: true,
+          plantas: { select: { id: true, nombre: true }, orderBy: { nombre: "asc" } },
+        },
+        orderBy: { nombre: "asc" },
+      });
+      // Las URLs se arman AQUI y viajan como datos. Un componente servidor no puede
+      // pasarle una funcion a uno cliente (revienta en runtime con "Functions cannot be
+      // passed directly to Client Components", y ni `tsc` ni el build lo detectan): es la
+      // misma trampa que ya habia costado en el calendario de produccion.
+      const filtrosAnio = [
+        { etiqueta: "Todos", valor: null as number | null, href: "/administracion?tab=historica" },
+        ...anios.map((a) => ({
+          etiqueta: String(a),
+          valor: a as number | null,
+          href: `/administracion?tab=historica&anioHist=${a}`,
+        })),
+      ];
+      return (
+        <ProduccionHistorica
+          planteles={plantelesHist}
+          filtrosAnio={filtrosAnio}
+          anioActivo={anio}
+          filas={cargas.map((f) => ({
+            id: f.id,
+            fechaTxt:
+              f.granularidad === "Mensual"
+                ? f.fecha.toLocaleDateString("es-HN", { month: "long", year: "numeric" })
+                : f.fecha.toLocaleDateString("es-HN", { day: "2-digit", month: "2-digit", year: "numeric" }),
+            plantel: f.plantel.nombre,
+            planta: f.planta?.nombre ?? null,
+            volumen: f.volumen_m3,
+            granularidad: f.granularidad,
+            observaciones: f.observaciones,
+            cargadoPor: f.cargado_por,
+          }))}
+        />
       );
     }
     case "elementos": {

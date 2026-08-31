@@ -294,7 +294,14 @@ export const COOKIE_TENDENCIA = "tendenciaProd";
 export interface DatosTendencia {
   granularidad: Granularidad;
   /** Etiquetas del eje y del tooltip, en orden. */
-  periodos: { clave: string; etiqueta: string; etiquetaLarga: string; futuro: boolean }[];
+  periodos: {
+    clave: string;
+    etiqueta: string;
+    etiquetaLarga: string;
+    futuro: boolean;
+    /** El volumen incluye una carga histórica (se dibuja punteado y se dice en el tooltip). */
+    historico?: boolean;
+  }[];
   series: Serie[];
   /** Ancla de navegación con la que se pidió (ms del modo Semana, año en los otros). */
   refMs: number;

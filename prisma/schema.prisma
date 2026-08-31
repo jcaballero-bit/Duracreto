@@ -61,6 +61,8 @@ model planteles {
   operadores_asignados operadores[] @relation("OperadorPlantel") // motoristas cuyo plantel habitual es este
   observaciones_dia observaciones_plantel[] // nota operativa del plantel por dia
   departamentos_reloj mapeo_departamento_biometrico[] // departamentos del reloj que corresponden a este plantel
+  produccion_historica produccion_historica[] // volumen de periodos anteriores al sistema
+  alias_historicos alias_plantel_historico[] // como se llama este plantel en los archivos historicos
 
   @@index([zona])
 }
@@ -196,6 +198,7 @@ model plantas {
   horarios_normales horario_normal_planta[] // jornada operativa normal (clasifica despachos)
 
   @@index([plantel_id])
+  produccion_historica produccion_historica[] // volumen historico cargado a esta planta
 }
 
 // ── Apertura de planta por DIA ───────────────────────────────────────────────
@@ -402,6 +405,57 @@ model capacidades_reducidas {
   id                    Int @id @default(autoincrement())
   capacidad_nominal_m3  Int @unique // capacidad física del mixer (8/10/12/…)
   capacidad_efectiva_m3 Int // carga real utilizable con acceso difícil
+}
+
+// ── PRODUCCION HISTORICA ───────────────────────────────────────────────────
+// Volumen despachado de periodos ANTERIORES al uso del sistema (el Excel que se
+// llevaba antes). Vive en su propia tabla y el sistema NUNCA la escribe por su cuenta:
+// solo se llena por carga manual o importacion desde Administracion.
+//
+// Las vistas (calendario y grafico de tendencia) consultan las dos fuentes y las
+// combinan al graficar, sin mezclar los datos en la misma tabla. La precedencia es
+// siempre del SISTEMA: si hay viajes completados para esa fecha y plantel, se usa ese
+// dato y la fila historica queda archivada sin graficarse. Nunca se suman las dos.
+model produccion_historica {
+  id            Int      @id @default(autoincrement())
+  // Dia (granularidad Diaria) o primer dia del mes (granularidad Mensual).
+  fecha         DateTime
+  plantel_id    Int
+  // Planta dosificadora, OPCIONAL. NULL = la fila es del plantel completo. Los archivos
+  // viejos a veces traen el detalle por planta (STALO / SANY) y a veces solo el total del
+  // plantel; se admiten los dos, pero NO mezclados en el mismo periodo — el total del
+  // plantel mas sus plantas seria contar dos veces (lo valida `guardarFila`).
+  planta_id     Int?
+  volumen_m3    Float
+  // "Diaria" | "Mensual" (lib/produccion/historica.ts). Los datos viejos no siempre
+  // existen por dia: de anos anteriores a veces solo se conserva el total mensual.
+  granularidad  String
+  observaciones String?
+  cargado_por   String
+  cargado_en    DateTime @default(now())
+
+  plantel planteles @relation(fields: [plantel_id], references: [id])
+  planta  plantas?  @relation(fields: [planta_id], references: [id])
+
+  // La unicidad se aplica con DOS indices PARCIALES creados en la migracion (uno para las
+  // filas de plantel y otro para las de planta): un indice unico normal con una columna
+  // nullable no sirve, porque Postgres considera distintos dos NULL y dejaria duplicar
+  // las filas de plantel. Por eso aqui no hay `@@unique`.
+  @@index([fecha])
+  @@index([planta_id])
+}
+
+// Como se llama cada plantel en los archivos historicos ("SPS", "S. Marta"...). Se
+// recuerda para que la siguiente importacion no vuelva a preguntar.
+model alias_plantel_historico {
+  id         Int      @id @default(autoincrement())
+  // Alias NORMALIZADO (sin acentos ni mayusculas): la clave de busqueda.
+  alias      String   @unique
+  plantel_id Int
+  creado_por String
+  creado_en  DateTime @default(now())
+
+  plantel planteles @relation(fields: [plantel_id], references: [id])
 }
 
 // ── Catalogo de ELEMENTOS de obra ──────────────────────────────────────────

@@ -14,6 +14,13 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/app/generated/prisma/client";
 import { ESTADO_VIAJE_COMPLETADO } from "@/lib/motor/config";
 import { ymdLocal } from "./calendario";
+import {
+  combinarDiario,
+  combinarPorPeriodo,
+  esGranularidadHistorica,
+  type FilaHistorica,
+  type PeriodoRango,
+} from "./historica";
 
 /** Volumen y viajes de una PLANTA dosificadora en un día (segundo nivel del desglose). */
 export interface ProduccionPlanta {
@@ -39,6 +46,13 @@ export interface ProduccionPlantel {
 }
 
 export interface ProduccionMes {
+  /** Días cuyo volumen vino de la carga histórica (para marcarlos en la cuadrícula). */
+  diasHistoricos?: Set<string>;
+  /**
+   * El mes solo tiene cargas MENSUALES: no hay detalle diario que mostrar. La pantalla lo
+   * explica en vez de aparecer vacía.
+   */
+  soloMensual?: boolean;
   /** Totales por día ("YYYY-MM-DD" → m³ y viajes). Un día ausente no tuvo producción. */
   porDia: Map<string, { m3: number; viajes: number }>;
   /**
@@ -62,11 +76,20 @@ export async function produccionDelMes({
   mes,
   filtroPedido = {},
   zona,
+  plantelesHistorico,
 }: {
   anio: number;
   mes: number; // 1..12
   filtroPedido?: Record<string, unknown>;
   zona?: string;
+  /**
+   * Planteles cuya PRODUCCION HISTORICA se debe combinar: `null` = todos, un arreglo =
+   * esos. **Omitirlo (undefined) desactiva por completo la carga historica**, que es el
+   * comportamiento de siempre — asi una pantalla que no la contemple no cambia en nada.
+   * El Asesor lo omite a proposito: su alcance es por cliente y la tabla historica solo
+   * tiene volumen por plantel.
+   */
+  plantelesHistorico?: number[] | null;
 }): Promise<ProduccionMes> {
   const desde = new Date(anio, mes - 1, 1);
   const hasta = new Date(anio, mes, 1);
@@ -141,6 +164,92 @@ export async function produccionDelMes({
     porDiaPlanta.set(iso, delDia);
   }
 
+  // ── Produccion HISTORICA ────────────────────────────────────────────────
+  // Se combina aqui, no se mezcla en la tabla de viajes. El sistema tiene precedencia:
+  // un dia con viajes completados usa SIEMPRE el dato del sistema y la fila historica de
+  // ese dia queda archivada sin graficarse. Nunca se suman las dos fuentes.
+  //
+  // Si `plantelesHistorico` viene `undefined`, o si no hay filas cargadas, nada de esto
+  // hace nada y el resultado es exactamente el de antes.
+  const origenHistoricoPorDia = new Map<string, Set<number>>();
+  let soloMensual = false;
+  if (plantelesHistorico !== undefined) {
+    const historicas = await historicaEnRango(desde, hasta, plantelesHistorico);
+    if (historicas.length > 0) {
+      // El calendario es diario: una fila Mensual no se reparte entre dias. Se detecta
+      // para que la pantalla lo DIGA en vez de mostrarse vacia sin explicacion.
+      soloMensual =
+        historicas.some((f) => f.granularidad === "Mensual") &&
+        !historicas.some((f) => f.granularidad === "Diaria");
+
+      // Indice de lo que aporto el sistema, por dia y plantel.
+      const sistema = new Map<string, Map<number, number>>();
+      for (const [iso, porPlantel] of porDiaPlantel) {
+        sistema.set(iso, new Map([...porPlantel].map(([id, p]) => [id, p.m3])));
+      }
+      const { origenHistorico } = combinarDiario(sistema, historicas);
+
+      // Las combinaciones que si entran se agregan a los indices que ya se venian
+      // llenando, con `viajes: 0` (un dato historico es volumen, no tiene viajes).
+      const nombre = new Map<number, { nombre: string; zona: string }>();
+      if (origenHistorico.size > 0) {
+        for (const pl of await prisma.planteles.findMany({
+          where: { id: { in: [...new Set([...origenHistorico.values()].flatMap((s2) => [...s2]))] } },
+          select: { id: true, nombre: true, zona: true },
+        })) {
+          nombre.set(pl.id, { nombre: pl.nombre, zona: pl.zona });
+        }
+      }
+      for (const f of historicas) {
+        if (f.granularidad !== "Diaria") continue;
+        const iso = ymdLocal(new Date(f.fechaMs));
+        if (!origenHistorico.get(iso)?.has(f.plantelId)) continue; // gano el sistema
+        const meta = nombre.get(f.plantelId);
+        if (!meta) continue;
+
+        const dia = porDia.get(iso) ?? { m3: 0, viajes: 0 };
+        dia.m3 += f.m3;
+        porDia.set(iso, dia);
+
+        const porPlantel = porDiaPlantel.get(iso) ?? new Map<number, ProduccionPlantel>();
+        const actual = porPlantel.get(f.plantelId) ?? {
+          plantelId: f.plantelId,
+          nombre: meta.nombre,
+          zona: meta.zona,
+          m3: 0,
+          viajes: 0,
+          plantas: [],
+        };
+        actual.m3 += f.m3;
+        porPlantel.set(f.plantelId, actual);
+        porDiaPlantel.set(iso, porPlantel);
+
+        // Si la carga vino con el detalle por PLANTA, alimenta el segundo nivel del
+        // desglose igual que un viaje (con `viajes: 0`: un dato historico es volumen).
+        // Una fila del plantel completo no aporta nada aqui: no se sabe de que planta
+        // salio, y repartirla seria inventarse el dato.
+        if (f.plantaId != null) {
+          const delDia = porDiaPlanta.get(iso) ?? new Map<number, Map<number, ProduccionPlanta>>();
+          const delPlantel = delDia.get(f.plantelId) ?? new Map<number, ProduccionPlanta>();
+          const pa = delPlantel.get(f.plantaId) ?? {
+            plantaId: f.plantaId,
+            nombre: f.plantaNombre ?? "Planta",
+            m3: 0,
+            viajes: 0,
+          };
+          pa.m3 += f.m3;
+          delPlantel.set(f.plantaId, pa);
+          delDia.set(f.plantelId, delPlantel);
+          porDiaPlanta.set(iso, delDia);
+        }
+
+        const marcados = origenHistoricoPorDia.get(iso) ?? new Set<number>();
+        marcados.add(f.plantelId);
+        origenHistoricoPorDia.set(iso, marcados);
+      }
+    }
+  }
+
   // Redondeo a 1 decimal (sumar 11.75 + 9.5 + … arrastra cola binaria) y orden por
   // volumen descendente. Los planteles sin producción simplemente no están.
   const r1 = (n: number) => Math.round(n * 10) / 10;
@@ -162,7 +271,14 @@ export async function produccionDelMes({
     );
   }
 
-  return { porDia, porDiaPlantel: desglose };
+  return {
+    porDia,
+    porDiaPlantel: desglose,
+    // Dias cuyo volumen (de algun plantel) salio de la carga historica: la celda del
+    // calendario lleva una marca discreta y el tooltip lo dice.
+    diasHistoricos: new Set(origenHistoricoPorDia.keys()),
+    soloMensual,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────
@@ -240,7 +356,12 @@ export async function produccionPorPeriodo({
   return out;
 }
 
-/** Primer y último año con producción registrada (para el eje del modo Año). */
+/**
+ * Primer y último año con producción (para el eje del modo Año).
+ *
+ * Considera las DOS fuentes: si un año solo tiene carga histórica, tiene que aparecer en
+ * el eje — si no, el dato cargado no se podría ver en ninguna parte.
+ */
 export async function anosConProduccion(
   plantelIds: number[] | null,
 ): Promise<{ desde: number; hasta: number } | null> {
@@ -252,8 +373,95 @@ export async function anosConProduccion(
      WHERE v.estado = ${ESTADO_VIAJE_COMPLETADO}
        AND p.estado_pedido = 'Activo'
        AND (${ids}::int[] IS NULL OR p.plantel_id = ANY(${ids}::int[]))`;
-  const min = filas[0]?.min;
-  const max = filas[0]?.max;
-  if (!min || !max) return null;
-  return { desde: new Date(min).getFullYear(), hasta: new Date(max).getFullYear() };
+  const hist = await prisma.produccion_historica.aggregate({
+    where: ids ? { plantel_id: { in: ids } } : {},
+    _min: { fecha: true },
+    _max: { fecha: true },
+  });
+
+  const anios = [filas[0]?.min, filas[0]?.max, hist._min.fecha, hist._max.fecha]
+    .filter((d): d is Date => d != null)
+    .map((d) => new Date(d).getFullYear());
+  if (anios.length === 0) return null;
+  return { desde: Math.min(...anios), hasta: Math.max(...anios) };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────
+// PRODUCCION HISTORICA
+// ─────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Filas de `produccion_historica` de un rango. Devuelve `[]` cuando la tabla esta vacia,
+ * que es el caso normal: sin cargas historicas, todo lo de arriba se comporta identico a
+ * como se comportaba antes de que existiera esta tabla.
+ */
+export async function historicaEnRango(
+  desde: Date,
+  hasta: Date,
+  plantelIds: number[] | null,
+): Promise<FilaHistorica[]> {
+  const filas = await prisma.produccion_historica.findMany({
+    where: {
+      fecha: { gte: desde, lt: hasta },
+      ...(plantelIds && plantelIds.length > 0 ? { plantel_id: { in: plantelIds } } : {}),
+    },
+    select: {
+      fecha: true,
+      plantel_id: true,
+      planta_id: true,
+      planta: { select: { nombre: true } },
+      volumen_m3: true,
+      granularidad: true,
+    },
+  });
+  return filas
+    .filter((f) => esGranularidadHistorica(f.granularidad))
+    .map((f) => ({
+      fechaMs: f.fecha.getTime(),
+      plantelId: f.plantel_id,
+      plantaId: f.planta_id,
+      plantaNombre: f.planta?.nombre ?? null,
+      m3: f.volumen_m3,
+      granularidad: f.granularidad as FilaHistorica["granularidad"],
+    }));
+}
+
+/**
+ * Indices de lo que el SISTEMA aporto en un rango: por dia y por mes, con los planteles
+ * que tuvieron volumen. Es lo que alimenta la regla de precedencia (el sistema gana) sin
+ * tener que recorrer los viajes otra vez desde las reglas puras.
+ */
+export async function cobertura(
+  desde: Date,
+  hasta: Date,
+  plantelIds: number[] | null,
+): Promise<{ dias: Map<string, Set<number>>; meses: Map<string, Set<number>> }> {
+  const ids = plantelIds && plantelIds.length > 0 ? plantelIds : null;
+  // El dia se arma como TEXTO en SQL, no con `date_trunc` + `new Date(...)`. La columna
+  // es `timestamp` SIN zona y guarda la hora local; el driver la devuelve como si fuera
+  // UTC, asi que renderizarla en America/Tegucigalpa (UTC-6) retrocede un dia: un viaje
+  // del 3 de agosto se reportaba como del 2, y con eso la precedencia del sistema fallaba
+  // justo en el dia que tenia que proteger. `to_char` no convierte nada.
+  const filas = await prisma.$queryRaw<{ dia: string; mes: string; plantel_id: number }[]>`
+    SELECT DISTINCT to_char(p.hora_solicitada, 'YYYY-MM-DD') AS dia,
+                    to_char(p.hora_solicitada, 'YYYY-MM') AS mes,
+                    p.plantel_id
+      FROM viajes v
+      JOIN pedidos p ON p.id = v.pedido_id
+     WHERE v.estado = ${ESTADO_VIAJE_COMPLETADO}
+       AND p.estado_pedido = 'Activo'
+       AND p.hora_solicitada >= ${desde}
+       AND p.hora_solicitada < ${hasta}
+       AND (${ids}::int[] IS NULL OR p.plantel_id = ANY(${ids}::int[]))`;
+
+  const dias = new Map<string, Set<number>>();
+  const meses = new Map<string, Set<number>>();
+  for (const f of filas) {
+    (dias.get(f.dia) ?? dias.set(f.dia, new Set()).get(f.dia)!).add(f.plantel_id);
+    (meses.get(f.mes) ?? meses.set(f.mes, new Set()).get(f.mes)!).add(f.plantel_id);
+  }
+  return { dias, meses };
+}
+
+export { combinarDiario, combinarPorPeriodo };
+export type { PeriodoRango };

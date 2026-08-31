@@ -48,6 +48,14 @@ export interface CalendarioProps {
   /** "YYYY-MM-DD" de hoy: la celda del día en curso se marca. */
   hoyIso: string;
   /**
+   * Días cuyo volumen vino de la CARGA HISTÓRICA (anterior al uso del sistema). Llevan
+   * una marca discreta y el tooltip lo dice. No es una advertencia: el dato histórico no
+   * es un error, solo tiene otra procedencia.
+   */
+  diasHistoricos?: string[];
+  /** El mes solo tiene cargas MENSUALES: no hay detalle diario que mostrar. */
+  soloMensual?: boolean;
+  /**
    * Modo estrecho: el calendario comparte la fila con el gráfico de tendencia, así que
    * las etiquetas de día van de UNA letra y los volúmenes de la celda sin decimales
    * (el valor exacto sigue en el tooltip y en los totales de arriba). Ahorra ~90 px.
@@ -71,6 +79,7 @@ const ESCALA = [
 ] as const;
 
 export function CalendarioProduccion(p: CalendarioProps) {
+  const historico = new Set(p.diasHistoricos ?? []);
   const router = useRouter();
   const [diaSel, setDiaSel] = useState<string | null>(null);
   // Planteles abiertos dentro del desglose (se ven sus plantas). Se limpia al cambiar
@@ -196,7 +205,9 @@ export function CalendarioProduccion(p: CalendarioProps) {
                         title={
                           nivel === 0
                             ? `${d.dia} — sin producción`
-                            : `${d.dia}: ${d.m3.toFixed(1)} m³ en ${d.viajes} viaje(s) — toca para ver el desglose`
+                            : historico.has(d.iso)
+                              ? `${d.dia}: ${d.m3.toFixed(1)} m³ — carga histórica (anterior al sistema)`
+                              : `${d.dia}: ${d.m3.toFixed(1)} m³ en ${d.viajes} viaje(s), registrado por el sistema — toca para ver el desglose`
                         }
                         style={paso ? { backgroundColor: paso.fondo } : undefined}
                         className={
@@ -210,8 +221,15 @@ export function CalendarioProduccion(p: CalendarioProps) {
                         <span className={"text-[10px] leading-none " + (paso ? "opacity-80" : "")}>
                           {d.dia}
                         </span>
-                        <span className="text-[13px] leading-none font-semibold tabular-nums">
+                        <span className="relative text-[13px] leading-none font-semibold tabular-nums">
                           {nivel > 0 ? (p.compacto ? Math.round(d.m3) : d.m3.toFixed(1)) : ""}
+                          {historico.has(d.iso) && (
+                            /* Punto discreto en la esquina: procedencia, no alerta. */
+                            <span
+                              className="absolute -right-1.5 -top-1 inline-block size-1 rounded-full bg-current opacity-60"
+                              aria-hidden
+                            />
+                          )}
                         </span>
                       </button>
                     </td>
@@ -240,6 +258,22 @@ export function CalendarioProduccion(p: CalendarioProps) {
         <span>mayor</span>
         <span className="ml-2">· m³ despachados (viajes completados)</span>
       </div>
+
+      {historico.size > 0 && (
+        <p className="mt-1 flex items-center gap-1.5 text-[11px] text-muted">
+          <span className="inline-block size-1 rounded-full bg-current opacity-60" aria-hidden />
+          El punto marca los días de <strong className="font-semibold">carga histórica</strong>,
+          anteriores a que el sistema registrara los viajes.
+        </p>
+      )}
+
+      {p.soloMensual && (
+        <p className="mt-1 text-[11px] text-muted">
+          Este periodo solo tiene <strong className="font-semibold">datos mensuales</strong>{" "}
+          cargados: no hay detalle por día que mostrar. El total aparece en el gráfico de
+          tendencia, en las vistas de Mes y Año.
+        </p>
+      )}
 
       {/* ── Desglose del día seleccionado ── */}
       {diaSel && (

@@ -103,12 +103,30 @@ export default async function Panel({
   // El acceso lo decide `accesoCalendario` (regla por rol, probada aparte). Si el rol
   // no lo ve, NO se consulta la producción: el dato ni sale del servidor.
   const acceso = accesoCalendario(alcance, sesion?.user?.id);
+  // El alcance por PLANTEL se calcula aquí porque lo usan las dos mitades del panel: el
+  // gráfico (más abajo) y la carga histórica del calendario.
+  const catalogoPlanteles = (await plantelesCatalogo()).map((p) => ({
+    id: p.id,
+    nombre: p.nombre,
+    zona: p.zona,
+  }));
+  const accTend = accesoTendencia(alcance, catalogoPlanteles);
   const sp = (await searchParams) ?? {};
   const { anio, mes } = parsearMes(sp.mesProd);
   const zonaProd = acceso.zonas.includes(sp.zonaProd ?? "") ? sp.zonaProd : undefined;
   const produccion: ProduccionMes =
     acceso.visible && !acceso.faltaZona
-      ? await produccionDelMes({ anio, mes, filtroPedido: acceso.filtro, zona: zonaProd })
+      ? await produccionDelMes({
+          anio,
+          mes,
+          filtroPedido: acceso.filtro,
+          zona: zonaProd,
+          // Solo se combina la carga histórica cuando el alcance del usuario se puede
+          // expresar por PLANTEL. El Asesor queda fuera a propósito: su alcance es por
+          // cliente y la tabla histórica solo guarda volumen por plantel, así que
+          // mezclarlas le mostraría volumen que no es de sus clientes.
+          plantelesHistorico: accTend.visible ? accTend.planteles.map((p) => p.id) : undefined,
+        })
       : { porDia: new Map(), porDiaPlantel: new Map() };
   const semanas = armarSemanas(anio, mes, produccion.porDia);
   const resumenProd = resumenMes(semanas);
@@ -137,12 +155,6 @@ export default async function Panel({
   // —cuyo alcance es por cliente— no lo ve; su calendario sigue mostrando lo suyo.
   // La preferencia (granularidad + selección) viaja en una cookie y se lee AQUÍ, en el
   // servidor, para que el gráfico abra donde el usuario lo dejó y sin parpadeo.
-  const catalogoPlanteles = (await plantelesCatalogo()).map((p) => ({
-    id: p.id,
-    nombre: p.nombre,
-    zona: p.zona,
-  }));
-  const accTend = accesoTendencia(alcance, catalogoPlanteles);
   const pref = leerPreferencia((await cookies()).get(COOKIE_TENDENCIA)?.value);
   const selInicial = acotarSeleccion(pref.sel, accTend);
   // El gráfico abre en el MISMO periodo que el calendario de la izquierda: en modo
@@ -249,6 +261,8 @@ export default async function Panel({
               hoyIso={ymdLocal(new Date())}
               // Comparte la fila con el gráfico: etiquetas de una letra y m³ enteros.
               compacto={accTend.visible}
+              diasHistoricos={[...(produccion.diasHistoricos ?? [])]}
+              soloMensual={produccion.soloMensual}
             />
           )}
         </Card>

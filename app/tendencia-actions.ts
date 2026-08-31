@@ -16,7 +16,13 @@ import { cookies } from "next/headers";
 import { alcanceActual } from "@/lib/auth/guard";
 import { plantelesCatalogo } from "@/lib/catalogos-cache";
 import { accesoTendencia, acotarSeleccion } from "@/lib/produccion/acceso";
-import { anosConProduccion, produccionPorPeriodo } from "@/lib/produccion/consulta";
+import {
+  anosConProduccion,
+  cobertura,
+  historicaEnRango,
+  produccionPorPeriodo,
+} from "@/lib/produccion/consulta";
+import { combinarPorPeriodo } from "@/lib/produccion/historica";
 import { colorPorPlantel, COLOR_TOTAL } from "@/lib/color-plantel";
 import {
   armarSeries,
@@ -136,10 +142,39 @@ export async function datosTendenciaAction(entrada: {
     plantelIds: idsConsulta,
   });
 
+  // ── Produccion HISTORICA ──────────────────────────────────────────────────
+  // Se combina aqui, donde ya estan los periodos del eje. El sistema tiene precedencia y
+  // las dos fuentes NUNCA se suman para el mismo periodo y plantel. Sin filas cargadas,
+  // `combinarPorPeriodo` devuelve exactamente lo que entro.
+  //
+  // Las filas Mensuales solo entran en las vistas de Mes y Ano: repartir un total mensual
+  // entre semanas o dias seria inventar el reparto.
+  const historicas = await historicaEnRango(
+    new Date(periodos[0].desdeMs),
+    new Date(periodos[periodos.length - 1].hastaMs),
+    idsConsulta,
+  );
+  let porPeriodoFinal = porPeriodo;
+  let periodosHistoricos = new Set<string>();
+  if (historicas.length > 0) {
+    const cob = await cobertura(
+      new Date(periodos[0].desdeMs),
+      new Date(periodos[periodos.length - 1].hastaMs),
+      idsConsulta,
+    );
+    const r = combinarPorPeriodo(periodos, porPeriodo, historicas, {
+      permiteMensual: g !== "semana",
+      mesesConSistema: cob.meses,
+      diasConSistema: cob.dias,
+    });
+    porPeriodoFinal = r.combinado;
+    periodosHistoricos = r.periodosHistoricos;
+  }
+
   const nombre = new Map(catalogo.map((p) => [p.id, p.nombre]));
   const series = armarSeries(
     periodos,
-    porPeriodo,
+    porPeriodoFinal,
     seleccion,
     (id) => nombre.get(id) ?? `Plantel ${id}`,
     colorPorPlantel,
@@ -168,6 +203,9 @@ export async function datosTendenciaAction(entrada: {
         etiqueta: p.etiqueta,
         etiquetaLarga: p.etiquetaLarga,
         futuro: p.futuro,
+        // El volumen de este periodo incluye una carga historica: la linea se dibuja
+        // punteada en ese tramo y el tooltip lo dice.
+        historico: periodosHistoricos.has(p.clave),
       })),
       series,
       refMs,
