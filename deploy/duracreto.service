@@ -1,0 +1,52 @@
+# Servicio de la app DPCR-08. Va en /etc/systemd/system/duracreto.service
+[Unit]
+Description=DPCR-08 - Programacion y Despacho de Concreto
+Documentation=file:///opt/duracreto/docs/despliegue-vps.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=duracreto
+Group=duracreto
+WorkingDirectory=/opt/duracreto
+
+# Los secretos viven fuera del checkout de git (asi un `git pull` no los pisa).
+EnvironmentFile=/etc/duracreto/env
+Environment=NODE_ENV=production
+# TZ explicita: instrumentation.ts solo la fija si NO viene del entorno, y tenerla
+# aqui es el estandar de oro que el propio comentario del codigo recomienda.
+Environment=TZ=America/Tegucigalpa
+Environment=PORT=3000
+Environment=npm_config_cache=/opt/duracreto/.npm
+# ProtectHome=true (abajo) bloquea /home/duracreto, asi que HOME apunta al
+# directorio de la app: nada intenta escribir donde no puede.
+Environment=HOME=/opt/duracreto
+
+# Se llama a `next` directo en vez de `npm start`: npm es un envoltorio que no
+# reenvia SIGTERM de forma confiable, y eso deja procesos zombis al reiniciar.
+ExecStart=/usr/bin/node /opt/duracreto/node_modules/next/dist/bin/next start -p 3000
+
+Restart=always
+RestartSec=5
+# Si falla 5 veces en 60 s, systemd se rinde en vez de reiniciar en bucle.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Endurecimiento
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/opt/duracreto
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=duracreto
+
+[Install]
+WantedBy=multi-user.target

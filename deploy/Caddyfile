@@ -1,0 +1,39 @@
+# Caddy para DPCR-08. Va en /etc/caddy/Caddyfile
+#
+# Caddy saca y renueva el certificado de Let's Encrypt solo, siempre que el
+# registro A del dominio ya apunte a la IP de este servidor.
+#
+# El HTTPS aquí NO es cosmético: sin contexto seguro se cae la captura GPS de
+# ubicación del cliente (navigator.geolocation, obligatoria para dar de alta un
+# cliente nuevo) y la instalación de la PWA.
+
+dpcr08.duracreto.com {
+	# Comprimir es obligatorio: las páginas de este sistema pesan ~690 KB en
+	# crudo y ~24 KB con gzip. Netlify lo hacía por defecto; aquí hay que pedirlo,
+	# y sin esta línea el ancho de banda y la latencia empeorarían muchísimo.
+	encode zstd gzip
+
+	reverse_proxy 127.0.0.1:3000
+
+	# El archivo del reloj biométrico se sube por una server action y next.config.ts
+	# permite 8 MB. Este tope tiene que quedar POR ENCIMA o la importación de una
+	# catorcena completa fallaría sin explicación clara.
+	request_body {
+		max_size 12MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/dpcr08.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+	}
+}

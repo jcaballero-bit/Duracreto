@@ -1,0 +1,14 @@
+# Va en /etc/systemd/system/duracreto-backup.timer
+# Se usa un timer de systemd en vez de cron porque `Persistent=true` recupera la
+# corrida perdida si el servidor estuvo apagado a esa hora.
+[Unit]
+Description=Respaldo diario de DPCR-08 (2:30 a.m.)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+# Evita que todos los respaldos salgan al mismo segundo exacto.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
