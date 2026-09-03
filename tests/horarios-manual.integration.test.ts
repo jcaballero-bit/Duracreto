@@ -40,7 +40,20 @@ async function escenario() {
     where: { plantel_base_id: plantelId },
     orderBy: { id: "asc" },
   });
-  return { plantelId, plantaId, planta2Id: planta2.id, clienteA, clienteB, disenoId, mixers };
+  const p1 = await prisma.plantas.findUniqueOrThrow({
+    where: { id: plantaId },
+    select: { nombre: true },
+  });
+  return {
+    plantelId,
+    plantaId,
+    plantaNombre: p1.nombre,
+    planta2Id: planta2.id,
+    clienteA,
+    clienteB,
+    disenoId,
+    mixers,
+  };
 }
 
 type Esc = Awaited<ReturnType<typeof escenario>>;
@@ -257,7 +270,14 @@ describe("caso reportado: fijar la llegada de un cliente y que QUEDE", () => {
     // Llegar a las 12:00 obliga a cargar ~11:13 → se encima con el cliente B.
     const res = await ajustarLlegadaManual(idA, d("12:00"));
     expect(res.ok).toBe(true);
-    expect(res.avisos.some((a) => a.includes("se encima con la de"))).toBe(true);
+    // El aviso tiene que decir DONDE esta el choque para poder resolverlo a mano:
+    // planta, hora del viaje, minutos que se traslapan y con que cliente.
+    const choque = res.avisos.find((a) => a.startsWith("Choque de carga en "));
+    expect(choque, res.avisos.join(" | ")).toBeDefined();
+    expect(choque).toContain(s.plantaNombre); // en QUE planta
+    expect(choque).toMatch(/se encima \d+ min/); // CUANTOS minutos
+    expect(choque).toContain("con el de "); // con QUE cliente
+    expect(choque).toMatch(/el viaje de las \d/); // a QUE hora
   });
 
   it("avisa si el mixer queda en el suministro de otro cliente a la misma hora", async () => {

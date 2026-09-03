@@ -722,7 +722,6 @@ export default async function DespachoPage({
     // Catálogo del desplegable con buscador de "Elemento" (Administración › Elementos).
     elementos: elementosDisponibles,
     asesores: asesoresLista.map((a) => ({ id: a.id, etiqueta: a.nombre })),
-    esAdmin: alcance.esAdmin, // volumen con step libre solo para Admin
   };
 
   return (
@@ -760,7 +759,6 @@ export default async function DespachoPage({
           puedeCambiarPlanta={puedeCambiarPlanta}
           puedeAgregar={puedeAgregar}
           puedeCapturarCalidad={puedeCapturarCalidad}
-          esAdmin={alcance.esAdmin}
         />
       </Card>
 

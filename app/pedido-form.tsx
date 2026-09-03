@@ -7,7 +7,6 @@ import {
   analizarFrecuenciaAction,
   crearPedidoAction,
   modificarPedidoAction,
-  sugerirHoraSolicitadaAction,
   type EstadoFormulario,
 } from "./actions";
 import { Badge, PrimaryButton } from "./components/ui";
@@ -104,8 +103,6 @@ export function PedidoForm({
   valores,
   preset,
   esAdicion = false,
-  esAdmin = false,
-  aislado = false,
   onExito,
 }: {
   clientes: ClienteOpcion[];
@@ -125,10 +122,8 @@ export function PedidoForm({
   esAdicion?: boolean;
   // Solo el Admin puede ingresar volúmenes que NO sean múltiplos de 0.5 m³ (step
   // libre); los demás roles quedan con paso 0.5. Se refuerza en el servidor.
-  esAdmin?: boolean;
   // true = la edición viene del Modo Manual: el motor re-agenda SOLO este pedido y no
   // le mueve el horario a ningún otro cliente (los choques se avisan, no se corrigen).
-  aislado?: boolean;
   onExito?: () => void;
 }) {
   const esEdicion = pedidoId != null;
@@ -289,25 +284,10 @@ export function PedidoForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plantelId]);
 
-  // Autocompletar la hora de LLEGADA con la próxima disponible de la planta ese
-  // día (solo al crear/convertir; en edición se respeta la hora existente).
-  useEffect(() => {
-    if (esEdicion || bloqueada || !plantaId || !fechaBase) return;
-    let cancelado = false;
-    (async () => {
-      const res = await sugerirHoraSolicitadaAction(
-        plantaId,
-        fechaBase,
-        Number(volumen) || 0,
-        clienteId || undefined,
-      );
-      if (!cancelado && res.ok && res.horaLocal) setHoraLocal(res.horaLocal);
-    })();
-    return () => {
-      cancelado = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plantaId, fechaBase, esEdicion, volumen, clienteId, bloqueada]);
+  // NOTA: antes este campo se autocompletaba con la "próxima hora disponible" de la
+  // planta. Se quitó: la hora de llegada es la que pidió el CLIENTE, no la que le
+  // conviene a la planta, y prellenarla desde la ocupación invitaba a aceptar una hora
+  // que nadie acordó. Ahora se teclea (o viene del preset al convertir una proyección).
 
   // Analizar si la frecuencia entre camiones es alcanzable con la flota REAL del
   // día (advertencia NO bloqueante). Solo cuando hay volumen + planta + frecuencia.
@@ -367,7 +347,6 @@ export function PedidoForm({
         )}
         {esAdicion && <input type="hidden" name="es_adicion" value="1" />}
         {/* Edición desde el Modo Manual: re-agendar solo este pedido. */}
-        {aislado && <input type="hidden" name="aislado" value="1" />}
         <Campo label="Cliente">
           <select
             name="cliente_id"
@@ -608,19 +587,17 @@ export function PedidoForm({
           <input
             type="number"
             name="volumen_total_m3"
-            min="0.5"
+            min="0.01"
             // Admin: cualquier volumen (p. ej. 6.7). Otros roles: múltiplos de 0.5.
-            step={esAdmin ? "any" : "0.5"}
+            step="any"
             value={volumen}
             onChange={(e) => setVolumen(e.target.value)}
             className={inputCls}
             required
           />
-          {esAdmin && (
-            <span className="mt-1 block text-[11px] text-muted">
-              Como Administrador puedes ingresar cualquier volumen (no solo múltiplos de 0.5).
-            </span>
-          )}
+          <span className="mt-1 block text-[11px] text-muted">
+            Cualquier valor con decimales (por ejemplo 2.2 o 7.3 m³).
+          </span>
           {/* Carga reducida por pendiente/acceso difícil: el motor usa la capacidad
               efectiva (config en Administración) en vez de la nominal. */}
           <label className="mt-1 flex items-start gap-2 text-xs text-muted">

@@ -7,9 +7,8 @@ import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA } from "@/li
 import { ESTADO_LABORATORISTA_PLANTA, viajeEsDeSuPlanta } from "@/lib/calidad/planta-lab";
 import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
-import { validarVolumenPorRol } from "@/lib/volumen";
+import { validarVolumen } from "@/lib/volumen";
 import {
-  PERMITIR_HORA_CARGA_MANUAL,
   cierreProgramaDe,
 } from "@/lib/motor/config";
 import { estadoBloqueoPrograma, leerConfigBloqueo, textoHoraCorte } from "@/lib/programacion/bloqueo";
@@ -33,16 +32,11 @@ import {
   corregirHoraReal,
   editarVolumenViaje,
   fijarBombasDePedido,
-  huecosDePlanta,
   mantenimientoDeUnidad,
   modificarPedido,
-  organizarDia,
   programarPedido,
   reasignarMixer,
-  recalcularCascadaPlanta,
   recalcularTransportePromedioCliente,
-  reordenarPedidoDia,
-  sugerirHoraDisponible,
   type CampoTsReal,
   type EntradaPedido,
   type ResultadoProgramacion,
@@ -229,13 +223,12 @@ async function autorizarOperacionPedido(accionPrograma?: string): Promise<Permis
 }
 
 /**
- * Solo el Administrador puede ingresar volúmenes que NO sean múltiplos de 0.5 m³
- * (p. ej. 6.7). Los demás roles quedan restringidos al paso estándar. Refuerza en el
- * servidor la restricción del input (`step`). El `esAdmin` se toma del alcance.
+ * Valida el volumen en el SERVIDOR (no basta el `step` del input, que solo aplica en
+ * el navegador). Cualquier decimal es válido para cualquier rol: la única regla es que
+ * sea un número mayor que 0. Ver `lib/volumen.ts` para el por qué.
  */
 async function autorizarVolumen(volumen: number): Promise<Permiso> {
-  const a = await alcanceActual();
-  const err = validarVolumenPorRol(volumen, !!a?.esAdmin);
+  const err = validarVolumen(volumen);
   return err ? { ok: false, mensaje: err } : { ok: true };
 }
 
@@ -560,9 +553,9 @@ export async function modificarPedidoAction(
     if (!vol.ok) return { ok: false, mensaje: vol.mensaje };
     const errBomba = await validarBombaMantenimiento(entrada!);
     if (errBomba) return { ok: false, mensaje: errBomba };
-    // Editado desde el Modo Manual: se re-agenda SOLO este pedido (los demás
-    // clientes conservan su horario y los choques se avisan).
-    const r = await modificarPedido(pedidoId, entrada!, !!formData.get("aislado"));
+    // Editar NUNCA reprograma a otros clientes: los horarios de este pedido solo se
+    // recalculan si cambió su hora de llegada, y los choques se avisan.
+    const r = await modificarPedido(pedidoId, entrada!);
     revalidarPantallas();
     return { ok: true, resultado: mapResultado(r) };
   } catch (e) {
@@ -571,107 +564,6 @@ export async function modificarPedidoAction(
       mensaje: e instanceof Error ? e.message : "Error inesperado al modificar.",
     };
   }
-}
-
-/**
- * Server action: reordena un pedido dentro de su plantel+fecha (el Programador
- * escribe un nuevo número). Reacomoda el resto y recalcula los horarios. Valida
- * zona + fecha del rol y registra en bitácora (dentro del motor).
- */
-export async function reordenarPedidoAction(
-  pedidoId: number,
-  nuevoOrden: number,
-): Promise<{ ok: boolean; mensaje?: string }> {
-  const op = await autorizarOperacionPedido("Reordenar pedidos del dia");
-  if (!op.ok) return op;
-  const permiso = await autorizarPorPedido(pedidoId);
-  if (!permiso.ok) return permiso;
-  if (!Number.isFinite(nuevoOrden) || nuevoOrden < 1) {
-    return { ok: false, mensaje: "El orden debe ser un número mayor o igual a 1." };
-  }
-  const sesion = await auth();
-  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "programador";
-  const res = await reordenarPedidoDia(pedidoId, nuevoOrden, quien);
-  if (res.ok) revalidarPantallas();
-  return { ok: res.ok, mensaje: res.mensaje };
-}
-
-/**
- * Server action: "Organizar mi día" — corre el motor de 2 pasadas (anclas + relleno
- * best-fit) sobre los pedidos del plantel+fecha y aplica el resultado (reordena +
- * recalcula la cascada). Valida zona + regla de fecha del rol.
- */
-export async function organizarDiaAction(
-  plantelId: number,
-  fechaISO: string, // "YYYY-MM-DD"
-): Promise<{ ok: boolean; mensaje?: string }> {
-  const op = await autorizarOperacionPedido("Organizar el dia");
-  if (!op.ok) return op;
-  const zona = await autorizarZonaPlantel(plantelId);
-  if (!zona.ok) return zona;
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaISO);
-  if (!m) return { ok: false, mensaje: "Fecha inválida." };
-  const dia = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  const fechaOk = await autorizarFecha(dia);
-  if (!fechaOk.ok) return fechaOk;
-  const sesion = await auth();
-  const quien = sesion?.user?.name ?? sesion?.user?.email ?? "programador";
-  try {
-    const res = await organizarDia(plantelId, dia, quien);
-    if (res.ok) revalidarPantallas();
-    return { ok: res.ok, mensaje: res.mensaje };
-  } catch (e) {
-    return { ok: false, mensaje: e instanceof Error ? e.message : "No se pudo organizar el día." };
-  }
-}
-
-/**
- * Server action (solo lectura): huecos libres de carga de una planta ese día
- * [{inicioMs, finMs, durMin}], para la tarjeta de sugerencia de la vista simple.
- */
-export async function huecosDePlantaAction(
-  plantaId: number,
-  fechaISO: string,
-): Promise<{ ok: boolean; huecos?: { inicioMs: number; finMs: number; durMin: number }[]; mensaje?: string }> {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaISO);
-  if (!plantaId || !m) return { ok: false, mensaje: "Datos inválidos." };
-  const planta = await prisma.plantas.findUnique({
-    where: { id: plantaId },
-    select: { plantel_id: true },
-  });
-  if (!planta) return { ok: false, mensaje: "Planta no encontrada." };
-  const permiso = await autorizarZonaPlantel(planta.plantel_id);
-  if (!permiso.ok) return { ok: false, mensaje: permiso.mensaje };
-  const dia = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  const huecos = await huecosDePlanta(plantaId, dia);
-  return { ok: true, huecos };
-}
-
-/**
- * Server action: sugiere la próxima hora disponible de una planta ese día (para
- * pre-llenar el formulario de Nuevo pedido). Devuelve "YYYY-MM-DDTHH:mm" local.
- */
-export async function sugerirHoraSolicitadaAction(
-  plantaId: number,
-  fechaISO: string, // "YYYY-MM-DD"
-  volumen = 0,
-  clienteId?: number,
-): Promise<{ ok: boolean; horaLocal?: string; mensaje?: string }> {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaISO);
-  if (!plantaId || !m) return { ok: false, mensaje: "Datos inválidos." };
-  const planta = await prisma.plantas.findUnique({
-    where: { id: plantaId },
-    select: { plantel_id: true },
-  });
-  if (!planta) return { ok: false, mensaje: "Planta no encontrada." };
-  const permiso = await autorizarZonaPlantel(planta.plantel_id);
-  if (!permiso.ok) return { ok: false, mensaje: permiso.mensaje };
-
-  const dia = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  const fecha = await sugerirHoraDisponible(plantaId, dia, volumen, clienteId);
-  const p = (n: number) => String(n).padStart(2, "0");
-  const horaLocal = `${fecha.getFullYear()}-${p(fecha.getMonth() + 1)}-${p(fecha.getDate())}T${p(fecha.getHours())}:${p(fecha.getMinutes())}`;
-  return { ok: true, horaLocal };
 }
 
 /**
@@ -1696,82 +1588,6 @@ export async function agregarViajePedidoAction(
     return {
       ok: false,
       mensaje: e instanceof Error ? e.message : "No se pudo agregar el volumen.",
-    };
-  }
-}
-
-/**
- * TEMPORAL/REVERSIBLE (flag PERMITIR_HORA_CARGA_MANUAL). Solo Admin: FIJA (o limpia)
- * la hora de carga manual de un pedido. Con valor, tras la cascada el post-paso
- * reubica los viajes para que la carga arranque a esa hora, AUNQUE choque con otro
- * pedido. `horaLocal` = "YYYY-MM-DDTHH:mm"; "" o null vuelve a automático.
- */
-export async function fijarHoraCargaManualAction(
-  pedidoId: number,
-  horaLocal: string | null,
-): Promise<{ ok: boolean; mensaje?: string }> {
-  try {
-    if (!PERMITIR_HORA_CARGA_MANUAL) {
-      return { ok: false, mensaje: "La hora de carga manual está deshabilitada." };
-    }
-    const alcance = await alcanceActual();
-    if (!alcance) return { ok: false, mensaje: "Sesión no válida." };
-    if (!alcance.esAdmin) {
-      return {
-        ok: false,
-        mensaje: "Solo el Administrador puede fijar la hora de carga manual.",
-      };
-    }
-    const pedido = await prisma.pedidos.findUnique({
-      where: { id: pedidoId },
-      select: { planta_id: true, hora_solicitada: true, hora_carga_manual: true },
-    });
-    if (!pedido) return { ok: false, mensaje: "Pedido no encontrado." };
-
-    const limpiar = !horaLocal || !horaLocal.trim();
-    const nueva = limpiar ? null : new Date(horaLocal!);
-    if (!limpiar && Number.isNaN(nueva!.getTime())) {
-      return { ok: false, mensaje: "Hora de carga no válida." };
-    }
-
-    await prisma.pedidos.update({
-      where: { id: pedidoId },
-      data: { hora_carga_manual: nueva },
-    });
-    // Recalcular la planta+día: la cascada corre normal y el post-paso reubica.
-    await recalcularCascadaPlanta(pedido.planta_id, pedido.hora_solicitada);
-
-    // Valor ASCII-safe para la bitácora (BD local WIN1252).
-    const fmtManual = (d: Date | null) =>
-      d == null
-        ? "automatico"
-        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-            d.getDate(),
-          ).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(
-            d.getMinutes(),
-          ).padStart(2, "0")}`;
-    const sesion = await auth();
-    const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
-    await prisma.bitacora_auditoria.create({
-      data: {
-        tabla_afectada: "pedidos",
-        registro_id: pedidoId,
-        usuario: quien,
-        campo_modificado: "hora_carga_manual",
-        valor_anterior: fmtManual(pedido.hora_carga_manual),
-        valor_nuevo: fmtManual(nueva),
-        motivo: nueva
-          ? "Hora de carga fijada manualmente (Admin)"
-          : "Hora de carga vuelta a automatico (Admin)",
-      },
-    });
-
-    revalidarPantallas();
-    return { ok: true };
-  } catch (e) {
-    return {
-      ok: false,
-      mensaje: e instanceof Error ? e.message : "No se pudo fijar la hora de carga.",
     };
   }
 }

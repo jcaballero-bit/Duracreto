@@ -26,7 +26,6 @@ import {
   editarViajeManualAction,
   eliminarPedidoAction,
   eliminarViajesManualAction,
-  reordenarPedidoAction,
   fijarAperturaPlantaAction,
   fijarHoraViajeAction,
   generarViajesEnSerieAction,
@@ -46,7 +45,7 @@ import {
 } from "@/lib/motor/validacion-manual";
 import { agruparFilasPorPedido } from "@/lib/programacion/agrupar-manual";
 import { CancelarPedidoModal } from "../components/cancelar-pedido-modal";
-import { ModalEdicion, OrdenNumeral, type OpcionesModal, type PedidoVista } from "./tabla-pedidos";
+import { ModalEdicion, type OpcionesModal, type PedidoVista } from "./tabla-pedidos";
 import { Badge } from "../components/ui";
 import { colorPorCliente } from "@/lib/color-cliente";
 import { parsePortapapeles } from "@/lib/portapapeles";
@@ -393,24 +392,6 @@ function PlantelManualBloque({
   // Cambiar la POSICIÓN del cliente en la cola (igual que el modo Avanzado). Ojo: el
   // servidor renumera la cola y vuelve a agendar el día del plantel, así que los
   // horarios que se hayan puesto a mano se recalculan — se avisa antes de hacerlo.
-  const reordenarPedido = (pedidoId: number, nuevo: number) => {
-    const p = pedidoPorId.get(pedidoId);
-    if (!p || nuevo === p.orden || !Number.isFinite(nuevo) || nuevo < 1) return;
-    if (
-      !confirm(
-        `Mover ${p.empresa} a la posición ${nuevo} reacomoda la cola del plantel y vuelve a ` +
-          "calcular los horarios del día (se pierden los ajustes hechos a mano). ¿Continuar?",
-      )
-    ) {
-      return;
-    }
-    void (async () => {
-      const res = await reordenarPedidoAction(pedidoId, nuevo);
-      if (res.ok) router.refresh();
-      else alert(res.mensaje ?? "No se pudo cambiar la posición.");
-    })();
-  };
-
   const eliminarPedido = (p: PedidoVista) => {
     const etq = p.proyecto ? `${p.empresa} — ${p.proyecto}` : p.empresa;
     if (!confirm(`¿Eliminar el pedido de ${etq} y todos sus viajes?`)) return;
@@ -905,13 +886,14 @@ function PlantelManualBloque({
                             {colapsados.has(g.pedidoId) ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
                           </button>
 
-                          {/* Posición en la cola: se cambia igual que en el modo Avanzado. */}
-                          <span className="shrink-0">
-                            <OrdenNumeral
-                              orden={pedidoPorId.get(g.pedidoId)?.orden ?? null}
-                              puedeEditar={puedeEditar && !!pedidoPorId.get(g.pedidoId)}
-                              onReordenar={(nuevo) => reordenarPedido(g.pedidoId, nuevo)}
-                            />
+                          {/* Orden en que se creó el pedido. Es informativo: cambiarlo
+                              reacomodaría la cola y movería a otros clientes, y eso ya no
+                              se hace — el horario de cada viaje se fija a mano. */}
+                          <span
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold text-accent"
+                            title="Orden en que se creó el pedido en este plantel"
+                          >
+                            {pedidoPorId.get(g.pedidoId)?.orden ?? "—"}
                           </span>
 
                           {/* Llegada del primer mixer: la hora prometida a la obra. */}
@@ -1012,9 +994,9 @@ function PlantelManualBloque({
                             </span>
                           )}
 
-                          {/* Acciones del PEDIDO completo (no de un viaje): las mismas del
-                              modo Avanzado. Editar re-agenda SOLO este pedido, sin mover a
-                              los demás clientes (`aislado`). */}
+                          {/* Acciones del PEDIDO completo (no de un viaje). Editar no
+                              mueve los horarios: solo si se cambia la hora de llegada se
+                              re-agendan los viajes de ESTE pedido. */}
                           {puedeEditar && pedidoPorId.get(g.pedidoId) && (
                             <span className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
                               <button
@@ -1118,8 +1100,8 @@ function PlantelManualBloque({
                                   if (el) celdas.current.set(`${planta.id}:${i}:volumen`, el);
                                 }}
                                 type="number"
-                                min="0.5"
-                                step="0.5"
+                                min="0.01"
+                                step="any"
                                 value={ef.volumen}
                                 disabled={ocupado}
                                 onFocus={() => setEditandoId(f.id)}
@@ -1271,7 +1253,6 @@ function PlantelManualBloque({
         <ModalEdicion
           pedido={editandoPedido}
           opciones={opciones}
-          aislado
           onCerrar={() => setEditandoPedido(null)}
           onExito={() => {
             setEditandoPedido(null);
@@ -2006,7 +1987,7 @@ function AgregarViajeModal({
             </select>
           </Campo>
           <Campo label="Volumen (m³)">
-            <input type="number" min="0.5" step="0.5" value={volumen} onChange={(e) => setVolumen(e.target.value)} className={inCls} />
+            <input type="number" min="0.01" step="any" value={volumen} onChange={(e) => setVolumen(e.target.value)} className={inCls} />
           </Campo>
           <Campo label="Hora de carga">
             <input type="time" value={hora} onChange={(e) => setHora(e.target.value)} className={inCls} />
@@ -2137,7 +2118,7 @@ function GenerarSerieModal({
             </select>
           </Campo>
           <Campo label="Volumen por viaje (m³)">
-            <input type="number" min="0.5" step="0.5" value={volumen} onChange={(e) => setVolumen(e.target.value)} className={inCls} />
+            <input type="number" min="0.01" step="any" value={volumen} onChange={(e) => setVolumen(e.target.value)} className={inCls} />
           </Campo>
           <Campo label="Tipo de descarga">
             <select value={tipoDescarga} onChange={(e) => setTipoDescarga(e.target.value)} className={selCls}>

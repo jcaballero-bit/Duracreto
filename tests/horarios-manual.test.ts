@@ -198,8 +198,6 @@ describe("dónde se aplica el bloqueo (cableado de las server actions)", () => {
   const PROGRAMACION = [
     "crearPedidoAction",
     "modificarPedidoAction",
-    "reordenarPedidoAction",
-    "organizarDiaAction",
     "cancelarPedidoAction",
     "eliminarPedidoAction",
     "agregarViajeManualAction",

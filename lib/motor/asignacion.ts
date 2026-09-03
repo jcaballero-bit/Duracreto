@@ -17,14 +17,11 @@ import {
   capacidadPlaneacion,
   cargaSeguraMixer,
   cierreProgramaDe,
-  DEFAULT_TIEMPO_REGRESO_MIN,
   DEFAULT_TIEMPO_VIAJE_MIN,
   ESTADO_DISPONIBLE,
   ESTADO_VIAJE_COMPLETADO,
-  HORA_APERTURA_POR_DEFECTO,
   MARGEN_MINIMO_MIN,
   MIN_SALIDA_TRAS_CARGA,
-  PERMITIR_HORA_CARGA_MANUAL,
   SECUENCIA_ESTADOS_VIAJE,
   DIAS_MAX_CORRECCION_HORA_REAL,
 } from "./config";
@@ -33,15 +30,12 @@ import { planificarCombinacion, unidadLibreEnVentana } from "./planificador";
 import type { VentanaViaje } from "./planificador";
 import { analizarFrecuencia, type ResultadoFrecuencia } from "./frecuencia";
 import { planificarSerie } from "./serie";
-import { leerMargenHueco } from "./config-runtime";
-import { calcularHuecos, planificarDosPasadas, type Hueco, type PedidoOrg } from "./organizador";
 import {
   diferenciaMinutos,
   finDelDia,
   inicioDelDia,
   minutosDeCarga,
   minutosDeDescarga,
-  mismoDia,
   sumarMinutos,
   tiemposDeViaje,
 } from "./tiempos";
@@ -292,85 +286,7 @@ export async function recalcularCascadaPlanta(
     plantas.length <= 1
       ? await cascadaDeUnaPlanta(plantas[0]?.id ?? plantaId, dia, soloPedidoId)
       : await cascadaMultiPlanta(planta.plantel_id, dia, soloPedidoId);
-  // Post-paso TEMPORAL/REVERSIBLE: reubica los pedidos con hora de carga fijada por
-  // el Admin. No modifica la cascada; con el flag apagado no hace nada.
-  await aplicarHoraCargaManual(planta.plantel_id, dia, soloPedidoId);
   return cambios;
-}
-
-/**
- * TEMPORAL/REVERSIBLE (flag `PERMITIR_HORA_CARGA_MANUAL`). Post-paso que corre
- * DESPUÉS de la cascada: por cada pedido del plantel+día con `hora_carga_manual`
- * fijada por el Admin, DESPLAZA sus viajes movibles (no iniciados) para que la carga
- * arranque a esa hora exacta, preservando duraciones y escalonamiento. NO valida
- * traslapes con otros pedidos (es justo lo que el Admin pidió permitir). No toca la
- * lógica de la cascada; si el flag está apagado, retorna de inmediato.
- */
-async function aplicarHoraCargaManual(
-  plantelId: number,
-  dia: Date,
-  soloPedidoId?: number,
-): Promise<void> {
-  if (!PERMITIR_HORA_CARGA_MANUAL) return;
-  const pedidos = await prisma.pedidos.findMany({
-    where: {
-      plantel_id: plantelId,
-      // En modo aislado solo se reubica el pedido en curso (a los demás no se les toca).
-      ...(soloPedidoId != null ? { id: soloPedidoId } : {}),
-      estado_pedido: "Activo",
-      hora_carga_manual: { not: null },
-      hora_solicitada: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
-    },
-    select: {
-      id: true,
-      hora_carga_manual: true,
-      viajes: {
-        // Solo viajes MOVIBLES: no cancelados, no completados, sin carga real
-        // iniciada, con horario calculado. Los ya iniciados conservan su realidad.
-        where: {
-          estado: { notIn: ["Cancelado", "Completado"] },
-          ts_inicio_carga_real: null,
-          motivo_asignacion: { not: "Sin cubrir" },
-          hora_inicio_carga: { not: null },
-        },
-        select: {
-          id: true,
-          hora_inicio_carga: true,
-          hora_fin_carga: true,
-          hora_salida_planta: true,
-          hora_llegada_proyecto: true,
-          hora_inicio_descarga: true,
-          hora_fin_descarga: true,
-          hora_regreso_planta: true,
-        },
-      },
-    },
-  });
-
-  for (const p of pedidos) {
-    if (p.hora_carga_manual == null || p.viajes.length === 0) continue;
-    // Ancla = inicio de carga más temprano que la cascada acaba de calcular para
-    // este pedido. Desplazamos TODO el bloque para que ese arranque sea la hora
-    // manual (el resto de sus viajes conserva su separación relativa).
-    const firstMs = Math.min(...p.viajes.map((v) => v.hora_inicio_carga!.getTime()));
-    const deltaMs = p.hora_carga_manual.getTime() - firstMs;
-    if (deltaMs === 0) continue;
-    const desplazar = (d: Date | null) => (d == null ? null : new Date(d.getTime() + deltaMs));
-    for (const v of p.viajes) {
-      await prisma.viajes.update({
-        where: { id: v.id },
-        data: {
-          hora_inicio_carga: desplazar(v.hora_inicio_carga),
-          hora_fin_carga: desplazar(v.hora_fin_carga),
-          hora_salida_planta: desplazar(v.hora_salida_planta),
-          hora_llegada_proyecto: desplazar(v.hora_llegada_proyecto),
-          hora_inicio_descarga: desplazar(v.hora_inicio_descarga),
-          hora_fin_descarga: desplazar(v.hora_fin_descarga),
-          hora_regreso_planta: desplazar(v.hora_regreso_planta),
-        },
-      });
-    }
-  }
 }
 
 /**
@@ -1255,269 +1171,6 @@ async function siguienteOrdenDia(plantelId: number, dia: Date): Promise<number> 
   return (agg._max.orden_dia ?? 0) + 1;
 }
 
-/**
- * Reordena un pedido dentro de su plantel+fecha: lo mueve a `nuevoOrden` y
- * REACOMODA el resto para que la secuencia quede 1..N sin huecos ni repetidos
- * (operación atómica). Luego RECALCULA la cascada de horarios de TODAS las
- * plantas de ese plantel+fecha usando el nuevo orden como cola. Registra el
- * cambio en bitácora. No toca pedidos de otro plantel ni de otra fecha.
- */
-export async function reordenarPedidoDia(
-  pedidoId: number,
-  nuevoOrden: number,
-  usuario: string,
-): Promise<{ ok: boolean; mensaje?: string; viajesRecalculados: number[] }> {
-  const pedido = await prisma.pedidos.findUniqueOrThrow({
-    where: { id: pedidoId },
-    select: { plantel_id: true, hora_solicitada: true, orden_dia: true },
-  });
-  const ini = inicioDelDia(pedido.hora_solicitada);
-  const fin = finDelDia(pedido.hora_solicitada);
-
-  // Todos los pedidos del plantel+fecha, en su orden actual.
-  const lista = await prisma.pedidos.findMany({
-    where: { plantel_id: pedido.plantel_id, hora_solicitada: { gte: ini, lt: fin } },
-    select: { id: true, planta_id: true, orden_dia: true },
-    orderBy: [{ orden_dia: "asc" }, { id: "asc" }],
-  });
-
-  const desde = lista.findIndex((p) => p.id === pedidoId);
-  if (desde < 0) {
-    return { ok: false, mensaje: "Pedido no encontrado en la cola.", viajesRecalculados: [] };
-  }
-  const destino = Math.min(Math.max(1, Math.round(nuevoOrden)), lista.length) - 1;
-
-  const ordenAnterior = pedido.orden_dia;
-  const [movido] = lista.splice(desde, 1);
-  lista.splice(destino, 0, movido);
-
-  // Reasignar 1..N en una sola transacción (todo o nada).
-  await prisma.$transaction(
-    lista.map((p, i) =>
-      prisma.pedidos.update({ where: { id: p.id }, data: { orden_dia: i + 1 } }),
-    ),
-  );
-
-  await prisma.bitacora_auditoria.create({
-    data: {
-      tabla_afectada: "pedidos",
-      registro_id: pedidoId,
-      usuario,
-      campo_modificado: "orden_dia",
-      valor_anterior: ordenAnterior != null ? String(ordenAnterior) : null,
-      valor_nuevo: String(destino + 1),
-      motivo: "Reordenamiento manual de la cola del día",
-    },
-  });
-
-  // Recalcular la cascada de CADA planta del plantel+fecha (el orden cambió).
-  const plantas = [...new Set(lista.map((p) => p.planta_id))];
-  const viajesRecalculados: number[] = [];
-  for (const plantaId of plantas) {
-    const ids = await recalcularCascadaPlanta(plantaId, pedido.hora_solicitada);
-    viajesRecalculados.push(...ids);
-  }
-  return { ok: true, viajesRecalculados };
-}
-
-/** Hora de apertura del día (medianoche local + HORA_APERTURA_POR_DEFECTO). */
-function aperturaDelDiaMs(dia: Date): number {
-  return new Date(
-    dia.getFullYear(),
-    dia.getMonth(),
-    dia.getDate(),
-    HORA_APERTURA_POR_DEFECTO,
-    0,
-    0,
-    0,
-  ).getTime();
-}
-const VENTANA_DIA_HORAS = 14; // ventana amplia del día para acotar la cola de huecos
-
-/**
- * Huecos libres de CARGA en la bahía de una planta ese día (a partir de los viajes
- * ya programados: [hora_inicio_carga, hora_fin_carga]). Devuelve intervalos
- * {inicioMs, finMs, durMin} de duración >= margen configurable. Solo lectura — lo
- * usa la vista simplificada (tarjeta de sugerencia) y el endpoint de huecos.
- */
-export async function huecosDePlanta(plantaId: number, dia: Date): Promise<Hueco[]> {
-  const ini = inicioDelDia(dia);
-  const fin = finDelDia(dia);
-  const viajes = await prisma.viajes.findMany({
-    where: {
-      planta_id: plantaId,
-      estado: { not: "Cancelado" },
-      hora_inicio_carga: { not: null },
-      hora_fin_carga: { not: null },
-      pedido: { hora_solicitada: { gte: ini, lt: fin }, estado_pedido: "Activo" },
-    },
-    select: { hora_inicio_carga: true, hora_fin_carga: true },
-  });
-  const ocupados = viajes.map((v) => ({
-    inicioMs: v.hora_inicio_carga!.getTime(),
-    finMs: v.hora_fin_carga!.getTime(),
-  }));
-  const aperturaMs = aperturaDelDiaMs(ini);
-  const cierreMs = aperturaMs + VENTANA_DIA_HORAS * 3_600_000;
-  const margenMin = await leerMargenHueco();
-  return calcularHuecos(ocupados, aperturaMs, cierreMs, margenMin);
-}
-
-/**
- * Motor de 2 PASADAS: recalcula el `orden_dia` de TODOS los pedidos activos de un
- * plantel+fecha con la heurística de anclas + relleno best-fit (`planificarDosPasadas`)
- * y RECALCULA la cascada de horarios. Es el "Organizar mi día" de la vista simple.
- * Reversible/atómico como `reordenarPedidoDia` (solo toca `orden_dia` + recálculo).
- */
-export async function organizarDia(
-  plantelId: number,
-  dia: Date,
-  usuario: string,
-): Promise<{ ok: boolean; mensaje?: string; viajesRecalculados: number[] }> {
-  const ini = inicioDelDia(dia);
-  const fin = finDelDia(dia);
-
-  const pedidos = await prisma.pedidos.findMany({
-    where: {
-      plantel_id: plantelId,
-      hora_solicitada: { gte: ini, lt: fin },
-      estado_pedido: "Activo",
-    },
-    select: {
-      id: true,
-      hora_solicitada: true,
-      hora_bloqueada: true,
-      planta_id: true,
-      tiempo_transporte_min: true,
-      cliente: { select: { tiempo_viaje_referencia_min: true } },
-      viajes: {
-        where: { estado: { not: "Cancelado" } },
-        select: { planta_id: true, volumen_asignado_m3: true },
-      },
-    },
-    orderBy: [{ orden_dia: "asc" }, { id: "asc" }],
-  });
-  if (pedidos.length === 0) return { ok: true, viajesRecalculados: [] };
-
-  // Capacidad/alistamiento por planta (para medir minutos de carga de cada viaje).
-  const plantas = await prisma.plantas.findMany({
-    where: { plantel_id: plantelId },
-    select: { id: true, capacidad_m3h: true, tiempo_alistamiento_min: true },
-  });
-  const capDe = new Map(plantas.map((p) => [p.id, p]));
-
-  const margenMin = await leerMargenHueco();
-  const aperturaMs = aperturaDelDiaMs(ini);
-  const cierreMs = aperturaMs + VENTANA_DIA_HORAS * 3_600_000;
-
-  const entrada: PedidoOrg[] = pedidos.map((p) => {
-    const plantaPrim = p.viajes[0]?.planta_id ?? p.planta_id;
-    const cap = capDe.get(plantaPrim);
-    const cargaViaje = (vol: number) =>
-      cap ? cap.tiempo_alistamiento_min + minutosDeCarga(vol, cap.capacidad_m3h) : 30;
-    const duracionMin = p.viajes.length
-      ? p.viajes.reduce((s, v) => s + cargaViaje(v.volumen_asignado_m3), 0)
-      : 30;
-    const transporteMin =
-      p.tiempo_transporte_min ?? p.cliente?.tiempo_viaje_referencia_min ?? DEFAULT_TIEMPO_VIAJE_MIN;
-    const primerCarga = p.viajes.length ? cargaViaje(p.viajes[0].volumen_asignado_m3) : 30;
-    return {
-      id: p.id,
-      plantaId: plantaPrim,
-      esAncla: p.viajes.length > 1 || p.hora_bloqueada,
-      horaFija: p.hora_bloqueada,
-      llegadaMs: p.hora_solicitada.getTime(),
-      inicioFijoMs: p.hora_bloqueada
-        ? p.hora_solicitada.getTime() - (transporteMin + primerCarga) * 60_000
-        : null,
-      duracionMin,
-    };
-  });
-
-  const orden = planificarDosPasadas(entrada, { aperturaMs, cierreMs, margenMin });
-
-  await prisma.$transaction(
-    orden.map((o) => prisma.pedidos.update({ where: { id: o.id }, data: { orden_dia: o.orden } })),
-  );
-  await prisma.bitacora_auditoria.create({
-    data: {
-      tabla_afectada: "pedidos",
-      registro_id: plantelId,
-      usuario,
-      campo_modificado: "orden_dia",
-      valor_anterior: null,
-      valor_nuevo: `Organizar dia: ${orden.length} pedidos (2 pasadas)`,
-      motivo: "Organizacion automatica del dia (anclas + relleno de huecos)",
-    },
-  });
-
-  const plantasIds = [...new Set(pedidos.map((p) => p.planta_id))];
-  const viajesRecalculados: number[] = [];
-  for (const plantaId of plantasIds) {
-    const ids = await recalcularCascadaPlanta(plantaId, dia);
-    viajesRecalculados.push(...ids);
-  }
-  return { ok: true, viajesRecalculados };
-}
-
-/**
- * Sugiere la próxima hora de LLEGADA al proyecto disponible para una planta ese
- * día: toma el momento en que la planta queda libre tras dosificar su cola
- * existente (o la apertura por defecto si está vacía) y le suma el tiempo de
- * carga de este pedido + salida + transporte hasta el proyecto. Como
- * `hora_solicitada` representa la llegada, esta sugerencia es una llegada. Es
- * editable por el Programador.
- */
-export async function sugerirHoraDisponible(
-  plantaId: number,
-  dia: Date,
-  volumen = 0,
-  clienteId?: number,
-): Promise<Date> {
-  const planta = await prisma.plantas.findUniqueOrThrow({ where: { id: plantaId } });
-  const viajes = await prisma.viajes.findMany({
-    where: {
-      estado: { not: "Cancelado" },
-      motivo_asignacion: { not: "Sin cubrir" },
-      pedido: {
-        planta_id: plantaId,
-        hora_solicitada: { gte: inicioDelDia(dia), lt: finDelDia(dia) },
-      },
-    },
-    select: { hora_fin_carga: true },
-  });
-  const finales = viajes
-    .map((v) => v.hora_fin_carga?.getTime())
-    .filter((t): t is number => t != null);
-
-  // Momento en que la planta queda libre para cargar (fin de carga de la cola).
-  let libreLoadMs: number;
-  if (finales.length === 0) {
-    const d = new Date(dia);
-    d.setHours(HORA_APERTURA_POR_DEFECTO, 0, 0, 0);
-    libreLoadMs = d.getTime();
-  } else {
-    libreLoadMs = Math.max(...finales);
-  }
-
-  // Transporte del cliente (si se conoce); si no, el valor por defecto.
-  let tViaje = DEFAULT_TIEMPO_VIAJE_MIN;
-  if (clienteId != null) {
-    const cli = await prisma.clientes.findUnique({
-      where: { id: clienteId },
-      select: { tiempo_viaje_referencia_min: true },
-    });
-    tViaje = cli?.tiempo_viaje_referencia_min ?? DEFAULT_TIEMPO_VIAJE_MIN;
-  }
-  const cargaMin =
-    planta.tiempo_alistamiento_min + minutosDeCarga(volumen, planta.capacidad_m3h);
-
-  // Sugerencia = LLEGADA = fin de carga del hueco + salida + transporte.
-  return new Date(
-    libreLoadMs + (cargaMin + MIN_SALIDA_TRAS_CARGA + tViaje) * 60000,
-  );
-}
-
 // ── Frecuencia entre camiones: análisis con flota real (Solución 2) ──────────
 
 export interface EntradaAnalisisFrecuencia {
@@ -1782,32 +1435,49 @@ export async function programarPedido(
 }
 
 /**
- * Modifica un pedido existente: borra sus viajes, actualiza sus datos y RE-CORRE
- * el motor de asignación. Si cambió de planta o de día, recalcula además la
- * cascada de la planta/día ANTERIOR (para cerrar el hueco que dejó ahí).
+ * Modifica un pedido existente.
+ *
+ * **Regla central (nada se mueve solo):** editar un pedido NO recalcula los horarios
+ * ni cambia de posición a nadie — ni al pedido editado ni, sobre todo, a los demás
+ * clientes. Solo hay UNA excepción: si cambió la **hora de llegada al proyecto**, se
+ * re-agendan los viajes de ESE pedido (en cascada desde la nueva llegada, respetando
+ * su intervalo entre camiones). Los pedidos de otros clientes nunca se tocan.
+ *
+ *  · Cambió la llegada (o el plantel, porque su flota y sus plantas son otras) →
+ *    se re-agenda este pedido. Los viajes que YA salieron de planta se conservan y
+ *    solo se re-agenda el volumen restante.
+ *  · No cambió → los horarios quedan intactos. Si el volumen subió o bajó se
+ *    AGREGAN o QUITAN viajes al FINAL de la secuencia de este pedido, sin desplazar
+ *    los que ya tenía. Si cambió de planta dentro del mismo plantel, los viajes
+ *    movibles pasan a la planta nueva conservando su hora.
+ *
+ * Los choques que resulten (misma boca de carga, mismo mixer) se devuelven en
+ * `avisosChoque`: se AVISA, nunca se corrige, porque corregir significaría mover a
+ * otro cliente.
  */
 export async function modificarPedido(
   pedidoId: number,
   entrada: EntradaPedido,
-  /**
-   * true = re-agendar SOLO este pedido, sin tocar a los demás (lo usa la edición
-   * hecha desde el Modo Manual, donde el sistema nunca reprograma a terceros: si el
-   * pedido editado queda encima de otro se AVISA). false = comportamiento histórico
-   * del modo Automático: se recalcula la cascada de la planta.
-   */
-  aislado = false,
 ): Promise<ResultadoProgramacion> {
   const anterior = await prisma.pedidos.findUniqueOrThrow({
     where: { id: pedidoId },
     select: {
+      plantel_id: true,
       planta_id: true,
       hora_solicitada: true,
       volumen_programado: true,
       es_adicion: true,
+      viajes: {
+        select: {
+          id: true,
+          estado: true,
+          ts_inicio_carga_real: true,
+          volumen_asignado_m3: true,
+        },
+      },
     },
   });
 
-  await prisma.viajes.deleteMany({ where: { pedido_id: pedidoId } });
   // Bombas: elección manual (una o varias) o auto-asignación por hub (propia -> hub).
   const bombasIds = await resolverBombasPedido(entrada);
   await fijarBombasDePedido(pedidoId, bombasIds);
@@ -1845,15 +1515,196 @@ export async function modificarPedido(
     },
   });
 
-  // La planta/día anterior perdió este pedido → recalcular su cascada.
-  if (
-    anterior.planta_id !== entrada.planta_id ||
-    !mismoDia(anterior.hora_solicitada, entrada.hora_solicitada)
-  ) {
-    await recalcularCascadaPlanta(anterior.planta_id, anterior.hora_solicitada);
+  const cambioLlegada =
+    anterior.hora_solicitada.getTime() !== entrada.hora_solicitada.getTime();
+  // El plantel define la flota y las plantas disponibles: si cambia, los mixers y las
+  // plantas de los viajes actuales ya no le pertenecen y hay que re-agendar.
+  const cambioPlantel = anterior.plantel_id !== entrada.plantel_id;
+  const sinViajes = anterior.viajes.length === 0;
+
+  if (cambioLlegada || cambioPlantel || sinViajes) {
+    // Los viajes que YA salieron de planta son un hecho: no se reescriben. Solo se
+    // re-agenda el volumen que todavía no se ha cargado.
+    const iniciado = (v: { estado: string; ts_inicio_carga_real: Date | null }) =>
+      v.ts_inicio_carga_real != null || v.estado === ESTADO_VIAJE_COMPLETADO;
+    const iniciados = anterior.viajes.filter(iniciado);
+    const movibles = anterior.viajes.filter((v) => !iniciado(v));
+    await prisma.viajes.deleteMany({ where: { id: { in: movibles.map((v) => v.id) } } });
+
+    const yaCargado = iniciados.reduce((a, v) => a + v.volumen_asignado_m3, 0);
+    const restante = Math.max(0, redondear2(entrada.volumen_total_m3 - yaCargado));
+    return asignarViajesDePedido(pedidoId, entrada, true, restante);
   }
 
-  return asignarViajesDePedido(pedidoId, entrada, aislado);
+  // ── Sin cambio de llegada: los horarios NO se tocan ───────────────────────
+  const plantel = await prisma.planteles.findUniqueOrThrow({
+    where: { id: entrada.plantel_id },
+  });
+
+  // Cambio de planta DENTRO del mismo plantel: los viajes movibles pasan a la planta
+  // nueva conservando su hora de carga (el usuario cambió de boca, no de horario).
+  if (anterior.planta_id !== entrada.planta_id && !(entrada.usar_ambas_plantas ?? false)) {
+    await prisma.viajes.updateMany({
+      where: {
+        pedido_id: pedidoId,
+        ts_inicio_carga_real: null,
+        estado: { notIn: [ESTADO_VIAJE_COMPLETADO, "Cancelado"] },
+      },
+      data: { planta_id: entrada.planta_id },
+    });
+  }
+
+  const viajesTocados = await ajustarVolumenSinMoverHorarios(pedidoId, entrada, plantel);
+
+  const avisosChoque = await detectarChoques(
+    pedidoId,
+    (
+      await prisma.viajes.findMany({
+        where: { pedido_id: pedidoId, mixer_id: { not: null } },
+        select: { id: true },
+      })
+    ).map((v) => v.id),
+  );
+
+  return armarResultadoPedido(pedidoId, entrada, plantel.hub_id, viajesTocados, avisosChoque);
+}
+
+/**
+ * Ajusta la CANTIDAD de viajes de un pedido a su volumen nuevo, sin mover ni un
+ * horario de los que ya tenía:
+ *
+ *  · subió  → se agregan viajes al FINAL de la secuencia de ESTE pedido (con
+ *    `colocarAdicionesAlFinal`, que los coloca tras su cola sin tocar a nadie más);
+ *  · bajó   → se quitan viajes desde el final, y si sobra un resto parcial se recorta
+ *    el volumen del último que queda.
+ *
+ * Nunca se quita ni se recorta un viaje que ya salió de planta: eso es un hecho
+ * registrado. Devuelve los ids de los viajes creados o modificados.
+ */
+async function ajustarVolumenSinMoverHorarios(
+  pedidoId: number,
+  entrada: EntradaPedido,
+  plantel: { id: number; hub_id: number | null },
+): Promise<number[]> {
+  const vivos = await prisma.viajes.findMany({
+    where: { pedido_id: pedidoId, estado: { not: "Cancelado" } },
+    orderBy: [{ hora_inicio_carga: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      estado: true,
+      ts_inicio_carga_real: true,
+      volumen_asignado_m3: true,
+    },
+  });
+  const actual = vivos.reduce((a, v) => a + v.volumen_asignado_m3, 0);
+  const delta = redondear2(entrada.volumen_total_m3 - actual);
+  if (Math.abs(delta) < 0.005) return []; // sin cambio real de volumen
+
+  if (delta < 0) {
+    // ── Bajó: se quita desde el FINAL ──────────────────────────────────────
+    let porQuitar = -delta;
+    const tocados: number[] = [];
+    for (const v of [...vivos].reverse()) {
+      if (porQuitar <= 0.005) break;
+      // Un viaje que ya salió de planta no se toca.
+      if (v.ts_inicio_carga_real != null || v.estado === ESTADO_VIAJE_COMPLETADO) continue;
+      if (v.volumen_asignado_m3 <= porQuitar + 0.005) {
+        await prisma.viajes.delete({ where: { id: v.id } });
+        porQuitar = redondear2(porQuitar - v.volumen_asignado_m3);
+      } else {
+        await prisma.viajes.update({
+          where: { id: v.id },
+          data: { volumen_asignado_m3: redondear2(v.volumen_asignado_m3 - porQuitar) },
+        });
+        tocados.push(v.id);
+        porQuitar = 0;
+      }
+    }
+    return tocados;
+  }
+
+  // ── Subió: se agregan viajes al final de la cola de ESTE pedido ──────────
+  const candidatos = await candidatosDePlanta(
+    plantel.id,
+    plantel.hub_id,
+    entrada.hora_solicitada,
+  );
+  const reducidas = await cargarCapacidadesReducidas();
+  const capacidades = [
+    ...new Set(
+      candidatos.map((m) =>
+        capacidadPlaneacion(m.capacidad_m3, entrada.carga_reducida ?? false, reducidas),
+      ),
+    ),
+  ];
+  const plan = planificarCombinacion(delta, capacidades);
+  const plantasViaje = await repartirPlantas(
+    plantel.id,
+    entrada.planta_id,
+    plan.viajes.length,
+    entrada.hora_solicitada,
+    entrada.usar_ambas_plantas ?? false,
+    entrada.carga_simultanea ?? false,
+  );
+
+  let idxPlanta = 0;
+  const idsNuevos: number[] = [];
+  for (const vp of plan.viajes) {
+    const creado = await prisma.viajes.create({
+      data: {
+        pedido_id: pedidoId,
+        mixer_id: null,
+        planta_id: plantasViaje[idxPlanta++] ?? entrada.planta_id,
+        capacidad_asignada_m3: vp.capacidad,
+        volumen_asignado_m3: vp.volumen,
+        hora_solicitada: entrada.hora_solicitada,
+        motivo_asignacion: "Flota propia",
+        estado_confirmacion: "Pendiente",
+        // Se edita desde Programación: sigue siendo parte del PROGRAMA (no una adición
+        // de Despacho), así que aparece en el DPCR-08.
+        es_adicion: false,
+      },
+      select: { id: true },
+    });
+    idsNuevos.push(creado.id);
+  }
+  if (plan.volumenSinCubrir > 0) {
+    await prisma.viajes.create({
+      data: {
+        pedido_id: pedidoId,
+        mixer_id: null,
+        planta_id: entrada.planta_id,
+        capacidad_asignada_m3: 0,
+        volumen_asignado_m3: plan.volumenSinCubrir,
+        hora_solicitada: entrada.hora_solicitada,
+        motivo_asignacion: "Sin cubrir",
+        estado_confirmacion: "Pendiente",
+      },
+    });
+  }
+
+  const cliente = await prisma.clientes.findUniqueOrThrow({
+    where: { id: entrada.cliente_id },
+    select: { tiempo_viaje_referencia_min: true },
+  });
+  const [tMin] = transporteDePedido(
+    entrada.tiempo_transporte_min ?? null,
+    cliente.tiempo_viaje_referencia_min,
+  );
+  await colocarAdicionesAlFinal(
+    idsNuevos,
+    entrada.hora_solicitada,
+    candidatos,
+    entrada.tipo_descarga,
+    tMin,
+    plantel.id,
+  );
+  return idsNuevos;
+}
+
+/** Redondeo a 2 decimales: los volúmenes se capturan con decimales libres. */
+function redondear2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 // ── MODO MANUAL: escritura directa de viajes SIN cascada ─────────────────────
@@ -2680,10 +2531,17 @@ async function asignarViajesDePedido(
    * (agregar un cliente nuevo). `modificarPedido` sigue recalculando la planta.
    */
   aislado = false,
+  /**
+   * Volumen para el que se generan viajes. Por defecto el total del pedido; se pasa
+   * distinto cuando parte del pedido YA salio de planta y solo hay que re-agendar el
+   * resto (esos viajes se conservan tal cual).
+   */
+  volumenAPlanificar?: number,
 ): Promise<ResultadoProgramacion> {
   const plantel = await prisma.planteles.findUniqueOrThrow({
     where: { id: entrada.plantel_id },
   });
+  const volumenPlan = volumenAPlanificar ?? entrada.volumen_total_m3;
 
   // Capacidades disponibles = tamaños distintos de la flota propia + hub (excluye
   // mixers en mantenimiento la fecha del pedido).
@@ -2703,7 +2561,7 @@ async function asignarViajesDePedido(
     ),
   ];
 
-  const plan = planificarCombinacion(entrada.volumen_total_m3, capacidades);
+  const plan = planificarCombinacion(volumenPlan, capacidades);
 
   // Reparto de PLANTA por viaje. Si el pedido pidió "ambas plantas", se distribuyen
   // entre las 2 (hueco más temprano; preferida = la del pedido) para carga simultánea;
@@ -2776,13 +2634,32 @@ async function asignarViajesDePedido(
       )
     : [];
 
+  return armarResultadoPedido(pedidoId, entrada, plantel.hub_id, viajesRecalculados, avisosChoque);
+}
+
+/**
+ * Arma el `ResultadoProgramacion` de un pedido (volumen sin cubrir, sugerencias de
+ * refuerzo, alertas de margen, resumen de viajes y avisos) LEYENDO el estado actual.
+ *
+ * Está aparte porque hay dos caminos que devuelven este resultado: el que re-agenda
+ * el pedido (tras crear o cambiar su hora de llegada) y el que NO toca los horarios
+ * (editar volumen, mezcla, elemento…). El segundo necesita el mismo resultado sin
+ * haber corrido la cascada.
+ */
+async function armarResultadoPedido(
+  pedidoId: number,
+  entrada: EntradaPedido,
+  hubId: number | null,
+  viajesRecalculados: number[],
+  avisosChoque: string[],
+): Promise<ResultadoProgramacion> {
   const volumenSinCubrir = await volumenSinCubrirDePedido(pedidoId);
   const sugerenciasRefuerzo =
     volumenSinCubrir > 0
       ? await sugerirRefuerzo(
           volumenSinCubrir,
           entrada.plantel_id,
-          plantel.hub_id ?? entrada.plantel_id,
+          hubId ?? entrada.plantel_id,
           entrada.hora_solicitada,
         )
       : [];
@@ -3504,24 +3381,19 @@ export async function detectarAlertasMargen(dia: Date): Promise<AlertaMargen[]> 
 export async function cancelarPedido(
   pedidoId: number,
 ): Promise<{ viajesRecalculados: number[] }> {
-  const pedido = await prisma.pedidos.findUniqueOrThrow({
-    where: { id: pedidoId },
-    select: { planta_id: true, hora_solicitada: true },
-  });
-
   await prisma.pedidos.delete({ where: { id: pedidoId } });
-
-  const viajesRecalculados = await recalcularCascadaPlanta(
-    pedido.planta_id,
-    pedido.hora_solicitada,
-  );
-  return { viajesRecalculados };
+  // NO se recalcula la cascada de la planta. Quitar un pedido libera un hueco, y
+  // recalcular adelantaria los horarios de los demas clientes: eso es justamente lo
+  // que no debe pasar (nada se mueve solo). El hueco queda visible en el Gantt para
+  // que el Programador decida si mete algo ahi.
+  return { viajesRecalculados: [] };
 }
 
 /**
- * Cancela un pedido MARCÁNDOLO (no lo borra): guarda motivo + detalle + usuario,
- * cancela sus viajes (liberando mixer) y recalcula la cascada de la planta para
- * cerrar el hueco. El pedido queda para el indicador comercial y la bitácora.
+ * Cancela un pedido MARCÁNDOLO (no lo borra): guarda motivo + detalle + usuario y
+ * cancela sus viajes (liberando mixer). El hueco que deja NO se cierra: los demás
+ * clientes conservan su horario. El pedido queda para el indicador comercial y la
+ * bitácora.
  */
 export async function cancelarPedidoConMotivo(
   pedidoId: number,
@@ -3584,12 +3456,9 @@ export async function cancelarPedidoConMotivo(
     }),
   ]);
 
-  // La planta libera el hueco del pedido cancelado → recalcular su cascada.
-  const viajesRecalculados = await recalcularCascadaPlanta(
-    pedido.planta_id,
-    pedido.hora_solicitada,
-  );
-  return { viajesRecalculados };
+  // NO se recalcula la cascada. El hueco que deja el pedido cancelado NO se cierra
+  // solo: adelantar a los demas clientes seria moverlos sin que nadie lo pidiera.
+  return { viajesRecalculados: [] };
 }
 
 // ── Paso 3: confirmar un refuerzo excepcional ────────────────────────────────
@@ -3644,8 +3513,9 @@ export async function confirmarRefuerzo(
     },
   });
 
-  // Agendar el viaje de refuerzo en la cascada de la planta.
-  await recalcularCascadaPlanta(pedido.planta_id, pedido.hora_solicitada);
+  // Agendar el viaje de refuerzo. En modo AISLADO: se agenda solo este pedido, para
+  // que los demas clientes ya programados conserven su horario exacto.
+  await recalcularCascadaPlanta(pedido.planta_id, pedido.hora_solicitada, pedidoId);
 
   // Validar traslape del mixer de refuerzo en su ventana ya calculada.
   const conHoras = await prisma.viajes.findUniqueOrThrow({
@@ -3670,7 +3540,7 @@ export async function confirmarRefuerzo(
       .filter((v): v is VentanaViaje => v != null);
     if (!unidadLibreEnVentana(ventana, ventanas)) {
       await prisma.viajes.delete({ where: { id: nuevo.id } });
-      await recalcularCascadaPlanta(pedido.planta_id, pedido.hora_solicitada);
+      await recalcularCascadaPlanta(pedido.planta_id, pedido.hora_solicitada, pedidoId);
       return {
         ok: false,
         mensaje: "El mixer de refuerzo se traslapa con otro viaje suyo ese día.",

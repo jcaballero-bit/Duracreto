@@ -15,14 +15,12 @@ export function AgregarViajeModal({
   cliente,
   onClose,
   onAgregado,
-  esAdmin = false,
 }: {
   pedidoId: number;
   cliente: string; // nombre del cliente para el encabezado
   onClose: () => void;
   onAgregado: (mensaje?: string) => void;
   // Solo el Admin puede agregar volúmenes fuera del paso de 0.5 m³ (step libre).
-  esAdmin?: boolean;
 }) {
   const [volumen, setVolumen] = useState("");
   const [pendiente, startTransition] = useTransition();
@@ -75,8 +73,8 @@ export function AgregarViajeModal({
             <span className="mb-1 block font-medium text-ink">Volumen adicional (m³)</span>
             <input
               type="number"
-              min="0.5"
-              step={esAdmin ? "any" : "0.5"}
+              min="0.01"
+              step="any"
               autoFocus
               value={volumen}
               onChange={(e) => setVolumen(e.target.value)}

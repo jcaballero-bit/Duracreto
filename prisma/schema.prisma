@@ -729,6 +729,10 @@ model pedidos {
   // post-paso reubica los viajes de este pedido para que su carga arranque a esta
   // hora exacta, aunque choque con otro pedido. null = automático (cascada manda).
   // Con el flag apagado el campo se ignora por completo (no daña el motor).
+  // OBSOLETA (sep-2026): era el override de hora de carga por pedido del modo
+  // AUTOMATICO, que recalculaba la planta entera. Con la programacion solo manual
+  // el usuario teclea la hora viaje por viaje. No se lee ni se escribe; se conserva
+  // la columna para no hacer DDL destructivo (igual que `pedidos.bomba_id`).
   hora_carga_manual DateTime?
   // Minutos mínimos entre la llegada de un camión y el siguiente (restricción de
   // acceso/espacio del sitio). El motor lo usa para escalonar los viajes del

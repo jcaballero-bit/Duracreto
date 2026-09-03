@@ -89,8 +89,8 @@ export function EditarEvento({
                 <span className="font-medium text-ink">Volumen (m³)</span>
                 <input
                   type="number"
-                  min="0.5"
-                  step="0.5"
+                  min="0.01"
+                  step="any"
                   value={volumen}
                   onChange={(e) => setVolumen(e.target.value)}
                   className="rounded-lg border border-border bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent"

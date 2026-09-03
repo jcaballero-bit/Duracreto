@@ -304,13 +304,21 @@ export async function detectarChoques(pedidoId: number, viajeIds: number[]): Pro
       hora_fin_carga: true,
       hora_regreso_planta: true,
       mixer: { select: { identificador: true } },
+      planta: { select: { nombre: true } },
     },
   });
+
+  /** Minutos que se traslapan dos intervalos (0 si no se tocan). */
+  const traslape = (aIni: number, aFin: number, bIni: number, bFin: number) =>
+    Math.max(0, Math.round((Math.min(aFin, bFin) - Math.max(aIni, bIni)) / 60000));
 
   for (const v of movidos) {
     if (!v.hora_inicio_carga || !v.hora_fin_carga) continue;
 
     // ── Choque de CARGA en la misma planta ──
+    // Una boca de carga no puede llenar dos mixers a la vez. Se AVISA con la planta,
+    // el cliente, la hora y los minutos que se encima: es lo que hace falta para
+    // decidir a mano si vale la pena mover algo.
     if (v.planta_id != null) {
       const enCarga = await prisma.viajes.findFirst({
         where: {
@@ -323,13 +331,21 @@ export async function detectarChoques(pedidoId: number, viajeIds: number[]): Pro
         orderBy: { hora_inicio_carga: "asc" },
         select: {
           hora_inicio_carga: true,
+          hora_fin_carga: true,
           pedido: { select: { cliente: { select: { empresa: true } } } },
         },
       });
-      if (enCarga?.hora_inicio_carga) {
+      if (enCarga?.hora_inicio_carga && enCarga.hora_fin_carga) {
+        const min = traslape(
+          v.hora_inicio_carga.getTime(),
+          v.hora_fin_carga.getTime(),
+          enCarga.hora_inicio_carga.getTime(),
+          enCarga.hora_fin_carga.getTime(),
+        );
         avisos.push(
-          `La carga de las ${hhmm(v.hora_inicio_carga.getTime())} se encima con la de ` +
-            `${enCarga.pedido.cliente.empresa} (${hhmm(enCarga.hora_inicio_carga.getTime())}) en la misma planta.`,
+          `Choque de carga en ${v.planta?.nombre ?? "la planta"}: el viaje de las ` +
+            `${hhmm(v.hora_inicio_carga.getTime())} se encima ${min} min con el de ` +
+            `${enCarga.pedido.cliente.empresa} (${hhmm(enCarga.hora_inicio_carga.getTime())}).`,
         );
       }
     }
@@ -347,13 +363,21 @@ export async function detectarChoques(pedidoId: number, viajeIds: number[]): Pro
         orderBy: { hora_inicio_carga: "asc" },
         select: {
           hora_inicio_carga: true,
+          hora_regreso_planta: true,
           pedido: { select: { cliente: { select: { empresa: true } } } },
         },
       });
-      if (mismoMixer?.hora_inicio_carga) {
+      if (mismoMixer?.hora_inicio_carga && mismoMixer.hora_regreso_planta) {
+        const min = traslape(
+          v.hora_inicio_carga.getTime(),
+          v.hora_regreso_planta.getTime(),
+          mismoMixer.hora_inicio_carga.getTime(),
+          mismoMixer.hora_regreso_planta.getTime(),
+        );
         avisos.push(
           `El mixer ${v.mixer?.identificador ?? ""} ya está en el suministro de ` +
-            `${mismoMixer.pedido.cliente.empresa} (carga ${hhmm(mismoMixer.hora_inicio_carga.getTime())}): ` +
+            `${mismoMixer.pedido.cliente.empresa} (carga ` +
+            `${hhmm(mismoMixer.hora_inicio_carga.getTime())}): se traslapan ${min} min, ` +
             "no puede hacer los dos viajes.",
         );
       }

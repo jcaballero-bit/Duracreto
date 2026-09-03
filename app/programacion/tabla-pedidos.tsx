@@ -1,13 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { Ban, ChevronDown, ChevronRight, Clock, Lock, Pencil, Trash2, X } from "lucide-react";
 import {
   confirmarRefuerzoAction,
   eliminarPedidoAction,
-  fijarHoraCargaManualAction,
-  reordenarPedidoAction,
 } from "../actions";
 import {
   PedidoForm,
@@ -110,20 +108,15 @@ export function TablaPedidos({
   opciones,
   puedeEditar = true,
   puedeAgregarQuitar = true,
-  esAdmin = false,
-  permitirHoraCargaManual = false,
 }: {
   pedidos: PedidoVista[];
   opciones: OpcionesModal;
   puedeEditar?: boolean;
   // ¿Puede AGREGAR o QUITAR pedidos del programa? Tras el cierre del DPCR-08 (4pm del
   // día anterior) solo el Admin puede: para los demás se ocultan Cancelar/Eliminar
-  // (y el botón Nuevo pedido lo oculta la página). Editar/reordenar siguen con
+  // (y el botón Nuevo pedido lo oculta la página). Editar sigue con
   // `puedeEditar`. El servidor lo refuerza en las acciones.
   puedeAgregarQuitar?: boolean;
-  // TEMPORAL/REVERSIBLE — habilita el control de hora de carga manual (solo Admin).
-  esAdmin?: boolean;
-  permitirHoraCargaManual?: boolean;
 }) {
   const router = useRouter();
   const [expandidos, setExpandidos] = useState<Set<number>>(new Set());
@@ -147,22 +140,13 @@ export function TablaPedidos({
     });
   };
 
-  const reordenar = (id: number, actual: number | null, nuevo: number) => {
-    if (!Number.isFinite(nuevo) || nuevo < 1 || nuevo === actual) return;
-    startBorrar(async () => {
-      const res = await reordenarPedidoAction(id, nuevo);
-      if (res.ok) router.refresh();
-      else alert(res.mensaje ?? "No se pudo reordenar.");
-    });
-  };
-
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[520px] text-sm">
         <thead>
           <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
             <th className="w-8 px-2 py-2" />
-            <th className="px-2 py-2" title="Orden de atención en el plantel">#</th>
+            <th className="px-2 py-2" title="Orden en que se creó el pedido en este plantel">#</th>
             <th className="px-3 py-2" title="Hora de llegada al proyecto">Llegada</th>
             <th className="px-3 py-2">Cliente / proyecto</th>
             <th className="hidden px-3 py-2 sm:table-cell">Tipo de concreto</th>
@@ -186,11 +170,9 @@ export function TablaPedidos({
                 onEditar={() => setEditando(p)}
                 onEliminar={() => eliminar(p.id)}
                 onCancelar={() => setCancelando(p)}
-                onReordenar={(nuevo) => reordenar(p.id, p.orden, nuevo)}
                 borrando={borrando}
                 puedeEditar={puedeEditar}
                 puedeAgregarQuitar={puedeAgregarQuitar}
-                horaCargaManualHabilitada={esAdmin && permitirHoraCargaManual}
               />
             );
           })}
@@ -221,54 +203,6 @@ export function TablaPedidos({
   );
 }
 
-/** Numeral del orden de atención. Editable por el Programador (reacomoda la cola). */
-export function OrdenNumeral({
-  orden,
-  puedeEditar,
-  onReordenar,
-}: {
-  orden: number | null;
-  puedeEditar: boolean;
-  onReordenar: (nuevo: number) => void;
-}) {
-  const [val, setVal] = useState(orden != null ? String(orden) : "");
-  useEffect(() => {
-    setVal(orden != null ? String(orden) : "");
-  }, [orden]);
-
-  if (!puedeEditar) {
-    return (
-      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold text-accent">
-        {orden ?? "—"}
-      </span>
-    );
-  }
-
-  const commit = () => {
-    const n = Number.parseInt(val, 10);
-    if (Number.isNaN(n)) {
-      setVal(orden != null ? String(orden) : "");
-      return;
-    }
-    onReordenar(n);
-  };
-
-  return (
-    <input
-      type="number"
-      min="1"
-      value={val}
-      onChange={(e) => setVal(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
-      }}
-      title="Orden de atención (escribe un número para reacomodar la cola)"
-      className="h-7 w-11 rounded-full border border-accent/40 bg-accent/10 text-center text-xs font-semibold text-accent outline-none focus:border-accent"
-    />
-  );
-}
-
 function FragmentoPedido({
   p,
   abierto,
@@ -276,11 +210,9 @@ function FragmentoPedido({
   onEditar,
   onEliminar,
   onCancelar,
-  onReordenar,
   borrando,
   puedeEditar,
   puedeAgregarQuitar,
-  horaCargaManualHabilitada,
 }: {
   p: PedidoVista;
   abierto: boolean;
@@ -288,12 +220,10 @@ function FragmentoPedido({
   onEditar: () => void;
   onEliminar: () => void;
   onCancelar: () => void;
-  onReordenar: (nuevo: number) => void;
   borrando: boolean;
   puedeEditar: boolean;
   puedeAgregarQuitar: boolean;
   // TEMPORAL/REVERSIBLE — muestra el control de hora de carga manual (Admin + flag).
-  horaCargaManualHabilitada: boolean;
 }) {
   return (
     <>
@@ -308,7 +238,12 @@ function FragmentoPedido({
           </button>
         </td>
         <td className="px-2 py-2">
-          <OrdenNumeral orden={p.orden} puedeEditar={puedeEditar} onReordenar={onReordenar} />
+          <span
+            className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold text-accent"
+            title="Orden en que se creó el pedido en este plantel"
+          >
+            {p.orden ?? "—"}
+          </span>
         </td>
         <td className="px-3 py-2 whitespace-nowrap">
           <span className="inline-flex items-center gap-1">
@@ -408,13 +343,6 @@ function FragmentoPedido({
               real={p.frecuenciaRealMin}
             />
             <DetalleViajes viajes={p.viajes} />
-            {horaCargaManualHabilitada && (
-              <HoraCargaManualAdmin
-                pedidoId={p.id}
-                base={p.horaCargaManualLocal ?? p.horaCargaLocal}
-                overrideActivo={p.horaCargaManualLocal}
-              />
-            )}
             {p.sinCubrir && (
               <RefuerzoBlock
                 pedidoId={p.id}
@@ -489,72 +417,6 @@ function RefuerzoBlock({
           ))}
         </ul>
       )}
-    </div>
-  );
-}
-
-/**
- * TEMPORAL/REVERSIBLE — Control (solo Admin, cuando el flag está activo) para FIJAR
- * la hora de carga de un pedido a cualquier horario, aunque choque con la carga de
- * otro pedido. Vacío / "Volver a automático" devuelve el pedido al control de la
- * cascada. Al desactivar el flag este control no se renderiza.
- */
-function HoraCargaManualAdmin({
-  pedidoId,
-  base,
-  overrideActivo,
-}: {
-  pedidoId: number;
-  base: string; // datetime-local para prellenar el input
-  overrideActivo: string | null; // override vigente, o null = automático
-}) {
-  const router = useRouter();
-  const [valor, setValor] = useState(base);
-  const [pendiente, startTransition] = useTransition();
-
-  useEffect(() => {
-    setValor(overrideActivo ?? base);
-  }, [overrideActivo, base]);
-
-  const guardar = (horaLocal: string | null) => {
-    startTransition(async () => {
-      const res = await fijarHoraCargaManualAction(pedidoId, horaLocal);
-      if (res.ok) router.refresh();
-      else alert(res.mensaje ?? "No se pudo fijar la hora de carga.");
-    });
-  };
-
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs">
-      <Clock size={14} className="shrink-0 text-amber-700" />
-      <span className="font-medium text-amber-900">Hora de carga manual (Admin):</span>
-      <input
-        type="datetime-local"
-        value={valor}
-        onChange={(e) => setValor(e.target.value)}
-        className="rounded border border-amber-300 bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-accent"
-      />
-      <button
-        onClick={() => guardar(valor)}
-        disabled={pendiente || !valor}
-        className="rounded bg-amber-600 px-3 py-1 font-medium text-white hover:bg-amber-700 disabled:opacity-50"
-      >
-        {pendiente ? "…" : "Fijar"}
-      </button>
-      {overrideActivo && (
-        <button
-          onClick={() => guardar(null)}
-          disabled={pendiente}
-          className="rounded border border-amber-400 px-3 py-1 font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
-        >
-          Volver a automático
-        </button>
-      )}
-      <span className="w-full text-amber-700 sm:w-auto">
-        {overrideActivo
-          ? "Fijada manualmente — puede chocar con otros pedidos."
-          : "Automático (la programación manda)."}
-      </span>
     </div>
   );
 }
@@ -681,14 +543,12 @@ export function ModalEdicion({
   opciones,
   onCerrar,
   onExito,
-  aislado = false,
 }: {
   pedido: PedidoVista;
   opciones: OpcionesModal;
   onCerrar: () => void;
   onExito: () => void;
   /** true = edición desde el Modo Manual: re-agenda solo este pedido (ver PedidoForm). */
-  aislado?: boolean;
 }) {
   return (
     <div
@@ -714,7 +574,6 @@ export function ModalEdicion({
             {...opciones}
             pedidoId={pedido.id}
             valores={pedido.valores}
-            aislado={aislado}
             onExito={onExito}
           />
         </div>

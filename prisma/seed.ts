@@ -10,7 +10,7 @@ import "dotenv/config"; // tsx no carga .env automáticamente (Next.js sí)
 import bcrypt from "bcryptjs";
 import { iniciarPg } from "../scripts/pg"; // asegura Postgres arriba antes de sembrar
 import { prisma } from "@/lib/prisma"; // mismo cliente singleton que usa el motor
-import { programarPedido, reordenarPedidoDia } from "@/lib/motor/asignacion";
+import { editarVolumenViaje, programarPedido } from "@/lib/motor/asignacion";
 
 // Marcas de mixer de ejemplo (rotan solo para dar variedad a los datos).
 const MARCAS = ["Mack", "International", "Freightliner", "Kenworth"];
@@ -469,10 +469,23 @@ async function main() {
     viajesGenerados += r.viajes.filter((v) => v.mixerId != null).length;
   }
 
-  // Genera una entrada real de bitácora (reordenar) para que el visor no aparezca
-  // vacío en la primera carga; el registro se escribe por el flujo real del motor.
+  // Genera una entrada real de bitácora para que el visor no aparezca vacío en la
+  // primera carga; el registro lo escribe el flujo real del motor. Antes se usaba un
+  // reordenamiento de la cola, que ya no existe (nada se reprograma solo), así que se
+  // usa una corrección de volumen de un viaje, que sí es una operación del día a día.
   if (pedidoIds[1]) {
-    await reordenarPedidoDia(pedidoIds[1], 1, "jcaballero@duracreto.com");
+    const v = await prisma.viajes.findFirst({
+      where: { pedido_id: pedidoIds[1], mixer_id: { not: null } },
+      orderBy: { id: "asc" },
+      select: { id: true, volumen_asignado_m3: true },
+    });
+    if (v && v.volumen_asignado_m3 > 1) {
+      await editarVolumenViaje(
+        v.id,
+        Math.round((v.volumen_asignado_m3 - 0.5) * 100) / 100,
+        "jcaballero@duracreto.com",
+      );
+    }
   }
 
   // ── USUARIOS (Fase 3) ────────────────────────────────────────────────────

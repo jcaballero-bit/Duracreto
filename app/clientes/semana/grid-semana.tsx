@@ -938,7 +938,7 @@ function CeldaEditor({
       <input
         className={inputCls}
         type="number"
-        step="0.5"
+        step="any"
         placeholder="Volumen (m³)"
         value={volumen}
         onChange={(e) => setVolumen(e.target.value)}

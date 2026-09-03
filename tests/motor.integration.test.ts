@@ -15,13 +15,9 @@ import {
   modificarPedido,
   programarPedido,
   reasignarMixer,
-  recalcularCascadaPlanta,
   recalcularTransportePromedioCliente,
-  reordenarPedidoDia,
-  sugerirHoraDisponible,
 } from "@/lib/motor/asignacion";
 import { calcularAlcance, filtroPedidoPorZona } from "@/lib/auth/acceso";
-import { PERMITIR_HORA_CARGA_MANUAL } from "@/lib/motor/config";
 import { calcularDesempeno } from "@/lib/comercial/metricas";
 import {
   crearCliente,
@@ -583,8 +579,13 @@ describe("cancelar pedido — recalcula la cascada (hueco 1)", () => {
   });
 });
 
-describe("modificar pedido — re-corre el motor", () => {
-  it("al subir el volumen, recalcula los viajes (10 → 22 m³ = 2 viajes de 11)", async () => {
+describe("modificar pedido — el volumen se ajusta AL FINAL, sin mover horarios", () => {
+  // Esta prueba SUSTITUYE a la que verificaba que subir el volumen "recalculaba los
+  // viajes" desde cero (10 → 22 m³ daba 2 viajes de 11, borrando el de 10). Ese
+  // comportamiento se eliminó: editar un pedido ya no reprograma nada. Ahora el viaje
+  // que ya existía se conserva TAL CUAL y el volumen que falta se agrega al final de
+  // la secuencia de ese pedido.
+  async function escenarioEditar(volumenInicial = 10) {
     const { plantelId, plantaId } = await crearPlantel({
       nombre: "Editar",
       zona: "Norte",
@@ -593,35 +594,131 @@ describe("modificar pedido — re-corre el motor", () => {
     await crearMixers(plantelId, [[11, 4]]);
     const clienteId = await crearCliente(true);
     const disenoId = await crearDiseno();
-
     const base = {
       cliente_id: clienteId,
       diseno_id: disenoId,
-      volumen_total_m3: 10,
+      volumen_total_m3: volumenInicial,
       hora_solicitada: DIA,
       plantel_id: plantelId,
       planta_id: plantaId,
       tipo_descarga: "Canal directo",
       creado_por: "test",
     };
+    return { base, plantelId, plantaId };
+  }
 
+  /** Horarios y mixer de cada viaje del pedido, para comparar antes/después. */
+  const horariosDe = async (pedidoId: number) =>
+    (
+      await prisma.viajes.findMany({
+        where: { pedido_id: pedidoId },
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          mixer_id: true,
+          volumen_asignado_m3: true,
+          hora_inicio_carga: true,
+          hora_llegada_proyecto: true,
+        },
+      })
+    ).map((v) => ({
+      id: v.id,
+      mixer: v.mixer_id,
+      vol: v.volumen_asignado_m3,
+      carga: v.hora_inicio_carga?.getTime() ?? null,
+      llegada: v.hora_llegada_proyecto?.getTime() ?? null,
+    }));
+
+  it("subir el volumen AGREGA viajes al final y no toca los que ya existían", async () => {
+    const { base } = await escenarioEditar(10);
     const creado = await programarPedido(base);
     expect(creado.viajes.filter((v) => v.mixerId != null)).toHaveLength(1);
+    const antes = await horariosDe(creado.pedidoId);
 
-    const mod = await modificarPedido(creado.pedidoId, {
+    // 10 → 22 m³: faltan 12, que se cubren con viajes NUEVOS al final.
+    const mod = await modificarPedido(creado.pedidoId, { ...base, volumen_total_m3: 22 });
+
+    const despues = await horariosDe(creado.pedidoId);
+    // El viaje original sigue siendo el mismo registro, con el MISMO mixer, el mismo
+    // volumen y la misma hora: no se borró ni se reprogramó.
+    expect(despues.filter((v) => v.id === antes[0].id)).toEqual(antes);
+    // Y el volumen total del pedido lo cubren los viajes nuevos.
+    const suma = despues.reduce((a, v) => a + v.vol, 0);
+    expect(suma).toBeCloseTo(22, 2);
+    expect(mod.volumenSinCubrir).toBe(0);
+    // Los agregados van DESPUÉS: cargan más tarde que el que ya estaba.
+    const nuevos = despues.filter((v) => v.id !== antes[0].id);
+    expect(nuevos.length).toBeGreaterThan(0);
+    for (const n of nuevos) {
+      expect(n.carga).not.toBeNull();
+      expect(n.carga!).toBeGreaterThanOrEqual(antes[0].carga!);
+    }
+  });
+
+  it("bajar el volumen QUITA desde el final y no toca el primer viaje", async () => {
+    const { base } = await escenarioEditar(22);
+    const creado = await programarPedido({ ...base, volumen_total_m3: 22 });
+    const antes = await horariosDe(creado.pedidoId);
+    expect(antes.length).toBeGreaterThanOrEqual(2);
+
+    // 22 → 11 m³: sobra un viaje, que se quita desde el final.
+    await modificarPedido(creado.pedidoId, { ...base, volumen_total_m3: 11 });
+
+    const despues = await horariosDe(creado.pedidoId);
+    expect(despues.reduce((a, v) => a + v.vol, 0)).toBeCloseTo(11, 2);
+    // El PRIMER viaje sobrevive intacto (mismo id, mixer y horario).
+    expect(despues.find((v) => v.id === antes[0].id)).toEqual(antes[0]);
+  });
+
+  it("editar el volumen a un valor con decimales libres (2.2 m³) se guarda tal cual", async () => {
+    const { base } = await escenarioEditar(10);
+    const creado = await programarPedido(base);
+
+    await modificarPedido(creado.pedidoId, { ...base, volumen_total_m3: 12.2 });
+    const p = await prisma.pedidos.findUniqueOrThrow({
+      where: { id: creado.pedidoId },
+      select: { volumen_total_m3: true },
+    });
+    expect(p.volumen_total_m3).toBeCloseTo(12.2, 2);
+    const suma = (await horariosDe(creado.pedidoId)).reduce((a, v) => a + v.vol, 0);
+    expect(suma).toBeCloseTo(12.2, 2);
+  });
+
+  it("editar OTROS campos (mezcla, elemento) no toca ningún horario", async () => {
+    const { base } = await escenarioEditar(22);
+    const creado = await programarPedido({ ...base, volumen_total_m3: 22 });
+    const antes = await horariosDe(creado.pedidoId);
+
+    await modificarPedido(creado.pedidoId, {
       ...base,
       volumen_total_m3: 22,
+      elemento: "Losa de entrepiso",
+      observaciones: "Acceso por el portón trasero",
     });
-    const conMixer = mod.viajes.filter((v) => v.mixerId != null);
-    expect(conMixer).toHaveLength(2);
-    expect(conMixer.every((v) => v.volumen === 11)).toBe(true);
-    expect(mod.volumenSinCubrir).toBe(0);
 
-    // No quedaron viajes huérfanos del pedido anterior.
-    const totalViajes = await prisma.viajes.count({
-      where: { pedido_id: creado.pedidoId },
+    expect(await horariosDe(creado.pedidoId)).toEqual(antes);
+  });
+
+  it("cambiar la HORA DE LLEGADA sí re-agenda los viajes de ese pedido", async () => {
+    const { base } = await escenarioEditar(22);
+    const creado = await programarPedido({ ...base, volumen_total_m3: 22 });
+    const antes = await horariosDe(creado.pedidoId);
+
+    const masTarde = new Date(DIA.getTime() + 3 * 3_600_000);
+    await modificarPedido(creado.pedidoId, {
+      ...base,
+      volumen_total_m3: 22,
+      hora_solicitada: masTarde,
     });
-    expect(totalViajes).toBe(2);
+
+    const despues = await horariosDe(creado.pedidoId);
+    // Es la ÚNICA excepción: los horarios de este pedido se recalculan.
+    expect(despues.map((v) => v.carga)).not.toEqual(antes.map((v) => v.carga));
+    // El primer mixer llega a la hora nueva (tolerancia de ms por minutos fraccionarios).
+    const primeraLlegada = Math.min(
+      ...despues.filter((v) => v.llegada != null).map((v) => v.llegada!),
+    );
+    expect(Math.abs(primeraLlegada - masTarde.getTime())).toBeLessThan(1000);
   });
 });
 
@@ -836,78 +933,7 @@ describe("despacho — motorista preseleccionado y volumen editable", () => {
   });
 });
 
-describe("orden de atención (orden_dia) — reordenar y recalcular", () => {
-  it("mover el pedido #5 a #2 reacomoda la secuencia y recalcula los horarios", async () => {
-    const { plantelId, plantaId } = await crearPlantel({
-      nombre: "Cola",
-      zona: "Norte",
-      esHub: true,
-      capacidadPlantaM3h: 45,
-    });
-    await crearMixers(plantelId, [[11, 5]]); // suficientes: la planta es el cuello
-    const clienteId = await crearCliente(true);
-    const disenoId = await crearDiseno();
-    const base = {
-      cliente_id: clienteId,
-      diseno_id: disenoId,
-      volumen_total_m3: 10,
-      hora_solicitada: DIA,
-      plantel_id: plantelId,
-      planta_id: plantaId,
-      tipo_descarga: "Directo",
-      creado_por: "test",
-    };
-
-    // 5 pedidos → orden_dia 1..5 en orden de creación.
-    const ids: number[] = [];
-    for (let i = 0; i < 5; i++) ids.push((await programarPedido({ ...base })).pedidoId);
-    for (let i = 0; i < 5; i++) {
-      const p = await prisma.pedidos.findUniqueOrThrow({
-        where: { id: ids[i] },
-        select: { orden_dia: true },
-      });
-      expect(p.orden_dia).toBe(i + 1);
-    }
-
-    // Mover el #5 a la posición #2.
-    const res = await reordenarPedidoDia(ids[4], 2, "tester");
-    expect(res.ok).toBe(true);
-
-    const orden = async (id: number) =>
-      (await prisma.pedidos.findUniqueOrThrow({ where: { id }, select: { orden_dia: true } }))
-        .orden_dia;
-    // Secuencia esperada: 1, 2(el que era 5), 3(era 2), 4(era 3), 5(era 4).
-    expect(await orden(ids[0])).toBe(1);
-    expect(await orden(ids[4])).toBe(2);
-    expect(await orden(ids[1])).toBe(3);
-    expect(await orden(ids[2])).toBe(4);
-    expect(await orden(ids[3])).toBe(5);
-
-    // Horarios recalculados en el NUEVO orden (misma planta → secuencial).
-    const carga = async (pedidoId: number) => {
-      const v = await prisma.viajes.findFirstOrThrow({
-        where: { pedido_id: pedidoId, mixer_id: { not: null } },
-        orderBy: { hora_inicio_carga: "asc" },
-      });
-      return v.hora_inicio_carga!.getTime();
-    };
-    const c1 = await carga(ids[0]);
-    const c5 = await carga(ids[4]);
-    const c2 = await carga(ids[1]);
-    const c3 = await carga(ids[2]);
-    const c4 = await carga(ids[3]);
-    expect(c1).toBeLessThanOrEqual(c5);
-    expect(c5).toBeLessThan(c2);
-    expect(c2).toBeLessThan(c3);
-    expect(c3).toBeLessThan(c4);
-
-    // Queda registro en bitácora del cambio de orden.
-    const audit = await prisma.bitacora_auditoria.count({
-      where: { tabla_afectada: "pedidos", registro_id: ids[4], campo_modificado: "orden_dia" },
-    });
-    expect(audit).toBeGreaterThanOrEqual(1);
-  });
-
+describe("hora de llegada fija", () => {
   it("un pedido con HORA FIJA llega a su hora aunque la planta esté libre antes", async () => {
     // 1 pedido temprano (auto) + 1 pedido de la TARDE con hora fija. El de la
     // tarde NO debe empaquetarse tras el primero: respeta su llegada fija.
@@ -955,86 +981,6 @@ describe("orden de atención (orden_dia) — reordenar y recalcular", () => {
     expect(vManana.hora_llegada_proyecto!.getTime()).toBeLessThan(tarde.getTime());
   });
 
-  it("al pasar a la posición 1, el pedido LLEGA a la hora de inicio de jornada (no la suya)", async () => {
-    // hora_solicitada = LLEGADA. El primero define el inicio de jornada (la
-    // llegada más temprana); el resto se encadena tras él.
-    const { plantelId, plantaId } = await crearPlantel({
-      nombre: "Jornada",
-      zona: "Norte",
-      esHub: true,
-      capacidadPlantaM3h: 45,
-    });
-    await crearMixers(plantelId, [[11, 5]]);
-    const clienteId = await crearCliente(true);
-    const disenoId = await crearDiseno();
-    const base = {
-      cliente_id: clienteId,
-      diseno_id: disenoId,
-      volumen_total_m3: 10,
-      plantel_id: plantelId,
-      planta_id: plantaId,
-      tipo_descarga: "Directo",
-      creado_por: "test",
-    };
-    const h8 = new Date("2026-08-01T08:00:00"); // inicio de jornada (llegada más temprana)
-    const h10 = new Date("2026-08-01T10:00:00"); // este pedido pidió llegar más tarde
-
-    await programarPedido({ ...base, hora_solicitada: h8 });
-    await programarPedido({ ...base, hora_solicitada: h8 });
-    const p3 = await programarPedido({ ...base, hora_solicitada: h10 });
-
-    const llegadaDe = async (id: number) =>
-      (
-        await prisma.viajes.findFirstOrThrow({
-          where: { pedido_id: id, mixer_id: { not: null } },
-          orderBy: { hora_inicio_carga: "asc" },
-        })
-      ).hora_llegada_proyecto!.getTime();
-
-    // Mover el 3º a la posición 1.
-    await reordenarPedidoDia(p3.pedidoId, 1, "tester");
-
-    // Debe LLEGAR a las 08:00 (inicio de jornada), y su inicio de carga se calcula
-    // hacia atrás restando carga + transporte (tolerancia de ms por redondeo).
-    expect(Math.abs((await llegadaDe(p3.pedidoId)) - h8.getTime())).toBeLessThan(1000);
-  });
-});
-
-describe("sugerir hora solicitada — próxima disponibilidad de la planta", () => {
-  it("con 2 pedidos ya en la planta, sugiere el primer hueco tras ellos (no la apertura)", async () => {
-    const { plantelId, plantaId } = await crearPlantel({
-      nombre: "Sugerir",
-      zona: "Norte",
-      esHub: true,
-      capacidadPlantaM3h: 45,
-    });
-    await crearMixers(plantelId, [[11, 5]]);
-    const clienteId = await crearCliente(true);
-    const disenoId = await crearDiseno();
-    const base = {
-      cliente_id: clienteId,
-      diseno_id: disenoId,
-      volumen_total_m3: 10,
-      hora_solicitada: DIA,
-      plantel_id: plantelId,
-      planta_id: plantaId,
-      tipo_descarga: "Directo",
-      creado_por: "test",
-    };
-    await programarPedido({ ...base });
-    await programarPedido({ ...base });
-
-    const viajes = await prisma.viajes.findMany({
-      where: { pedido: { planta_id: plantaId }, hora_fin_carga: { not: null } },
-      select: { hora_fin_carga: true },
-    });
-    const maxFin = Math.max(...viajes.map((v) => v.hora_fin_carga!.getTime()));
-
-    // hora_solicitada = LLEGADA. La sugerencia = llegada si se carga en el primer
-    // hueco libre = fin de carga de la cola + salida + transporte (> maxFin).
-    const sug = await sugerirHoraDisponible(plantaId, DIA, 10, clienteId);
-    expect(sug.getTime()).toBeGreaterThan(maxFin);
-  });
 });
 
 describe("asesor del pedido (Punto 6)", () => {
@@ -1477,38 +1423,6 @@ describe("adiciones y congelamiento del Programa DPCR-08", () => {
     expect(viajes.every((v) => v.estado === "Cancelado")).toBe(true);
     // Antes del cierre: se libera la flota (mixer null).
     expect(viajes.every((v) => v.mixer_id == null)).toBe(true);
-  });
-
-  it("hora de carga manual (Admin) reubica la carga del pedido a la hora fijada", async () => {
-    // Guardado por el flag: si el override está deshabilitado (revertido), no aplica.
-    if (!PERMITIR_HORA_CARGA_MANUAL) return;
-    const { plantelId, plantaId } = await crearPlantel({ nombre: "Man", zona: "Norte", esHub: true });
-    await crearMixers(plantelId, [[9, 2]]);
-    const clienteId = await crearCliente(true);
-    const disenoId = await crearDiseno();
-    const r = await programarPedido({
-      cliente_id: clienteId, diseno_id: disenoId, volumen_total_m3: 9, hora_solicitada: DIA,
-      plantel_id: plantelId, planta_id: plantaId, tipo_descarga: "Directo", creado_por: "test",
-    });
-    // Fijar la carga a las 05:00 (bien distinta de la calculada por la cascada).
-    const manual = new Date("2026-08-01T05:00:00");
-    await prisma.pedidos.update({ where: { id: r.pedidoId }, data: { hora_carga_manual: manual } });
-    await recalcularCascadaPlanta(plantaId, DIA);
-    const viajes = await prisma.viajes.findMany({
-      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
-      orderBy: { hora_inicio_carga: "asc" },
-    });
-    expect(viajes.length).toBeGreaterThan(0);
-    expect(viajes[0].hora_inicio_carga?.getTime()).toBe(manual.getTime());
-
-    // Volver a automático: la cascada recalcula y la carga deja de ser la manual.
-    await prisma.pedidos.update({ where: { id: r.pedidoId }, data: { hora_carga_manual: null } });
-    await recalcularCascadaPlanta(plantaId, DIA);
-    const auto = await prisma.viajes.findFirst({
-      where: { pedido_id: r.pedidoId, mixer_id: { not: null } },
-      orderBy: { hora_inicio_carga: "asc" },
-    });
-    expect(auto?.hora_inicio_carga?.getTime()).not.toBe(manual.getTime());
   });
 });
 
