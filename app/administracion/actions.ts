@@ -7,6 +7,11 @@ import { prisma } from "@/lib/prisma";
 import { exigirAdmin } from "@/lib/auth/guard";
 import { CLAVE_HORA_APERTURA, minutosDeTexto } from "@/lib/motor/apertura";
 import { CLAVE_BLOQUEO_ACTIVO, CLAVE_BLOQUEO_HORA } from "@/lib/programacion/bloqueo";
+import {
+  CLAVE_ESPERA,
+  CLAVE_TOLERANCIA,
+  CLAVE_VARIABILIDAD,
+} from "@/lib/reportes/umbrales";
 
 /**
  * Asegura que un usuario con rol Asesor tenga su registro en `asesores` vinculado.
@@ -105,21 +110,40 @@ export async function fijarZonaAction(
   return { ok: true };
 }
 
-/** Guarda el margen mínimo de hueco (min) del motor de 2 pasadas (Ajustes del motor). */
-export async function guardarMargenHuecoAction(
-  valor: number,
+/**
+ * Guarda los umbrales del reporte de tiempos de descarga y esperas en obra. Van en la
+ * tabla `configuracion` (clave-valor) y no fijos en el codigo: cada operacion decide
+ * desde cuantos minutos una espera es relevante.
+ */
+export async function guardarUmbralesDescargaAction(
+  esperaMin: number,
+  variabilidadMin: number,
+  toleranciaPct: number,
 ): Promise<{ ok: boolean; mensaje?: string }> {
   const guard = await exigirAdmin();
   if (!guard.ok) return guard;
-  if (!Number.isInteger(valor) || valor < 0) {
-    return { ok: false, mensaje: "El margen debe ser un entero de minutos (0 o más)." };
+  if (!Number.isInteger(esperaMin) || esperaMin <= 0) {
+    return { ok: false, mensaje: "La espera debe ser un entero de minutos mayor que 0." };
   }
-  await prisma.configuracion.upsert({
-    where: { clave: "margen_minimo_hueco_min" },
-    update: { valor_int: valor },
-    create: { clave: "margen_minimo_hueco_min", valor_int: valor },
-  });
+  if (!Number.isInteger(variabilidadMin) || variabilidadMin <= 0) {
+    return { ok: false, mensaje: "La variabilidad debe ser un entero de minutos mayor que 0." };
+  }
+  if (!Number.isInteger(toleranciaPct) || toleranciaPct < 0 || toleranciaPct > 200) {
+    return { ok: false, mensaje: "La tolerancia debe ser un porcentaje entre 0 y 200." };
+  }
+  const guardarClave = (clave: string, valor: number) =>
+    prisma.configuracion.upsert({
+      where: { clave },
+      update: { valor_int: valor },
+      create: { clave, valor_int: valor },
+    });
+  await prisma.$transaction([
+    guardarClave(CLAVE_ESPERA, esperaMin),
+    guardarClave(CLAVE_VARIABILIDAD, variabilidadMin),
+    guardarClave(CLAVE_TOLERANCIA, toleranciaPct),
+  ]);
   revalidatePath("/administracion");
+  revalidatePath("/reportes/descargas");
   return { ok: true };
 }
 

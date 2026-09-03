@@ -737,7 +737,7 @@ export function PedidoForm({
           )}
         </Campo>
 
-        <Campo label="Frecuencia entre camiones (min)">
+        <Campo label="Frecuencia entre camiones / tiempo de descarga (min)">
           <input
             type="number"
             name="frecuencia_entre_camiones_min"
@@ -748,6 +748,10 @@ export function PedidoForm({
             onChange={(e) => setFrecuencia(e.target.value)}
             className={inputCls}
           />
+          <span className="mt-1 block text-[11px] text-muted">
+            Cada cuántos minutos debe llegar un mixer. Es también el tiempo estimado de
+            descarga de cada unidad.
+          </span>
         </Campo>
 
         <Campo label="Tiempo de transporte (min)">

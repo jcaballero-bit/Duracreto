@@ -7,6 +7,7 @@ import { requerirAcceso } from "@/lib/auth/guard";
 import { compararPlanteles } from "@/lib/planteles-orden";
 import { calcularReportes, type ResumenReportes } from "@/lib/reportes/metricas";
 import { Card, PageHeader } from "../components/ui";
+import { ReportesTabs } from "../components/reportes-tabs";
 import { FiltrosReportes } from "./filtros-reportes";
 import { BarChart } from "./bar-chart";
 
@@ -94,6 +95,7 @@ export default async function ReportesPage({
         titulo="Indicadores operativos"
         descripcion={`Desempeño de despacho — ${etiqueta}.`}
       />
+      <ReportesTabs activo="/reportes" roles={alcance.roles} />
 
       <FiltrosReportes
         rango={rango}

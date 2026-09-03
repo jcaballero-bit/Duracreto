@@ -957,7 +957,7 @@ function CeldaEditor({
         className={inputCls}
         type="number"
         step="1"
-        placeholder="Frecuencia (min)"
+        placeholder="Frecuencia / descarga (min)"
         value={frecuencia}
         onChange={(e) => setFrecuencia(e.target.value)}
       />

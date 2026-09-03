@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { crearCliente, crearDiseno, crearPlantel, limpiarBD } from "./helpers";
 import { calcularExtraordinario, leerCostoFicha } from "@/lib/extraordinario/metricas";
-import { alcanceDeParams, rangoDeParams } from "@/lib/extraordinario/filtro";
+import { alcanceDeParams, rangoDeParams } from "@/lib/reportes/filtro";
 import { calcularAlcance } from "@/lib/auth/acceso";
 import { reporteACsv } from "@/lib/extraordinario/csv";
 import { resumirMotoristas } from "@/lib/extraordinario/metricas";

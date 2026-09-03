@@ -6,51 +6,13 @@ import { Lock, Save } from "lucide-react";
 import {
   guardarBloqueoEdicionAction,
   guardarHoraAperturaAction,
-  guardarMargenHuecoAction,
+  guardarUmbralesDescargaAction,
 } from "./actions";
 
 const inputCls =
   "w-full rounded-lg border border-border bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent";
 const botonCls =
   "inline-flex shrink-0 items-center gap-1 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50";
-
-/** Editor del margen mínimo de hueco (min) del motor de 2 pasadas. */
-export function AjustesMotor({ margenHueco }: { margenHueco: number }) {
-  const router = useRouter();
-  const [valor, setValor] = useState(String(margenHueco));
-  const [pendiente, startTransition] = useTransition();
-
-  const guardar = () => {
-    const n = Number(valor);
-    if (!Number.isInteger(n) || n < 0) {
-      alert("El margen debe ser un número entero de minutos (0 o más).");
-      return;
-    }
-    startTransition(async () => {
-      const res = await guardarMargenHuecoAction(n);
-      if (res.ok) router.refresh();
-      else alert(res.mensaje ?? "No se pudo guardar.");
-    });
-  };
-
-  return (
-    <div className="max-w-sm">
-      <label className="block text-sm">
-        <span className="mb-1 block font-medium text-ink">Margen mínimo de hueco (minutos)</span>
-        <div className="flex gap-2">
-          <input
-            type="number" min="0" step="1" value={valor}
-            onChange={(e) => setValor(e.target.value)}
-            className={inputCls}
-          />
-          <button type="button" onClick={guardar} disabled={pendiente} className={botonCls}>
-            <Save size={16} /> {pendiente ? "Guardando…" : "Guardar"}
-          </button>
-        </div>
-      </label>
-    </div>
-  );
-}
 
 /**
  * Hora de APERTURA de planta por defecto: a partir de qué hora se puede empezar a
@@ -178,6 +140,83 @@ export function AjusteBloqueoEdicion({
           registrándose con normalidad.
         </span>
       </p>
+    </div>
+  );
+}
+
+/**
+ * Umbrales del reporte de **tiempos de descarga y esperas en obra**.
+ *
+ *  · **Espera en obra**: desde cuántos minutos parado en el proyecto se marca un viaje
+ *    y se cuenta en la columna de esperas relevantes. Sugerido 15 min.
+ *  · **Variabilidad del intervalo**: rango (máx−mín) entre llegadas consecutivas desde
+ *    el que un pedido se marca como ritmo irregular.
+ *  · **Tolerancia de descarga**: cuánto se puede pasar del tiempo pactado antes de
+ *    pintar la desviación en ámbar; por encima del doble de eso, en rojo.
+ */
+export function AjusteUmbralesDescarga({
+  esperaMin,
+  variabilidadMin,
+  toleranciaPct,
+}: {
+  esperaMin: number;
+  variabilidadMin: number;
+  toleranciaPct: number;
+}) {
+  const router = useRouter();
+  const [espera, setEspera] = useState(String(esperaMin));
+  const [variab, setVariab] = useState(String(variabilidadMin));
+  const [tol, setTol] = useState(String(toleranciaPct));
+  const [pendiente, startTransition] = useTransition();
+
+  const guardar = () => {
+    const e = Number(espera);
+    const v = Number(variab);
+    const t = Number(tol);
+    if (![e, v].every((n) => Number.isInteger(n) && n > 0)) {
+      alert("La espera y la variabilidad deben ser enteros de minutos mayores que 0.");
+      return;
+    }
+    if (!Number.isInteger(t) || t < 0 || t > 200) {
+      alert("La tolerancia debe ser un porcentaje entero entre 0 y 200.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await guardarUmbralesDescargaAction(e, v, t);
+      if (res.ok) router.refresh();
+      else alert(res.mensaje ?? "No se pudo guardar.");
+    });
+  };
+
+  return (
+    <div className="flex flex-wrap items-end gap-3">
+      <label className="text-sm">
+        <span className="mb-1 block font-medium text-ink">Espera en obra (min)</span>
+        <input
+          type="number" min="1" step="1" value={espera}
+          onChange={(e) => setEspera(e.target.value)}
+          className={`${inputCls} w-32`}
+        />
+      </label>
+      <label className="text-sm">
+        <span className="mb-1 block font-medium text-ink">Variabilidad del intervalo (min)</span>
+        <input
+          type="number" min="1" step="1" value={variab}
+          onChange={(e) => setVariab(e.target.value)}
+          className={`${inputCls} w-32`}
+        />
+      </label>
+      <label className="text-sm">
+        <span className="mb-1 block font-medium text-ink">Tolerancia de descarga (%)</span>
+        <input
+          type="number" min="0" max="200" step="1" value={tol}
+          onChange={(e) => setTol(e.target.value)}
+          className={`${inputCls} w-32`}
+        />
+      </label>
+      <button type="button" onClick={guardar} disabled={pendiente} className={botonCls}>
+        <Save size={16} /> {pendiente ? "Guardando…" : "Guardar"}
+      </button>
     </div>
   );
 }

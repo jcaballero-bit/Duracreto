@@ -40,7 +40,15 @@ export const NAV: ItemNav[] = [
     activePrefixes: ["/clientes", "/confirmaciones"],
   },
   { href: "/comercial", label: "Gerencia Comercial", icon: TrendingUp },
-  { href: "/reportes", label: "Indicadores", icon: BarChart3 },
+  // Seccion agrupada (mismo patron que Ventas / Control Mano de Obra): el href
+  // apunta al reporte que alcanzan los CUATRO roles, y las pestanas de dentro se
+  // filtran por rol, asi que a nadie se le ofrece una pantalla a la que no entra.
+  {
+    href: "/reportes/descargas",
+    label: "Reportes",
+    icon: BarChart3,
+    activePrefixes: ["/reportes"],
+  },
   { href: "/reasignaciones", label: "Reasignar Dosificador", icon: Shuffle },
   { href: "/flota", label: "Flota", icon: Building2 },
   // Control de Calidad agrupa Laboratorio + Reporte de Calidad (tabs dentro de la

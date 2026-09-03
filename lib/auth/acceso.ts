@@ -137,7 +137,13 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   // Admin: toda la flota. Programador/Despachador/Dosificador/JefePlanta: SOLO la
   // pestaña Operadores (motoristas) — la página filtra las pestañas por rol.
   "/flota": ["Administrador", "Programador", "Despachador", "Dosificador", "JefePlanta"],
+  // Indicadores operativos (KPIs de planta): sigue siendo de Admin + Jefe de Planta.
   "/reportes": ["Administrador", "JefePlanta"],
+  // Tiempos de descarga y esperas en obra: tambien Programador y Despachador (su
+  // zona), porque es el dato con el que negocian la cadencia con el cliente.
+  "/reportes/descargas": [
+    "Administrador", "JefePlanta", "Programador", "Despachador",
+  ],
   // Asistencia: horas de entrada y salida del personal operativo. NO muestra costos,
   // así que la ven los tres roles que capturan (el alcance de cada uno lo resuelve
   // `lib/asistencia/acceso.ts`: Admin todo, JefePlanta sus planteles, Programador su zona).

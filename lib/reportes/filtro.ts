@@ -1,8 +1,11 @@
 /**
- * Resolución del filtro del reporte (rango de fechas + zona/plantel) y del alcance por
- * rol. Lo comparten la pantalla y la ruta de exportación a CSV, para que el enforcement
- * y los números sean IDÉNTICOS por los dos caminos (el mismo patrón que
- * `lib/programa/acceso.ts` usa para el DPCR-08).
+ * Resolución del filtro de un reporte (rango de fechas + zona/plantel) y del alcance
+ * por rol. Lo comparten la pantalla y la ruta de exportación a CSV de CADA reporte, para
+ * que el enforcement y los números sean IDÉNTICOS por los dos caminos (el mismo patrón
+ * que `lib/programa/acceso.ts` usa para el DPCR-08).
+ *
+ * Vive en `lib/reportes/` porque lo usan las dos secciones de reportes (el horario
+ * extraordinario y los tiempos de descarga); no tiene nada específico de ninguna.
  */
 import { prisma } from "@/lib/prisma";
 import type { Alcance } from "@/lib/auth/acceso";
@@ -86,7 +89,12 @@ export async function alcanceDeParams(
         ? `Zona ${zona}`
         : visibles.length === 1
           ? `Plantel ${visibles[0].nombre}`
-          : "Todos los planteles";
+          // Si el rol solo alcanza UNA zona, decir "Todos los planteles" es enganoso:
+          // no esta viendo el pais, esta viendo su zona (paso con el Programador, que
+          // ve los 5 planteles del Norte y el encabezado le decia "todos").
+          : zonas.length === 1
+            ? `Zona ${zonas[0]}`
+            : "Todos los planteles";
 
   return {
     planteles: visibles,

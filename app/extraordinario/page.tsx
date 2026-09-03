@@ -4,7 +4,7 @@ import { Card, PageHeader } from "../components/ui";
 import { calcularExtraordinario,
   resumirMotoristas,
 } from "@/lib/extraordinario/metricas";
-import { alcanceDeParams, rangoDeParams } from "@/lib/extraordinario/filtro";
+import { alcanceDeParams, rangoDeParams } from "@/lib/reportes/filtro";
 import { textoMin } from "@/lib/planilla/recargos";
 import { textoLempiras } from "@/lib/planilla/salario";
 import { FiltrosExtraordinario } from "./filtros";

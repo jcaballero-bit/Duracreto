@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { alcanceActual } from "@/lib/auth/guard";
 import { puedeAccederRuta } from "@/lib/auth/acceso";
-import { alcanceDeParams, rangoDeParams } from "@/lib/extraordinario/filtro";
+import { alcanceDeParams, rangoDeParams } from "@/lib/reportes/filtro";
 import { calcularExtraordinario } from "@/lib/extraordinario/metricas";
 import { nombreArchivoCsv, reporteACsv } from "@/lib/extraordinario/csv";
 

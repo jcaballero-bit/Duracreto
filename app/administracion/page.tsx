@@ -12,8 +12,11 @@ import {
 import type { Catalogo } from "./catalogos-actions";
 import { UsuariosTabla, type UsuarioAdmin } from "./usuarios-tabla";
 import { ProduccionHistorica } from "./produccion-historica";
-import { AjusteApertura, AjusteBloqueoEdicion, AjustesMotor } from "./ajustes-motor";
-import { leerMargenHueco } from "@/lib/motor/config-runtime";
+import {
+  AjusteApertura,
+  AjusteBloqueoEdicion,
+  AjusteUmbralesDescarga,
+} from "./ajustes-motor";
 import { leerAperturaDefault, textoHoraMin } from "@/lib/motor/apertura";
 import { leerConfigBloqueo } from "@/lib/programacion/bloqueo";
 import { ETIQUETA_TIPO_DIA, TIPOS_DIA, textoMin } from "@/lib/planilla/recargos";
@@ -27,6 +30,7 @@ import {
 import { PUESTOS_SIN_MEDICION } from "@/lib/asistencia/gantt-datos";
 import { HorariosPlanta, type FilaPlantaHorario } from "./horarios-planta";
 import { leerCostoFicha, leerUmbralExtra } from "@/lib/extraordinario/metricas";
+import { leerUmbralesDescarga } from "@/lib/reportes/umbrales";
 
 export const dynamic = "force-dynamic";
 
@@ -79,7 +83,7 @@ export default async function AdministracionPage({
     opcPlanteles,
     opcPlantas,
     opcUsuarios,
-    margenHueco: await leerMargenHueco(),
+    umbralesDescarga: await leerUmbralesDescarga(),
     horaApertura: textoHoraMin(await leerAperturaDefault()),
     bloqueo: await leerConfigBloqueo(),
   });
@@ -134,8 +138,8 @@ interface Ctx {
   opcPlanteles: { value: string; label: string }[];
   opcPlantas: { value: string; label: string }[];
   opcUsuarios: { value: string; label: string }[];
-  margenHueco: number;
   /** Hora de apertura de planta por defecto, "HH:MM". */
+  umbralesDescarga: { esperaMin: number; variabilidadMin: number; toleranciaPct: number };
   horaApertura: string;
   bloqueo: { activo: boolean; horaCorteMin: number };
 }
@@ -587,15 +591,6 @@ async function renderTab(tab: string, sp: { anioHist?: string }, ctx: Ctx) {
       return (
         <>
           <p className="mb-3 text-sm text-muted">
-            Ajustes del motor de programación. El <strong>margen mínimo de hueco</strong> es
-            el tiempo libre mínimo que debe quedar entre dos entregas para que el sistema
-            ofrezca ese espacio al organizar el día automáticamente (evita dejar la
-            programación tan apretada que un solo retraso genere una cascada de problemas).
-          </p>
-          <AjustesMotor margenHueco={ctx.margenHueco} />
-
-          <hr className="my-6 border-border" />
-          <p className="mb-3 text-sm text-muted">
             <strong>Hora de apertura de planta</strong>: a partir de qué hora se puede empezar a
             cargar. Rige todos los días; para un vaciado que arranca antes, el Programador puede
             adelantar la apertura de un día y una planta concretos desde la programación.
@@ -611,6 +606,19 @@ async function renderTab(tab: string, sp: { anioHist?: string }, ctx: Ctx) {
           <AjusteBloqueoEdicion
             activo={ctx.bloqueo.activo}
             horaCorte={textoHoraMin(ctx.bloqueo.horaCorteMin)}
+          />
+
+          <hr className="my-6 border-border" />
+          <p className="mb-3 text-sm text-muted">
+            <strong>Umbrales del reporte de descargas y esperas</strong>: desde cuántos
+            minutos parado en obra una espera se marca como relevante, desde qué rango entre
+            llegadas un pedido se considera de ritmo irregular, y cuánto se puede pasar del
+            tiempo de descarga pactado antes de marcarlo.
+          </p>
+          <AjusteUmbralesDescarga
+            esperaMin={ctx.umbralesDescarga.esperaMin}
+            variabilidadMin={ctx.umbralesDescarga.variabilidadMin}
+            toleranciaPct={Math.round(ctx.umbralesDescarga.toleranciaPct * 100)}
           />
         </>
       );
