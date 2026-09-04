@@ -1,9 +1,10 @@
 import { SeccionTabs } from "./seccion-tabs";
 
 /**
- * Pestañas de la sección "Control de Calidad": la gestión del laboratorio y el reporte
- * imprimible. Las cuatro roles que entran a la sección (Administrador, Jefe de
- * Laboratorio, Gerente de Control de Calidad y Laboratorista) alcanzan ambas rutas.
+ * Pestañas de la sección "Control de Calidad": la gestión del laboratorio, el reporte
+ * imprimible y la evaluación del equipo. Las dos primeras las alcanzan los cuatro roles
+ * de la sección; la tercera solo sus gestores (Gerente de Control de Calidad, Jefe de
+ * Laboratorio y Administrador), y `SeccionTabs` la oculta a quien no entra.
  *
  * Para el **Laboratorista** la primera pestaña no es "Laboratorio" sino
  * "Proyectos asignados": él no gestiona asignaciones, ahí ve SU agenda del día. Ese
@@ -23,6 +24,7 @@ export function CalidadTabs({ activo, roles }: { activo: string; roles: string[]
       tabs={[
         { href: "/laboratorio", label: etiquetaLab },
         { href: "/calidad", label: "Reporte de Calidad" },
+        { href: "/calidad/desempeno", label: "Desempeño de laboratoristas" },
       ]}
       activo={activo}
       roles={roles}

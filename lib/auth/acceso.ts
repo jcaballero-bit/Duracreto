@@ -169,6 +169,10 @@ export const ACCESO_RUTAS: Record<string, Rol[]> = {
   // sus proyectos asignados); el JefeLaboratorio (su zona) y el Gerente de Control
   // de Calidad / Admin también.
   "/calidad": ["Administrador", "Laboratorista", "JefeLaboratorio", "GerenteControlCalidad"],
+  // Desempeno de los laboratoristas: es una EVALUACION de su trabajo, asi que la ven
+  // sus superiores, no ellos. Se declara aparte porque, por prefijo mas largo,
+  // heredaria los roles de "/calidad" — que incluyen al Laboratorista.
+  "/calidad/desempeno": ["Administrador", "JefeLaboratorio", "GerenteControlCalidad"],
   "/administracion": ["Administrador"],
   "/bitacora": ["Administrador"],
 };

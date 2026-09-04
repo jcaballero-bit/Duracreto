@@ -277,11 +277,10 @@ export function ManualView({
   const hayFuturo = futuro.length > 0;
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
-          <strong>Modo manual:</strong> tú decides todo. El sistema no mueve, no reordena ni
-          reasigna nada — solo calcula las columnas y te avisa. Puedes continuar aunque haya un aviso.
-        </p>
+      {/* Deshacer / Rehacer de la sesion. Antes esta fila llevaba tambien un banner que
+          explicaba el "modo manual"; se quito al desaparecer el modo automatico: ya no
+          hay dos modos que distinguir, asi que el aviso solo ocupaba espacio. */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
         {puedeEditar && (
           <div className="flex items-center gap-2">
             <button
