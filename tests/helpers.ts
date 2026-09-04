@@ -17,6 +17,7 @@ export async function limpiarBD() {
   await prisma.camiones.deleteMany(); // ref planteles (RESTRICT) → antes de planteles
   // Produccion historica: la FK a planteles es RESTRICT a proposito (borrar un plantel no
   // debe llevarse en silencio su volumen historico), asi que hay que limpiarla antes.
+  await prisma.prestamos_unidad.deleteMany(); // ref planteles (RESTRICT) -> antes de planteles
   await prisma.produccion_historica.deleteMany();
   await prisma.alias_plantel_historico.deleteMany();
   await prisma.pickups.deleteMany();

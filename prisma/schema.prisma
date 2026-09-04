@@ -63,6 +63,8 @@ model planteles {
   departamentos_reloj mapeo_departamento_biometrico[] // departamentos del reloj que corresponden a este plantel
   produccion_historica produccion_historica[] // volumen de periodos anteriores al sistema
   alias_historicos alias_plantel_historico[] // como se llama este plantel en los archivos historicos
+  prestamos_dados     prestamos_unidad[] @relation("PrestamoOrigen")  // unidades que este plantel presto
+  prestamos_recibidos prestamos_unidad[] @relation("PrestamoDestino") // unidades que le prestaron
 
   @@index([zona])
 }
@@ -546,6 +548,47 @@ model pickups {
 // CUALQUIER tipo de unidad (relación polimórfica por unidad_tipo + unidad_id, sin
 // FK porque apunta a 4 tablas distintas). El motor excluye las unidades con un
 // registro activo (Programado/En_curso) cuyo rango cubra la fecha del viaje.
+// ── Prestamo de una unidad a otro plantel, POR DIA ───────────────────────────
+//
+// Los planteles sin flota propia (Choloma, Villanueva, La Ceiba, Hazama) ya usan la
+// flota de su hub de forma IMPLICITA (`planteles.hub_id`): el motor considera
+// candidatos a los mixers del plantel y a los de su hub. Esta tabla es para el
+// prestamo EXPLICITO, que es distinto y mas fuerte:
+//
+//  · lo decide una persona (Programador / Jefe de Planta) para un DIA concreto;
+//  · FIJA la unidad en el plantel destino: ese dia deja de estar disponible en su
+//    plantel base y en el resto de la zona, porque fisicamente esta en otra parte;
+//  · funciona entre CUALQUIER par de planteles, no solo hub -> dependiente (p. ej.
+//    Puerto Cortes puede prestarle su bomba a Choloma).
+//
+// Polimorfica por (`unidad_tipo`, `unidad_id`) sin FK a la unidad, igual que
+// `disponibilidad_flota` y `historial_estado_unidad`. Camiones y pickups no
+// participan en el motor de asignacion, asi que para ellos el prestamo es un
+// registro de coordinacion (quien tiene que llevar la unidad y a donde).
+model prestamos_unidad {
+  id                 Int      @id @default(autoincrement())
+  unidad_tipo        String // "Mixer" | "Bomba" | "Camion" | "Pickup"
+  unidad_id          Int
+  /// Plantel base de la unidad cuando se registro el prestamo (se guarda para el
+  /// historial: si luego se cambia la base de la unidad, el registro no miente).
+  plantel_origen_id  Int
+  plantel_destino_id Int
+  /// Dia del prestamo, a medianoche local. Un prestamo = una unidad, un dia.
+  fecha              DateTime
+  motivo             String?
+  creado_por         String
+  creado_en          DateTime @default(now())
+
+  origen  planteles @relation("PrestamoOrigen", fields: [plantel_origen_id], references: [id])
+  destino planteles @relation("PrestamoDestino", fields: [plantel_destino_id], references: [id])
+
+  // Una unidad no puede estar prestada a dos planteles el mismo dia.
+  @@unique([unidad_tipo, unidad_id, fecha])
+  @@index([fecha])
+  @@index([plantel_destino_id, fecha])
+  @@index([plantel_origen_id, fecha])
+}
+
 model disponibilidad_flota {
   id           Int      @id @default(autoincrement())
   unidad_tipo  String // "Mixer" | "Bomba" | "Camion" | "Pickup"

@@ -40,6 +40,8 @@ import {
   tiemposDeViaje,
 } from "./tiempos";
 import type { AlertaMargen, Origen, SugerenciaRefuerzo } from "./tipos";
+import { prestamosDelDia } from "@/lib/flota/prestamos-datos";
+import { clavePrestamo, unidadesDisponiblesEn } from "@/lib/flota/prestamos";
 
 // ── Entrada / salida públicas ────────────────────────────────────────────────
 
@@ -205,12 +207,12 @@ async function candidatosDePlanta(
 ): Promise<MetaMixer[]> {
   const plantelesFuente =
     hubId != null && hubId !== plantelId ? [plantelId, hubId] : [plantelId];
-  const [mixers, enMantenimiento] = await Promise.all([
+  const [mixers, enMantenimiento, prestamos] = await Promise.all([
+    // Se traen SIN filtrar por plantel: un mixer prestado a este plantel puede venir
+    // de cualquier otro (no solo del hub), asi que el filtro se aplica despues, con
+    // los prestamos del dia en la mano. El catalogo de mixers es de decenas de filas.
     prisma.mixers.findMany({
-      where: {
-        estado: ESTADO_DISPONIBLE,
-        plantel_base_id: { in: plantelesFuente },
-      },
+      where: { estado: ESTADO_DISPONIBLE },
       select: {
         id: true,
         capacidad_m3: true,
@@ -220,8 +222,16 @@ async function candidatosDePlanta(
     }),
     // Un mixer con mantenimiento/baja ese día NO es candidato (Hito 6).
     unidadesEnMantenimiento("Mixer", dia),
+    prestamosDelDia(dia),
   ]);
-  return mixers.filter((m) => !enMantenimiento.has(m.id));
+  // Prestamos del dia: suma los que llegaron prestados a este plantel (o a su hub) y
+  // resta los que salieron prestados a otro, porque fisicamente estan alla.
+  return unidadesDisponiblesEn(
+    mixers.filter((m) => !enMantenimiento.has(m.id)),
+    plantelesFuente,
+    "Mixer",
+    prestamos,
+  );
 }
 
 // ── Cascada de horarios (consciente de mixers) ───────────────────────────────
@@ -1274,7 +1284,10 @@ export async function bombasParaPlantel(
 ): Promise<BombaCandidata[]> {
   const ini = inicioDelDia(dia);
   const fin = finDelDia(dia);
-  const enMant = await unidadesEnMantenimiento("Bomba", dia);
+  const [enMant, prestamos] = await Promise.all([
+    unidadesEnMantenimiento("Bomba", dia),
+    prestamosDelDia(dia),
+  ]);
 
   const bombas = await prisma.bombas.findMany({
     where: { estado: ESTADO_DISPONIBLE },
@@ -1305,6 +1318,14 @@ export async function bombasParaPlantel(
       origen: "Propia",
       pedidosDelDia: cargaDe.get(b.id) ?? 0,
     };
+    // Prestada ese dia: esta comprometida con UN plantel. Solo aparece ahi (como
+    // propia, porque fisicamente esta en ese patio) y no se ofrece a nadie mas, ni
+    // siquiera como refuerzo: alguien decidio que va a esa planta.
+    const prestadaA = prestamos.get(clavePrestamo("Bomba", b.id));
+    if (prestadaA != null) {
+      if (prestadaA === plantelId) propias.push(base);
+      continue;
+    }
     if (b.plantel_base_id === plantelId) propias.push(base);
     else if (b.plantel_base_id === hubReal && hubReal !== plantelId)
       hubBombas.push({ ...base, origen: "Préstamo" });

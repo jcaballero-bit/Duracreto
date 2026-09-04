@@ -10,6 +10,9 @@ import { OperadoresCatalogo } from "./operadores-catalogo";
 import { CalendarioMantenimiento, type TipoConUnidades } from "./calendario-mantenimiento";
 import { MantenimientoLista, type ItemMantenimiento } from "./mantenimiento-lista";
 import { HistorialFlota, type UnidadHist, type DiaCelda } from "./historial-flota";
+import { PrestamosFlota } from "./prestamos";
+import { prestamosDeDiaVista, unidadesPrestables } from "@/lib/flota/prestamos-datos";
+import { filtroPlantelPorZona, type Alcance } from "@/lib/auth/acceso";
 
 export const dynamic = "force-dynamic";
 
@@ -89,6 +92,7 @@ export default async function FlotaPage({
     ? [
         { key: "panel", label: "Panel" },
         { key: "equipo", label: "Equipo" },
+        { key: "prestamos", label: "Préstamos" },
         { key: "mantenimiento", label: "Mantenimiento" },
         { key: "historial", label: "Historial" },
         { key: "operadores", label: "Operadores" },
@@ -116,6 +120,11 @@ export default async function FlotaPage({
       {tab === "equipo" && (
         <Card className="p-5">
           <EquipoCatalogos equipo={sp.equipo ?? "mixers"} />
+        </Card>
+      )}
+      {tab === "prestamos" && (
+        <Card className="p-5">
+          <PrestamosTab fecha={sp.fecha} alcance={alcance} />
         </Card>
       )}
       {tab === "mantenimiento" && <MantenimientoTab />}
@@ -204,6 +213,49 @@ async function mapaLabels(): Promise<(tipo: string, id: number) => string> {
   meter("Camion", cam);
   meter("Pickup", pic);
   return (tipo, id) => mapa.get(`${tipo}:${id}`) ?? `#${id}`;
+}
+
+// ══ PRESTAMOS de unidades a otro plantel, por dia ════════════════════════════
+async function PrestamosTab({ fecha, alcance }: { fecha?: string; alcance: Alcance }) {
+  const hoy = new Date();
+  const m = (fecha ?? "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const dia = m
+    ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    : new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const fechaISO = `${dia.getFullYear()}-${p2(dia.getMonth() + 1)}-${p2(dia.getDate())}`;
+
+  // Planteles del usuario: de ahi salen las unidades que PUEDE prestar. El Admin no
+  // tiene limite. El destino, en cambio, puede ser cualquier plantel: el sentido del
+  // prestamo es justamente sacar la unidad de tu propio alcance.
+  const mios = alcance.esAdmin
+    ? null
+    : (
+        await prisma.planteles.findMany({
+          where: filtroPlantelPorZona(alcance),
+          select: { id: true },
+        })
+      ).map((x) => x.id);
+
+  const [unidades, prestamos, todos] = await Promise.all([
+    unidadesPrestables(dia, mios),
+    prestamosDeDiaVista(dia, mios),
+    prisma.planteles.findMany({
+      orderBy: { nombre: "asc" },
+      select: { id: true, nombre: true, zona: true },
+    }),
+  ]);
+
+  return (
+    <PrestamosFlota
+      fechaISO={fechaISO}
+      unidades={unidades}
+      planteles={todos}
+      prestamos={prestamos}
+      puedeEditar
+      sinPlanteles={mios !== null && mios.length === 0}
+    />
+  );
 }
 
 // ══ MANTENIMIENTO (programar + lista) ════════════════════════════════════════
