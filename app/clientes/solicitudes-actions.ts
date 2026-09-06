@@ -263,7 +263,8 @@ export async function eliminarSolicitudAction(id: number): Promise<Res> {
 }
 
 /** El Programador/Administrador descarta una proyección sin convertirla. El
- *  Programador solo puede descartar las de SU zona. */
+ *  Programador solo puede descartar las de SU zona. Una proyección ya `Programado` NO
+ *  se descarta: genero un pedido real, asi que es historial. */
 export async function descartarSolicitudAction(id: number): Promise<Res> {
   const ctx = await contexto();
   if ("error" in ctx) return { ok: false, mensaje: ctx.error };
@@ -274,6 +275,15 @@ export async function descartarSolicitudAction(id: number): Promise<Res> {
   if (!solicitud) return { ok: false, mensaje: "Proyección no encontrada." };
   const permiso = await puedeEscribirCliente(ctx, solicitud.cliente_id, solicitud.plantel_id);
   if (!permiso.ok) return permiso;
+  // Descartar una ya Programada la dejaria en "Descartada" CON un `pedido_id` vivo:
+  // el pedido seguiria existiendo y la proyeccion diria que no se atendio. Una vez
+  // programada es historial y solo se cambia deshaciendo el pedido.
+  if (solicitud.estado === "Programado") {
+    return {
+      ok: false,
+      mensaje: "Ya fue programado — no se puede descartar (elimina o cancela el pedido).",
+    };
+  }
   try {
     await prisma.solicitudes_anticipadas.update({
       where: { id },
