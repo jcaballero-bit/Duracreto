@@ -5,6 +5,20 @@ import { useRouter } from "next/navigation";
 import { Plus, Save, X } from "lucide-react";
 import { guardarLaboratoristasPlantaAction } from "./actions";
 
+/**
+ * "YYYY-MM-DD" a texto legible. Se arma por PARTES a proposito: `new Date("2026-09-05")`
+ * se parsea como UTC y en UTC-6 mostraria el dia anterior.
+ */
+function textoFecha(iso: string): string {
+  const [a, m, d] = iso.split("-").map(Number);
+  if (!a || !m || !d) return iso;
+  return new Date(a, m - 1, d).toLocaleDateString("es-HN", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+  });
+}
+
 export interface PlantaAsignable {
   id: number;
   nombre: string;
@@ -43,7 +57,9 @@ export function AsignacionPlantas({
         Control de calidad a la salida de planta ({plantas.length})
       </h3>
       <p className="mb-3 text-xs text-muted">
-        Asigna quién controla la calidad del concreto a la salida de cada planta hoy. Puedes
+        Asigna quién controla la calidad del concreto a la salida de cada planta{" "}
+        <strong className="text-ink">el {textoFecha(fecha)}</strong>. La asignación es de
+        ESE día: al cambiar la fecha se ve (y se guarda) la de ese día, no la de hoy. Puedes
         poner más de un laboratorista por planta y dejarles una observación del turno; ellos
         la ven junto con la planta que tienen asignada.
       </p>
@@ -54,7 +70,12 @@ export function AsignacionPlantas({
       ) : (
         <ul className="space-y-2">
           {plantas.map((p) => (
-            <FilaPlanta key={p.id} planta={p} laboratoristas={laboratoristas} fecha={fecha} />
+            <FilaPlanta
+              key={`${fecha}|${p.id}|${p.labIds.join(",")}|${p.observaciones}`}
+              planta={p}
+              laboratoristas={laboratoristas}
+              fecha={fecha}
+            />
           ))}
         </ul>
       )}

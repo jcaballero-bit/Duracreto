@@ -253,8 +253,8 @@ export default async function LaboratorioPage({
             Control de calidad a la salida de planta
           </h3>
           <p className="mb-3 text-xs text-muted">
-            Planta que tienes asignada hoy para el control de salida, con las indicaciones
-            del turno.
+            Planta que tienes asignada para el control de salida en la fecha seleccionada,
+            con las indicaciones del turno.
           </p>
           <ul className="space-y-2">
             {misTurnosPlanta.map((t, i) => (

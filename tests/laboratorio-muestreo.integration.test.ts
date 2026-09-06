@@ -244,3 +244,85 @@ describe("control de calidad a la salida de planta con VARIOS laboratoristas", (
     expect(res.ok).toBe(false);
   });
 });
+
+describe("la asignación de salida de planta se guarda POR DÍA", () => {
+  /** "YYYY-MM-DD" de hoy + `dias`. */
+  const isoDe = (dias: number) => {
+    const d = new Date();
+    const f = new Date(d.getFullYear(), d.getMonth(), d.getDate() + dias);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${f.getFullYear()}-${p(f.getMonth() + 1)}-${p(f.getDate())}`;
+  };
+  /** Los laboratoristas asignados a una planta en un día concreto. */
+  const asignados = async (plantaId: number, iso: string) => {
+    const [a, m, d] = iso.split("-").map(Number);
+    const ini = new Date(a, m - 1, d);
+    const fin = new Date(a, m - 1, d + 1);
+    const filas = await prisma.asignaciones_laboratorista_planta.findMany({
+      where: { planta_id: plantaId, fecha: { gte: ini, lt: fin } },
+      select: { laboratorista_id: true, observaciones: true },
+      orderBy: { laboratorista_id: "asc" },
+    });
+    return filas;
+  };
+
+  it("guardar en un día NO toca la asignación de otro día", async () => {
+    const s = await escenario();
+    await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(0), [s.labA], "turno de hoy");
+    await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(1), [s.labB], "turno de mañana");
+
+    const hoy = await asignados(s.plantaId, isoDe(0));
+    const manana = await asignados(s.plantaId, isoDe(1));
+    expect(hoy.map((x) => x.laboratorista_id)).toEqual([s.labA]);
+    expect(manana.map((x) => x.laboratorista_id)).toEqual([s.labB]);
+    expect(hoy[0].observaciones).toBe("turno de hoy");
+    expect(manana[0].observaciones).toBe("turno de mañana");
+  });
+
+  it("vaciar un día no borra los otros", async () => {
+    const s = await escenario();
+    for (const d of [0, 1, 2]) {
+      await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(d), [s.labA], "");
+    }
+
+    await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(1), [], "");
+
+    expect(await asignados(s.plantaId, isoDe(0))).toHaveLength(1);
+    expect(await asignados(s.plantaId, isoDe(1))).toHaveLength(0);
+    expect(await asignados(s.plantaId, isoDe(2))).toHaveLength(1);
+  });
+
+  it("un día sin asignar queda vacío aunque los vecinos tengan una", async () => {
+    // Es el caso que se veía mal en pantalla: al cambiar de fecha se seguía mostrando
+    // el laboratorista del día anterior. En la base nunca estuvo: el día está vacío.
+    const s = await escenario();
+    await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(0), [s.labA], "hoy");
+    await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(2), [s.labA], "pasado");
+
+    expect(await asignados(s.plantaId, isoDe(1))).toEqual([]);
+  });
+
+  it("el mismo laboratorista puede estar varios días seguidos, en filas distintas", async () => {
+    const s = await escenario();
+    for (const d of [0, 1, 2]) {
+      await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(d), [s.labA], "");
+    }
+    expect(
+      await prisma.asignaciones_laboratorista_planta.count({
+        where: { planta_id: s.plantaId, laboratorista_id: s.labA },
+      }),
+    ).toBe(3);
+  });
+
+  it("cambiar el conjunto de un día lo REEMPLAZA, sin duplicar ni tocar otros días", async () => {
+    const s = await escenario();
+    await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(0), [s.labA, s.labB], "dos");
+    await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(1), [s.labA], "uno");
+
+    // El día 0 pasa a tener solo labB.
+    await guardarLaboratoristasPlantaAction(s.plantaId, isoDe(0), [s.labB], "cambio");
+
+    expect((await asignados(s.plantaId, isoDe(0))).map((x) => x.laboratorista_id)).toEqual([s.labB]);
+    expect((await asignados(s.plantaId, isoDe(1))).map((x) => x.laboratorista_id)).toEqual([s.labA]);
+  });
+});
