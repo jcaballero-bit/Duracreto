@@ -189,8 +189,18 @@ describe("el orden de Despacho en vivo no se mueve", () => {
     const tardio = e.c.viajes.find((v) => v.mixerId != null)!;
     await avanzarEstadoViaje(tardio.id, "En carga");
     await avanzarEstadoViaje(tardio.id, "En ruta");
-    const corr = await corregirHoraReal(tardio.id, "ts_inicio_carga_real", hoyALas(6, 30), "despachador");
-    expect(corr.ok).toBe(true);
+    // La corrección se hace UN MINUTO ANTES del fin de carga ya sellado, no a una hora
+    // fija: `avanzarEstadoViaje` sella con el reloj del servidor, así que una hora fija
+    // (06:30) queda DESPUÉS de lo sellado si la suite corre de madrugada y la
+    // validación de orden la rechaza. La prueba mide que el orden de la pantalla no
+    // cambie, no una hora concreta.
+    const sellado = await prisma.viajes.findUniqueOrThrow({
+      where: { id: tardio.id },
+      select: { ts_fin_carga_real: true },
+    });
+    const antesDelFin = new Date(sellado.ts_fin_carga_real!.getTime() - 60_000);
+    const corr = await corregirHoraReal(tardio.id, "ts_inicio_carga_real", antesDelFin, "despachador");
+    expect(corr.ok, corr.mensaje).toBe(true);
 
     expect(await ordenEnPantalla()).toEqual(antes);
     expect(await snapshotHoy()).toEqual(snapAntes);
