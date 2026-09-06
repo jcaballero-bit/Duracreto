@@ -8,9 +8,12 @@ import { prisma } from "@/lib/prisma";
 import { calcularAlcance } from "@/lib/auth/acceso";
 import { crearCliente, crearDiseno, crearMixers, crearPlantel, limpiarBD } from "./helpers";
 
-type Rol = "Administrador" | "JefePlanta" | "Programador" | "Asesor";
+type Rol = "Administrador" | "JefePlanta" | "Programador" | "Asesor" | "Dosificador";
 let rol: Rol = "Administrador";
 let plantelesJefe: number[] = [];
+// Alcance del Dosificador: su plantel y su planta asignados.
+let plantelDosificador: number | null = null;
+let plantaDosificador: number | null = null;
 
 vi.mock("@/auth", () => ({
   auth: async () => ({ user: { id: "u1", name: "Prueba", email: "p@test.com" } }),
@@ -20,7 +23,8 @@ vi.mock("@/lib/auth/guard", () => ({
     rol === "Asesor"
       ? { ok: false, mensaje: "No tienes permiso para gestionar la flota." }
       : { ok: true, userId: "u1" },
-  alcanceActual: async () => calcularAlcance([rol], "Norte", null, null, plantelesJefe),
+  alcanceActual: async () =>
+    calcularAlcance([rol], "Norte", plantelDosificador, plantaDosificador, plantelesJefe),
   exigirAdmin: async () => ({ ok: true, userId: "u1" }),
   requerirAcceso: async () => ({}),
   requerirPasswordAlDia: async () => {},
@@ -81,6 +85,8 @@ beforeEach(async () => {
   await prisma.bitacora_auditoria.deleteMany();
   rol = "Administrador";
   plantelesJefe = [];
+  plantelDosificador = null;
+  plantaDosificador = null;
 });
 
 describe("el motor respeta el préstamo de un MIXER", () => {
@@ -468,5 +474,220 @@ describe("camiones y pickups: registro de coordinación", () => {
     const filas = await prestamosDeDiaVista(new Date(2027, 2, 10), null);
     expect(filas.map((f) => f.unidad).sort()).toEqual(["CAM-9", "PK-3"]);
     expect(filas.every((f) => f.destino === "Choloma T")).toBe(true);
+  });
+});
+
+describe("la unidad prestada se puede usar en su plantel destino (Despacho)", () => {
+  /** Reasigna el mixer de un viaje pasando por la server action (con su guard). */
+  async function reasignar(viajeId: number, mixerId: number) {
+    const { reasignarMixerAction } = await import("@/app/actions");
+    return reasignarMixerAction(viajeId, mixerId);
+  }
+
+  it("el Jefe de Planta del DESTINO puede ponerla en un viaje suyo", async () => {
+    const { sm, cho } = await zonaNorte();
+    // Choloma no tiene flota; el hub tiene dos mixers y uno se presta a Choloma.
+    await crearMixers(sm.plantelId, [[11, 2]]);
+    const [m1, m2] = await prisma.mixers.findMany({
+      where: { plantel_base_id: sm.plantelId },
+      orderBy: { id: "asc" },
+    });
+    await prestar("Mixer", m1.id, cho.plantelId);
+
+    // Un viaje de Choloma que arrancó con el otro mixer.
+    const { pedidoId } = await mixersAsignados(cho.plantelId, cho.plantaId);
+    const viaje = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: pedidoId, mixer_id: { not: null } },
+      select: { id: true, mixer_id: true },
+    });
+    if (viaje.mixer_id !== m2.id) {
+      await prisma.viajes.update({ where: { id: viaje.id }, data: { mixer_id: m2.id } });
+    }
+
+    // El Jefe de Planta de CHOLOMA le pone el mixer prestado.
+    rol = "JefePlanta";
+    plantelesJefe = [cho.plantelId];
+    const r = await reasignar(viaje.id, m1.id);
+
+    expect(r.ok, r.mensaje).toBe(true);
+    const despues = await prisma.viajes.findUniqueOrThrow({ where: { id: viaje.id } });
+    expect(despues.mixer_id).toBe(m1.id);
+  });
+
+  it("el Dosificador del destino también, con un viaje de HOY", async () => {
+    // El Dosificador solo opera el día en curso (`puedeOperarEnFecha`), así que su
+    // escenario va con la fecha de hoy y el préstamo del mismo día.
+    const hoy = new Date();
+    const hoyDia = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+    const p2 = (n: number) => String(n).padStart(2, "0");
+    const hoyISO = `${hoyDia.getFullYear()}-${p2(hoyDia.getMonth() + 1)}-${p2(hoyDia.getDate())}`;
+
+    const { sm, cho } = await zonaNorte();
+    await crearMixers(sm.plantelId, [[11, 2]]);
+    const [m1, m2] = await prisma.mixers.findMany({
+      where: { plantel_base_id: sm.plantelId },
+      orderBy: { id: "asc" },
+    });
+    await prestarUnidadAction({
+      unidadTipo: "Mixer",
+      unidadId: m1.id,
+      destinoId: cho.plantelId,
+      fechaISO: hoyISO,
+    });
+
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const pedido = await programarPedido({
+      cliente_id: clienteId,
+      diseno_id: disenoId,
+      volumen_total_m3: 11,
+      hora_solicitada: new Date(hoyDia.getTime() + 8 * 3_600_000),
+      plantel_id: cho.plantelId,
+      planta_id: cho.plantaId,
+      tipo_descarga: "Canal directo",
+      creado_por: "test",
+    });
+    const viaje = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: pedido.pedidoId, mixer_id: { not: null } },
+      select: { id: true },
+    });
+    await prisma.viajes.update({ where: { id: viaje.id }, data: { mixer_id: m2.id } });
+
+    rol = "Dosificador";
+    plantaDosificador = cho.plantaId;
+    plantelDosificador = cho.plantelId;
+    const r = await reasignar(viaje.id, m1.id);
+    expect(r.ok, r.mensaje).toBe(true);
+  });
+
+  it("el plantel de ORIGEN ya no la puede usar: está prestada a otro", async () => {
+    const { sm, cho } = await zonaNorte();
+    await crearMixers(sm.plantelId, [[11, 2]]);
+    const [m1, m2] = await prisma.mixers.findMany({
+      where: { plantel_base_id: sm.plantelId },
+      orderBy: { id: "asc" },
+    });
+    await prestar("Mixer", m1.id, cho.plantelId);
+
+    // Un viaje de SANTA MARTA (el origen del préstamo).
+    const { pedidoId } = await mixersAsignados(sm.plantelId, sm.plantaId);
+    const viaje = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: pedidoId, mixer_id: { not: null } },
+      select: { id: true },
+    });
+    await prisma.viajes.update({ where: { id: viaje.id }, data: { mixer_id: m2.id } });
+
+    rol = "JefePlanta";
+    plantelesJefe = [sm.plantelId];
+    const r = await reasignar(viaje.id, m1.id);
+
+    expect(r.ok).toBe(false);
+    expect(r.mensaje).toMatch(/prestado a/i);
+    // Y el viaje conserva su mixer.
+    expect((await prisma.viajes.findUniqueOrThrow({ where: { id: viaje.id } })).mixer_id).toBe(m2.id);
+  });
+
+  it("sin préstamo, el plantel ajeno sigue sin poder tomar la unidad", async () => {
+    // La excepción es SOLO para la unidad prestada: no abre la flota de par en par.
+    const { sm, cho } = await zonaNorte();
+    await crearMixers(sm.plantelId, [[11, 2]]);
+    const [m1, m2] = await prisma.mixers.findMany({
+      where: { plantel_base_id: sm.plantelId },
+      orderBy: { id: "asc" },
+    });
+
+    const { pedidoId } = await mixersAsignados(cho.plantelId, cho.plantaId);
+    const viaje = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: pedidoId, mixer_id: { not: null } },
+      select: { id: true },
+    });
+    await prisma.viajes.update({ where: { id: viaje.id }, data: { mixer_id: m2.id } });
+
+    // Sin préstamo, el mixer del hub sigue siendo asignable por la regla de ZONA
+    // (Choloma y Santa Marta son la misma zona): esto NO debe cambiar.
+    rol = "JefePlanta";
+    plantelesJefe = [cho.plantelId];
+    expect((await reasignar(viaje.id, m1.id)).ok).toBe(true);
+  });
+
+  it("una unidad prestada DESDE la otra zona se puede usar en el destino", async () => {
+    // Es lo que el prestamo explicito permite y el hub no: cruzar la frontera de zona
+    // para un dia concreto. La guarda de zona no debe bloquearlo.
+    const { cho } = await zonaNorte();
+    const tg = await crearPlantel({ nombre: "Tegucigalpa T", zona: "Centro Sur", esHub: true });
+    await crearMixers(tg.plantelId, [[11, 1]]);
+    await crearMixers(cho.plantelId, [[9, 1]]);
+    const ajeno = await prisma.mixers.findFirstOrThrow({ where: { plantel_base_id: tg.plantelId } });
+    const propio = await prisma.mixers.findFirstOrThrow({ where: { plantel_base_id: cho.plantelId } });
+
+    rol = "Administrador";
+    await prestar("Mixer", ajeno.id, cho.plantelId);
+
+    const { pedidoId } = await mixersAsignados(cho.plantelId, cho.plantaId, 9);
+    const viaje = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: pedidoId, mixer_id: { not: null } },
+      select: { id: true },
+    });
+    await prisma.viajes.update({ where: { id: viaje.id }, data: { mixer_id: propio.id } });
+
+    rol = "JefePlanta";
+    plantelesJefe = [cho.plantelId];
+    const r = await reasignar(viaje.id, ajeno.id);
+    expect(r.ok, r.mensaje).toBe(true);
+  });
+
+  it("un mixer de la otra zona SIN préstamo sigue rechazado", async () => {
+    const { cho } = await zonaNorte();
+    const tg = await crearPlantel({ nombre: "Tegucigalpa T2", zona: "Centro Sur", esHub: true });
+    await crearMixers(tg.plantelId, [[11, 1]]);
+    await crearMixers(cho.plantelId, [[9, 1]]);
+    const ajeno = await prisma.mixers.findFirstOrThrow({ where: { plantel_base_id: tg.plantelId } });
+
+    const { pedidoId } = await mixersAsignados(cho.plantelId, cho.plantaId, 9);
+    const viaje = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: pedidoId, mixer_id: { not: null } },
+      select: { id: true },
+    });
+
+    rol = "JefePlanta";
+    plantelesJefe = [cho.plantelId];
+    const r = await reasignar(viaje.id, ajeno.id);
+    expect(r.ok).toBe(false);
+    expect(r.mensaje).toMatch(/otra zona/i);
+  });
+
+  it("el préstamo es por DÍA: en un viaje de otro día no aplica la excepción", async () => {
+    const { cho } = await zonaNorte();
+    const tg = await crearPlantel({ nombre: "Tegucigalpa T3", zona: "Centro Sur", esHub: true });
+    await crearMixers(tg.plantelId, [[11, 1]]);
+    await crearMixers(cho.plantelId, [[9, 1]]);
+    const ajeno = await prisma.mixers.findFirstOrThrow({ where: { plantel_base_id: tg.plantelId } });
+
+    rol = "Administrador";
+    await prestar("Mixer", ajeno.id, cho.plantelId); // prestado el DIA del escenario
+
+    // Un viaje de OTRO día: ese día el préstamo no existe.
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    const otro = await programarPedido({
+      cliente_id: clienteId,
+      diseno_id: disenoId,
+      volumen_total_m3: 9,
+      hora_solicitada: new Date(2027, 2, 11, 8, 0),
+      plantel_id: cho.plantelId,
+      planta_id: cho.plantaId,
+      tipo_descarga: "Canal directo",
+      creado_por: "test",
+    });
+    const viaje = await prisma.viajes.findFirstOrThrow({
+      where: { pedido_id: otro.pedidoId, mixer_id: { not: null } },
+      select: { id: true },
+    });
+
+    rol = "JefePlanta";
+    plantelesJefe = [cho.plantelId];
+    const r = await reasignar(viaje.id, ajeno.id);
+    expect(r.ok).toBe(false);
+    expect(r.mensaje).toMatch(/otra zona/i);
   });
 });

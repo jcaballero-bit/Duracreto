@@ -28,6 +28,7 @@ import {
   clientesActivos,
   disenosCatalogo,
   mixersCatalogo,
+  plantelesCatalogo,
   motoristasDisponibles,
   elementosCatalogo,
 } from "@/lib/catalogos-cache";
@@ -45,6 +46,8 @@ import {
   type OperadorOpcion,
   type ViajeDespacho,
 } from "./tablero";
+import { prestamosDelDia } from "@/lib/flota/prestamos-datos";
+import { clavePrestamo, plantelEfectivo } from "@/lib/flota/prestamos";
 
 export const dynamic = "force-dynamic";
 
@@ -346,25 +349,42 @@ export default async function DespachoPage({
 
   // Excluir del desplegable de reasignación / selección los mixers y bombas en
   // mantenimiento ese día (Hito 6).
-  const [mixEnMant, bombaEnMant] = await Promise.all([
+  const [mixEnMant, bombaEnMant, prestamosHoy] = await Promise.all([
     unidadesEnMantenimiento("Mixer", ini),
     unidadesEnMantenimiento("Bomba", ini),
+    prestamosDelDia(ini),
   ]);
   // El filtro por zona lo hacen los planteles ya consultados con el alcance del rol:
-  // un mixer es elegible si su plantel base está entre los que el usuario ve.
+  // un mixer es elegible si su plantel EFECTIVO de hoy está entre los que el usuario
+  // ve. "Efectivo" y no "base" por los PRÉSTAMOS: una unidad prestada a este plantel
+  // está físicamente aquí y el Jefe de Planta / Dosificador tiene que poder ponerla en
+  // cualquier viaje que la necesite; y una prestada a otro plantel deja de ofrecerse,
+  // porque ese día no está.
   const nombrePlantel = new Map(planteles.map((p) => [p.id, p.nombre]));
+  const nombreDeCualquierPlantel = new Map(
+    (await plantelesCatalogo()).map((p) => [p.id, p.nombre]),
+  );
   const mixers: MixerOpcion[] = mixersTodos
-    .filter(
-      (m) =>
-        m.estado === "Disponible" &&
-        m.plantel_base_id != null &&
-        nombrePlantel.has(m.plantel_base_id) &&
-        !mixEnMant.has(m.id),
-    )
-    .map((m) => ({
-      id: m.id,
-      etiqueta: `${m.identificador ?? `#${m.id}`} · ${m.capacidad_m3}m³ · ${nombrePlantel.get(m.plantel_base_id!)}`,
-    }));
+    .filter((m) => m.estado === "Disponible" && m.plantel_base_id != null && !mixEnMant.has(m.id))
+    .flatMap((m) => {
+      const prestadoA = prestamosHoy.get(clavePrestamo("Mixer", m.id)) ?? null;
+      const efectivo = plantelEfectivo(m.plantel_base_id!, prestadoA != null ? { destinoId: prestadoA } : null);
+      if (!nombrePlantel.has(efectivo)) return [];
+      // Si vino prestada, se dice de dónde: el usuario tiene que saber que la unidad
+      // no es suya y que mañana vuelve a su plantel.
+      const origen =
+        prestadoA != null
+          ? `${nombrePlantel.get(efectivo)} · prestado de ${
+              nombreDeCualquierPlantel.get(m.plantel_base_id!) ?? "otro plantel"
+            }`
+          : nombrePlantel.get(efectivo);
+      return [
+        {
+          id: m.id,
+          etiqueta: `${m.identificador ?? `#${m.id}`} · ${m.capacidad_m3}m³ · ${origen}`,
+        },
+      ];
+    });
 
   // Motoristas del desplegable = los disponibles (caché) MÁS los que ya van en un viaje
   // de hoy, para no borrar de la lista un dato ya capturado. Los segundos salen de los

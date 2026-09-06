@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA } from "@/lib/auth/acceso";
+import { calcularAlcance, puedeOperarEnFecha, ESTADOS_LABORATORISTA, filtroPlantelPorZona} from "@/lib/auth/acceso";
 import { ESTADO_LABORATORISTA_PLANTA, viajeEsDeSuPlanta } from "@/lib/calidad/planta-lab";
 import { alcanceActual } from "@/lib/auth/guard";
 import { MOTIVOS_CANCELACION } from "@/lib/cancelacion";
@@ -41,6 +41,8 @@ import {
   type EntradaPedido,
   type ResultadoProgramacion,
 } from "@/lib/motor/asignacion";
+import { prestamosDelDia } from "@/lib/flota/prestamos-datos";
+import { clavePrestamo } from "@/lib/flota/prestamos";
 
 // ── Autorización server-side (rol + zona + reglas de fecha) ──────────────────
 
@@ -266,16 +268,42 @@ async function autorizarCambioPrograma(fecha: Date, esAdicion: boolean): Promise
 
 /** El mixer que se reasigna debe pertenecer a la ZONA del operador (se permiten
  *  préstamos intra-zona / hub, pero NO tomar flota de la OTRA zona — las dos
- *  restricciones de flota son independientes por zona). Admin: cualquiera. */
-async function autorizarMixerDeZona(mixerId: number): Promise<Permiso> {
+ *  restricciones de flota son independientes por zona). Admin: cualquiera.
+ *
+ *  EXCEPCIÓN: un mixer PRESTADO ese día a un plantel del usuario sí se puede asignar,
+ *  venga de donde venga — está físicamente en ese patio y alguien decidió que trabaje
+ *  ahí. Y al revés: uno prestado a un plantel ajeno se rechaza aunque su base sea de
+ *  la zona del usuario, porque ese día no está. Por eso hace falta el día del viaje. */
+async function autorizarMixerDeZona(mixerId: number, dia: Date): Promise<Permiso> {
   const a = await alcanceActual();
   if (!a) return { ok: false, mensaje: "Sesión no válida." };
   if (a.esAdmin) return { ok: true };
   const mixer = await prisma.mixers.findUnique({
     where: { id: mixerId },
-    select: { plantel_base: { select: { zona: true } } },
+    select: { identificador: true, plantel_base: { select: { zona: true } } },
   });
   if (!mixer?.plantel_base) return { ok: false, mensaje: "Mixer sin plantel base válido." };
+
+  // Préstamos del día: mandan sobre el plantel base.
+  const prestamos = await prestamosDelDia(dia);
+  const prestadoA = prestamos.get(clavePrestamo("Mixer", mixerId)) ?? null;
+  if (prestadoA != null) {
+    const mios = await prisma.planteles.findMany({
+      where: filtroPlantelPorZona(a),
+      select: { id: true, nombre: true },
+    });
+    if (mios.some((p) => p.id === prestadoA)) return { ok: true };
+    const destino = await prisma.planteles.findUnique({
+      where: { id: prestadoA },
+      select: { nombre: true },
+    });
+    return {
+      ok: false,
+      mensaje: `El mixer ${mixer.identificador ?? `#${mixerId}`} está prestado a ${
+        destino?.nombre ?? "otro plantel"
+      } ese día; no está disponible aquí.`,
+    };
+  }
   // Zona(s) del operador: Programador/Despachador por User.zona; Dosificador por la
   // zona de su plantel asignado; Jefe de Planta por las zonas de SUS planteles (M2M).
   const zonas = new Set<string>();
@@ -1032,8 +1060,14 @@ export async function reasignarMixerAction(
   if (!permiso.ok) return permiso;
   const ed = await autorizarEdicionCampos();
   if (!ed.ok) return ed;
-  // El mixer destino debe ser de la zona del operador (no tomar flota de otra zona).
-  const zonaMixer = await autorizarMixerDeZona(nuevoMixerId);
+  // El mixer destino debe ser de la zona del operador (no tomar flota de otra zona),
+  // salvo que ese día se lo hayan prestado a un plantel suyo.
+  const viajeDia = await prisma.viajes.findUnique({
+    where: { id: viajeId },
+    select: { pedido: { select: { hora_solicitada: true } } },
+  });
+  if (!viajeDia) return { ok: false, mensaje: "Viaje no encontrado." };
+  const zonaMixer = await autorizarMixerDeZona(nuevoMixerId, viajeDia.pedido.hora_solicitada);
   if (!zonaMixer.ok) return zonaMixer;
   const res = await reasignarMixer(viajeId, nuevoMixerId);
   if (!res.ok) return { ok: false, mensaje: res.motivo };
