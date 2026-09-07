@@ -546,6 +546,10 @@ export default async function DespachoPage({
         volumenEditable,
         volumenCorreccionAdmin,
         plantaCorreccionAdmin,
+        // Borrar un viaje es SOLO del Administrador: es irreversible y saca la fila
+        // del programa publicado. El servidor lo vuelve a validar contra la sesión
+        // (`eliminarViajeDespachoAction`); esconder el botón no es enforcement.
+        puedeEliminar: alcance.esAdmin,
         volumenBloqueoMsg: volumenEditable ? null : "No editable: carga ya finalizada",
         mixerId: v.mixer.id,
         mixerLabel: v.mixer.identificador ?? `#${v.mixer.id}`,

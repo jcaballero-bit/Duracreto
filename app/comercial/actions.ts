@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { calcularAlcance } from "@/lib/auth/acceso";
+import { soltarSolicitudDePedido } from "@/lib/motor/asignacion";
 
 type Res = { ok: boolean; mensaje?: string };
 
@@ -114,11 +115,9 @@ export async function eliminarCancelacionAction(pedidoId: number): Promise<Res> 
         motivo: `Cancelacion eliminada por error: ${pedido.cliente.empresa}, ${m3} m3 (motivo original: ${pedido.motivo_cancelacion ?? "-"})`,
       },
     });
-    // Si venía de una proyección semanal, devolverla a Pendiente (y soltar el vínculo).
-    await prisma.solicitudes_anticipadas.updateMany({
-      where: { pedido_id: pedidoId },
-      data: { estado: "Pendiente", pedido_id: null },
-    });
+    // Si venía de una proyección semanal, devolverla a Pendiente (y soltar el
+    // vínculo). Misma implementación que usan los demás borrados de pedido.
+    await soltarSolicitudDePedido(pedidoId);
     // Borrar el pedido; viajes y asignación de laboratorista caen en cascada.
     await prisma.pedidos.delete({ where: { id: pedidoId } });
 

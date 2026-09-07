@@ -23,6 +23,7 @@ import {
   cambiarOperadorViaje,
   cambiarPlantaViaje,
   editarViajeManual,
+  eliminarViajeDespacho,
   eliminarViajeManual,
   eliminarViajesManual,
   generarViajesEnSerie,
@@ -1559,6 +1560,91 @@ export async function cancelarViajeAction(
     return {
       ok: false,
       mensaje: e instanceof Error ? e.message : "No se pudo cancelar el viaje.",
+    };
+  }
+}
+
+/**
+ * Server action: elimina DEFINITIVAMENTE un viaje de Despacho en vivo. **Solo el
+ * Administrador.** Es la salida para el viaje que se cargó POR ERROR — el ejemplo
+ * real es un cliente agregado con el diseño equivocado: cancelarlo lo deja visible
+ * en el tablero y, al cerrar el pedido por debajo de su base, lo carga como
+ * cancelación del asesor en el dashboard comercial. Aquí no queda rastro: la línea
+ * base del pedido se rebaja en el volumen del viaje borrado, así que ningún
+ * estadístico se mueve (ver `eliminarViajeDespacho`).
+ *
+ * El privilegio se toma de la SESIÓN, no de la pantalla: ocultar el botón no es
+ * enforcement. Se acepta en cualquier estado (incluido Completado) y en cualquier
+ * fecha — el Admin ya puede operar cualquier día (`puedeOperarEnFecha`) y un error
+ * de carga se descubre a veces al día siguiente.
+ *
+ * NO pasa por el bloqueo horario del programa (`autorizarOperacionPedido` sin nombre
+ * de acción): es una acción de Despacho, y de todos modos el Admin nunca se bloquea.
+ */
+export async function eliminarViajeDespachoAction(
+  viajeId: number,
+  motivo?: string,
+): Promise<{ ok: boolean; mensaje?: string }> {
+  try {
+    const a = await alcanceActual();
+    if (!a) return { ok: false, mensaje: "Sesión no válida." };
+    if (!a.esAdmin) {
+      return {
+        ok: false,
+        mensaje: "Solo el Administrador puede eliminar un viaje. Puedes cancelarlo en su lugar.",
+      };
+    }
+
+    const res = await eliminarViajeDespacho(viajeId);
+    if (!res.ok) return res;
+
+    const sesion = await auth();
+    const quien = sesion?.user?.name ?? sesion?.user?.email ?? "sistema";
+    const nota = (motivo ?? "").trim();
+
+    // La fila del viaje ya no existe: la bitácora es el único registro de lo que se
+    // borró, así que `valor_anterior` lleva su descripción completa.
+    await prisma.bitacora_auditoria.create({
+      data: {
+        tabla_afectada: "viajes",
+        registro_id: viajeId,
+        usuario: quien,
+        campo_modificado: "eliminado",
+        valor_anterior: res.detalle ?? null,
+        valor_nuevo: "(eliminado)",
+        motivo:
+          `Viaje ELIMINADO por el Administrador (cargado por error en despacho) — ` +
+          `${res.cliente ?? "cliente"}, pedido #${res.pedidoId}` +
+          (res.pedidoEliminado ? " · era su último viaje: el pedido también se eliminó" : "") +
+          (nota ? ` · ${nota}` : ""),
+      },
+    });
+
+    // El ajuste de la línea base va aparte: es lo que evita que la eliminación
+    // aparezca como cancelación del asesor, y conviene poder auditarlo por separado.
+    if (!res.pedidoEliminado && res.programadoAntes !== res.programadoDespues) {
+      await prisma.bitacora_auditoria.create({
+        data: {
+          tabla_afectada: "pedidos",
+          registro_id: res.pedidoId!,
+          usuario: quien,
+          campo_modificado: "volumen_programado",
+          valor_anterior: String(res.programadoAntes),
+          valor_nuevo: String(res.programadoDespues),
+          motivo: `Linea base rebajada al eliminar el viaje V-${String(viajeId).padStart(6, "0")} (cargado por error): la eliminacion no debe contar como cancelacion del asesor`,
+        },
+      });
+    }
+
+    revalidarPantallas();
+    revalidatePath("/comercial");
+    revalidatePath("/calidad");
+    revalidatePath("/clientes/semana");
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      mensaje: e instanceof Error ? e.message : "No se pudo eliminar el viaje.",
     };
   }
 }

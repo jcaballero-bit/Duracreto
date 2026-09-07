@@ -219,6 +219,7 @@ describe("dónde se aplica el bloqueo (cableado de las server actions)", () => {
     "cambiarPlantaViajeAction",
     "agregarViajePedidoAction",
     "cancelarViajeAction",
+    "eliminarViajeDespachoAction",
   ];
 
   it.each(PROGRAMACION)("%s exige el bloqueo horario", (accion) => {

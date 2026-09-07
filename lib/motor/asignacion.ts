@@ -3402,6 +3402,10 @@ export async function detectarAlertasMargen(dia: Date): Promise<AlertaMargen[]> 
 export async function cancelarPedido(
   pedidoId: number,
 ): Promise<{ viajesRecalculados: number[] }> {
+  // Si venía de una proyección del Programa Semana, devolverla a Pendiente: el
+  // pedido va a desaparecer y la proyección no puede quedar diciendo "Programado"
+  // sobre un pedido inexistente (ver `soltarSolicitudDePedido`).
+  await soltarSolicitudDePedido(pedidoId);
   await prisma.pedidos.delete({ where: { id: pedidoId } });
   // NO se recalcula la cascada de la planta. Quitar un pedido libera un hueco, y
   // recalcular adelantaria los horarios de los demas clientes: eso es justamente lo
@@ -3893,4 +3897,164 @@ export async function cambiarOperadorViaje(
     data: { operador_id: operadorId },
   });
   return { ok: true };
+}
+
+// ── Eliminar un viaje cargado POR ERROR (privilegio del Administrador) ────────
+
+/**
+ * Una proyección del Programa Semana quedó vinculada a un pedido que va a DEJAR DE
+ * EXISTIR. Antes de borrar el pedido hay que devolverla a Pendiente y soltar el
+ * vínculo: si se queda en "Programado" con `pedido_id` en NULL, la proyección dice
+ * que se atendió cuando no hay nada en el programa, y además queda CONGELADA (una
+ * proyección Programado es historial: nadie la edita ni la borra), así que el asesor
+ * no podría volver a planificar ese día.
+ */
+export async function soltarSolicitudDePedido(pedidoId: number): Promise<void> {
+  await prisma.solicitudes_anticipadas.updateMany({
+    where: { pedido_id: pedidoId },
+    data: { estado: "Pendiente", pedido_id: null },
+  });
+}
+
+/** Lo que se borró, en texto. La fila desaparece: si no queda escrito en la
+ *  bitácora, no hay forma de reconstruir qué se eliminó. */
+function descripcionViajeBorrado(v: {
+  id: number;
+  estado: string;
+  volumen_asignado_m3: number;
+  volumen_real_m3: number | null;
+  es_adicion: boolean;
+  hora_inicio_carga: Date | null;
+  mixer: { identificador: string | null; id: number } | null;
+  planta: { nombre: string } | null;
+}): string {
+  const hm = (d: Date | null) =>
+    d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : "sin hora";
+  const partes = [
+    `V-${String(v.id).padStart(6, "0")}`,
+    `estado ${v.estado}`,
+    `carga ${hm(v.hora_inicio_carga)}`,
+    `programado ${v.volumen_asignado_m3} m3`,
+  ];
+  if (v.volumen_real_m3 != null) partes.push(`real ${v.volumen_real_m3} m3`);
+  partes.push(`mixer ${v.mixer ? (v.mixer.identificador ?? `#${v.mixer.id}`) : "sin asignar"}`);
+  if (v.planta) partes.push(`planta ${v.planta.nombre}`);
+  if (v.es_adicion) partes.push("adicion de despacho");
+  return partes.join(" · ");
+}
+
+/** Resultado de eliminar un viaje de Despacho en vivo. */
+export interface ResultadoEliminarViaje {
+  ok: boolean;
+  mensaje?: string;
+  /** Texto de lo borrado, para la bitácora (la fila ya no existe). */
+  detalle?: string;
+  pedidoId?: number;
+  cliente?: string;
+  /** true = era el último viaje y el pedido completo dejó de existir. */
+  pedidoEliminado?: boolean;
+  /** Cómo quedó la línea base del pedido (para dejarlo en la bitácora). */
+  programadoAntes?: number;
+  programadoDespues?: number;
+}
+
+/**
+ * Elimina DEFINITIVAMENTE un viaje de Despacho en vivo. Es para el viaje que se
+ * cargó POR ERROR — p. ej. un cliente con el diseño equivocado: cancelarlo lo deja
+ * visible en el tablero y contando como faltante del asesor, y lo que se necesita es
+ * que no quede rastro. El privilegio es del Administrador y se valida en la server
+ * action (sale de la sesión, no de la pantalla).
+ *
+ * Para que NO afecte ningún estadístico se ajusta la línea base del pedido:
+ *  · `volumen_total_m3` = suma de los viajes que quedan.
+ *  · `volumen_programado` se REBAJA en el volumen programado del viaje borrado,
+ *    SIEMPRE, aunque el programa del día ya esté cerrado. Sin esto el pedido
+ *    cerraría por debajo de su base y el dashboard comercial lo cargaría como
+ *    CANCELACIÓN del asesor (`suministrado - programado < 0`), que es exactamente el
+ *    rastro que se quiere evitar. Un viaje de ADICIÓN no toca la base (nunca estuvo
+ *    en ella).
+ *  · Si el pedido queda sin viajes, se ELIMINA con él (deja de existir en el
+ *    programa) y su proyección del Programa Semana vuelve a Pendiente.
+ *
+ * Se acepta en CUALQUIER estado, incluido Completado: un viaje cargado por error
+ * puede haberse marchado hasta el final antes de que alguien lo notara, y es
+ * justamente el que sí mueve los m3 despachados. Cancelar no cubre ese caso (bloquea
+ * los Completado), así que sin esto el Administrador no tendría forma de limpiarlo.
+ *
+ * NO se recalcula ninguna cascada: los demás clientes conservan su horario (misma
+ * regla que cancelar un pedido). El hueco queda visible en el Gantt.
+ */
+export async function eliminarViajeDespacho(viajeId: number): Promise<ResultadoEliminarViaje> {
+  const viaje = await prisma.viajes.findUnique({
+    where: { id: viajeId },
+    select: {
+      id: true,
+      pedido_id: true,
+      estado: true,
+      volumen_asignado_m3: true,
+      volumen_real_m3: true,
+      es_adicion: true,
+      hora_inicio_carga: true,
+      mixer: { select: { id: true, identificador: true } },
+      planta: { select: { nombre: true } },
+      pedido: {
+        select: {
+          id: true,
+          es_adicion: true,
+          volumen_total_m3: true,
+          volumen_programado: true,
+          cliente: { select: { empresa: true } },
+        },
+      },
+    },
+  });
+  if (!viaje) return { ok: false, mensaje: "Viaje no encontrado." };
+
+  const detalle = descripcionViajeBorrado(viaje);
+  const cliente = viaje.pedido.cliente.empresa;
+  const pedidoId = viaje.pedido_id;
+  // Base efectiva del pedido: la misma que leen las métricas comerciales
+  // (`volumen_programado ?? volumen_total_m3`).
+  const programadoAntes = viaje.pedido.volumen_programado ?? viaje.pedido.volumen_total_m3;
+
+  await prisma.viajes.delete({ where: { id: viajeId } });
+  // El control de calidad de ESE viaje (revenimiento/temperatura/muestras) cae en
+  // cascada con él: era la lectura de un camión que no debió existir.
+
+  const restantes = await prisma.viajes.findMany({
+    where: { pedido_id: pedidoId },
+    select: { volumen_asignado_m3: true },
+  });
+
+  if (restantes.length === 0) {
+    // Último viaje del pedido: el pedido completo deja de existir (viajes, bombas,
+    // asignación de laboratorista y control general caen en cascada).
+    await soltarSolicitudDePedido(pedidoId);
+    await prisma.pedidos.delete({ where: { id: pedidoId } });
+    return {
+      ok: true,
+      detalle,
+      pedidoId,
+      cliente,
+      pedidoEliminado: true,
+      programadoAntes,
+      programadoDespues: 0,
+    };
+  }
+
+  const total = redondear2(restantes.reduce((s, v) => s + v.volumen_asignado_m3, 0));
+  // Un viaje de adición no formaba parte de la línea base, así que borrarlo no la
+  // baja. Tampoco se toca la base de un pedido que ES una adición (vale 0).
+  const rebaja = viaje.es_adicion || viaje.pedido.es_adicion ? 0 : viaje.volumen_asignado_m3;
+  const programadoDespues = redondear2(Math.max(0, programadoAntes - rebaja));
+
+  await prisma.pedidos.update({
+    where: { id: pedidoId },
+    data: {
+      volumen_total_m3: total,
+      ...(viaje.pedido.es_adicion ? {} : { volumen_programado: programadoDespues }),
+    },
+  });
+
+  return { ok: true, detalle, pedidoId, cliente, pedidoEliminado: false, programadoAntes, programadoDespues };
 }

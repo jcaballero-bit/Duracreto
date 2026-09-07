@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { Fragment, useState, useTransition } from "react";
-import { Ban, Check, ChevronRight, Lock, MessageSquare, Pencil, Plus, RefreshCw } from "lucide-react";
+import { Ban, Check, ChevronRight, Lock, MessageSquare, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import {
   avanzarEstadoAction,
   cambiarOperadorAction,
@@ -14,6 +14,7 @@ import {
 import { Badge } from "../components/ui";
 import { BotonesMapa, type UbicacionCliente } from "../components/maps-buttons";
 import { CancelarViajeModal } from "../components/cancelar-viaje-modal";
+import { EliminarViajeModal } from "../components/eliminar-viaje-modal";
 import { AgregarViajeModal } from "../components/agregar-viaje-modal";
 import {
   CapturaCalidadViaje,
@@ -64,6 +65,8 @@ export interface ViajeDespacho {
   volumenCorreccionAdmin: boolean;
   /** El Admin está corrigiendo la planta de un viaje que ya salió de planta. */
   plantaCorreccionAdmin: boolean;
+  /** Solo el Administrador: borrar definitivamente un viaje cargado por error. */
+  puedeEliminar: boolean;
   volumenBloqueoMsg: string | null;
   mixerId: number;
   mixerLabel: string;
@@ -289,6 +292,7 @@ function FilaViaje({
   const router = useRouter();
   const [pendiente, startTransition] = useTransition();
   const [cancelando, setCancelando] = useState(false);
+  const [eliminando, setEliminando] = useState(false);
   const [agregando, setAgregando] = useState(false);
   const siguiente = SIGUIENTE[v.estado];
 
@@ -331,6 +335,18 @@ function FilaViaje({
               <Ban size={13} /> Cancelar viaje
             </button>
           )}
+          {/* Solo el Administrador. Cancelar conserva el viaje en el programa (es lo
+              correcto cuando el cliente no lo recibe); ELIMINAR es para el que se
+              cargó por error y no debe dejar rastro en ningún estadístico. */}
+          {v.puedeEliminar && (
+            <button
+              onClick={() => setEliminando(true)}
+              title="Eliminar definitivamente este viaje (solo Administrador: se cargó por error)"
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50"
+            >
+              <Trash2 size={13} /> Eliminar
+            </button>
+          )}
           {/* Preguntas generales del pedido: en el ÚLTIMO viaje del pedido, solo si
               hay Laboratorista asignado y el usuario captura calidad. */}
           {puedeCapturarCalidad && v.tieneLab && v.esUltimoDelPedido && (
@@ -351,6 +367,21 @@ function FilaViaje({
           onClose={() => setCancelando(false)}
           onCancelado={() => {
             setCancelando(false);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {eliminando && (
+        <EliminarViajeModal
+          viajeId={v.id}
+          etiqueta={`${v.cliente} · Viaje ${v.numClienteDia} de ${v.totalClienteDia}`}
+          volumen={v.volumen}
+          estado={v.estado}
+          esUnicoDelPedido={v.totalClienteDia === 1}
+          onClose={() => setEliminando(false)}
+          onEliminado={() => {
+            setEliminando(false);
             router.refresh();
           }}
         />
