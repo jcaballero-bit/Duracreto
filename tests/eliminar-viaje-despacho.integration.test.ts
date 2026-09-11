@@ -15,7 +15,7 @@ import { calcularAlcance } from "@/lib/auth/acceso";
 import { avanzarEstadoViaje, programarPedido } from "@/lib/motor/asignacion";
 import { ESTADO_VIAJE_COMPLETADO, SECUENCIA_ESTADOS_VIAJE } from "@/lib/motor/config";
 import { construirSnapshot, ymd, type FilaSnap, type ViajeSnap } from "@/lib/programa/snapshot";
-import { produccionDelMes } from "@/lib/produccion/consulta";
+import { produccionDelMes, produccionPorPeriodo } from "@/lib/produccion/consulta";
 import { calcularDesempeno } from "@/lib/comercial/metricas";
 import { calcularReportes } from "@/lib/reportes/metricas";
 import { calcularExtraordinario } from "@/lib/extraordinario/metricas";
@@ -53,9 +53,12 @@ vi.mock("next/cache", () => ({
   unstable_cache: (fn: unknown) => fn,
 }));
 
-const { eliminarViajeDespachoAction, cancelarViajeAction, agregarViajePedidoAction } = await import(
-  "@/app/actions"
-);
+const {
+  eliminarViajeDespachoAction,
+  cancelarViajeAction,
+  agregarViajePedidoAction,
+  editarVolumenAction,
+} = await import("@/app/actions");
 
 /** HOY a la hora `h` — el día que opera Despacho en vivo. */
 function hoyALas(h: number): Date {
@@ -69,6 +72,18 @@ const finDeHoy = () => {
   d.setDate(d.getDate() + 1);
   return d;
 };
+
+/** El mes en curso, como lo pide `produccionDelMes`. */
+const mesDeHoy = () => {
+  const d = new Date();
+  return { anio: d.getFullYear(), mes: d.getMonth() + 1 };
+};
+/** La clave de la celda del calendario para HOY ("YYYY-MM-DD" local). */
+const HOY_ISO = (() => {
+  const d = new Date();
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+})();
 
 /** Lleva un viaje hasta Completado por la secuencia real de estados. */
 async function completar(viajeId: number) {
@@ -285,6 +300,85 @@ describe("eliminar NO afecta ningún estadístico", () => {
 
     expect(antes.resumen.viajes - despues.resumen.viajes).toBe(1);
     expect(despues.detalle.some((d) => d.viajeId === s.viajes[0].id)).toBe(false);
+  });
+
+  it("la CELDA del calendario del panel pierde el viaje COMPLETADO borrado", async () => {
+    // Lo que se ve en el Panel Principal es la celda del dia, no solo el total del mes:
+    // se comprueban el volumen, el conteo de viajes y el desglose por plantel/planta.
+    const s = await escenario(33);
+    for (const v of s.viajes) await completar(v.id);
+
+    const antes = await produccionDelMes(mesDeHoy());
+    const borrado = s.viajes[2];
+    expect(antes.porDia.get(HOY_ISO)).toEqual({ m3: 33, viajes: 3 });
+
+    await eliminarViajeDespachoAction(borrado.id);
+
+    const despues = await produccionDelMes(mesDeHoy());
+    // La celda baja el volumen Y el conteo: el camion borrado no existio.
+    expect(despues.porDia.get(HOY_ISO)).toEqual({ m3: 22, viajes: 2 });
+    // El desglose por plantel y su segundo nivel (planta) tambien.
+    const plantel = (despues.porDiaPlantel.get(HOY_ISO) ?? []).find(
+      (p) => p.plantelId === s.plantelId,
+    );
+    expect(plantel?.m3).toBeCloseTo(22, 2);
+    expect(plantel?.viajes).toBe(2);
+    expect(plantel?.plantas.reduce((a, p) => a + p.m3, 0)).toBeCloseTo(22, 2);
+  });
+
+  it("borrados TODOS, el dia queda VACIO (no una celda en 0.00)", async () => {
+    // Un dia sin produccion se deja en blanco; una celda en "0.00" diria que se
+    // despacho cero, que es distinto de que no hubo despacho.
+    const s = await escenario(33);
+    for (const v of s.viajes) await completar(v.id);
+    for (const v of s.viajes) await eliminarViajeDespachoAction(v.id);
+
+    const r = await produccionDelMes(mesDeHoy());
+    expect(r.porDia.has(HOY_ISO)).toBe(false);
+    expect(r.porDiaPlantel.has(HOY_ISO)).toBe(false);
+    // Y el mes vacio no revienta el resumen ni la escala de color.
+    expect([...r.porDia.values()].reduce((a, b) => a + b.m3, 0)).toBe(0);
+  });
+
+  it("el grafico de tendencia (la otra mitad del panel) baja igual", async () => {
+    const s = await escenario(33);
+    for (const v of s.viajes) await completar(v.id);
+    const rango = {
+      desde: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+      hasta: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1),
+      granularidad: "mes" as const,
+      plantelIds: null,
+    };
+    const sumar = (m: Map<string, Map<number, number>>) => {
+      let t = 0;
+      for (const porPlantel of m.values()) for (const v of porPlantel.values()) t += v;
+      return t;
+    };
+
+    const antes = sumar(await produccionPorPeriodo(rango));
+    const borrado = s.viajes[0];
+    await eliminarViajeDespachoAction(borrado.id);
+    const despues = sumar(await produccionPorPeriodo(rango));
+
+    expect(antes - despues).toBeCloseTo(borrado.volumen_asignado_m3, 2);
+  });
+
+  it("el volumen REAL corregido es el que sale del calendario, no el programado", async () => {
+    // Si el despachador cargo menos de lo programado, lo que el calendario mostraba era
+    // el volumen real; borrar el viaje tiene que quitar ESE numero, no el del programa.
+    const s = await escenario(33);
+    const v0 = s.viajes[0];
+    await editarVolumenAction(v0.id, 7); // programado 11 -> real 7
+    await completar(v0.id);
+    await completar(s.viajes[1].id);
+
+    const antes = await produccionDelMes(mesDeHoy());
+    expect(antes.porDia.get(HOY_ISO)?.m3).toBeCloseTo(7 + 11, 2);
+
+    await eliminarViajeDespachoAction(v0.id);
+
+    const despues = await produccionDelMes(mesDeHoy());
+    expect(despues.porDia.get(HOY_ISO)?.m3).toBeCloseTo(11, 2);
   });
 });
 
