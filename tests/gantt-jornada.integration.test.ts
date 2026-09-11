@@ -654,3 +654,144 @@ describe("el Gantt es del DÍA seleccionado", () => {
     expect(f.viajes).toHaveLength(1);
   });
 });
+
+describe("los viajes de una persona NO se limitan a su plantel", () => {
+  // Caso reportado: un motorista de Santa Marta que por la manana carga en Choloma y
+  // por la tarde en Santa Marta. Antes la consulta filtraba los viajes por PLANTEL, asi
+  // que los de Choloma no salian: la persona aparecia con menos trabajo del que hizo y
+  // su tiempo "sin viaje asignado" quedaba inflado.
+  async function dosPlanteles() {
+    const sm = await crearPlantel({ nombre: "SM Cruce", zona: "Norte", esHub: true });
+    const cho = await crearPlantel({ nombre: "Choloma Cruce", zona: "Norte", hubId: sm.plantelId });
+    const clienteId = await crearCliente(true);
+    const disenoId = await crearDiseno();
+    return { sm, cho, clienteId, disenoId };
+  }
+
+  it("el motorista ve TAMBIEN los viajes que cargo en otro plantel", async () => {
+    const { sm, cho, clienteId, disenoId } = await dosPlanteles();
+    const mixer = await prisma.mixers.create({
+      data: { marca: "T", capacidad_m3: 12, plantel_base_id: sm.plantelId, identificador: "M-X1" },
+    });
+    // Esta asignado a Santa Marta, que es el plantel por el que filtra la pantalla.
+    const personaId = await crearPersona("Motorista Cruzado", "Motorista_Mixer", sm.plantelId);
+    await jornada(personaId, en(6, 0), en(17, 0));
+
+    // Manana en CHOLOMA, tarde en SANTA MARTA.
+    const vCho = await crearViaje({
+      plantelId: cho.plantelId,
+      plantaId: cho.plantaId,
+      clienteId,
+      disenoId,
+      operadorId: personaId,
+      mixerId: mixer.id,
+      carga: en(7), finCarga: en(7, 20), inicioDescarga: en(8), finDescarga: en(8, 20), regreso: en(8, 40),
+    });
+    const vSm = await crearViaje({
+      plantelId: sm.plantelId,
+      plantaId: sm.plantaId,
+      clienteId,
+      disenoId,
+      operadorId: personaId,
+      mixerId: mixer.id,
+      carga: en(14), finCarga: en(14, 20), inicioDescarga: en(15), finDescarga: en(15, 20), regreso: en(15, 40),
+    });
+
+    // La pantalla filtrada a SANTA MARTA: la persona se lista por su plantel asignado…
+    const d = await gantt([sm.plantelId]);
+    const f = d.filas.find((x) => x.personaId === personaId)!;
+
+    // …y sus DOS viajes se dibujan, no solo el de Santa Marta.
+    const ids = f.viajes.map((v) => v.id).sort((a, b) => a - b);
+    expect(ids).toEqual([vCho.id, vSm.id].sort((a, b) => a - b));
+    // El de Choloma son 1h 40m de ciclo (07:00 -> 08:40) y el de SM otro tanto.
+    expect(f.resumen.minutosProductivos).toBe(100 + 100);
+    // Y el invariante se mantiene sobre la jornada de 11 h.
+    expect(f.resumen.minutosProductivos + f.resumen.minutosSinViaje).toBe(11 * 60);
+  });
+
+  it("sin el arreglo el tiempo sin viaje salia inflado: ahora baja a la mitad", async () => {
+    // La consecuencia practica de lo anterior, que es lo que se lee en pantalla.
+    const { sm, cho, clienteId, disenoId } = await dosPlanteles();
+    const personaId = await crearPersona("Motorista Dos Plantas", "Motorista_Mixer", sm.plantelId);
+    await jornada(personaId, en(6, 0), en(10, 0)); // 4 h de jornada
+
+    const base = { clienteId, disenoId, operadorId: personaId };
+    await crearViaje({
+      ...base, plantelId: cho.plantelId, plantaId: cho.plantaId,
+      carga: en(6), finCarga: en(6, 20), inicioDescarga: en(6, 40), finDescarga: en(7), regreso: en(8),
+    });
+    await crearViaje({
+      ...base, plantelId: sm.plantelId, plantaId: sm.plantaId,
+      carga: en(8), finCarga: en(8, 20), inicioDescarga: en(8, 40), finDescarga: en(9), regreso: en(10),
+    });
+
+    const f = (await gantt([sm.plantelId])).filas.find((x) => x.personaId === personaId)!;
+    // Los dos ciclos cubren la jornada entera: cero tiempo sin viaje.
+    expect(f.resumen.minutosProductivos).toBe(4 * 60);
+    expect(f.resumen.minutosSinViaje).toBe(0);
+  });
+
+  it("el dosificador reasignado a la planta de OTRO plantel ve esas cargas", async () => {
+    // La reasignacion del dia puede mandarlo a la planta de otro plantel; sus cargas de
+    // ese dia son las de ESA planta.
+    const { sm, cho, clienteId, disenoId } = await dosPlanteles();
+    const user = await prisma.user.create({
+      data: { email: `dos${Date.now()}@test.com`, name: "Dosificador Cruzado" },
+    });
+    const personaId = await crearPersona("Dosificador Cruzado", "Dosificador", sm.plantelId, {
+      usuarioId: user.id,
+    });
+    await prisma.reasignaciones_dosificador_planta.create({
+      data: { dosificador_id: user.id, planta_id: cho.plantaId, fecha: DIA, creado_por: "prueba" },
+    });
+    await jornada(personaId, en(6, 0), en(14, 0));
+
+    const v = await crearViaje({
+      plantelId: cho.plantelId, plantaId: cho.plantaId, clienteId, disenoId,
+      carga: en(8), finCarga: en(8, 30), inicioDescarga: en(9), finDescarga: en(9, 20), regreso: en(9, 40),
+    });
+
+    const f = (await gantt([sm.plantelId])).filas.find((x) => x.personaId === personaId)!;
+    expect(f.viajes.map((v) => v.id)).toEqual([v.id]);
+    expect(f.resumen.minutosProductivos).toBe(30); // solo el tramo de CARGA
+  });
+
+  it("el operador de una bomba PRESTADA a otro plantel ve esas descargas", async () => {
+    const { sm, cho, clienteId, disenoId } = await dosPlanteles();
+    const bomba = await prisma.bombas.create({
+      data: { identificador: "B-X1", plantel_base_id: sm.plantelId },
+    });
+    const personaId = await crearPersona("Operador Bomba Cruzado", "Operador_Bomba", sm.plantelId);
+    await prisma.bombas_operadores.create({
+      data: { bomba_id: bomba.id, operador_id: personaId },
+    });
+    await jornada(personaId, en(6, 0), en(14, 0));
+
+    // La bomba trabaja en CHOLOMA ese dia.
+    const v = await crearViaje({
+      plantelId: cho.plantelId, plantaId: cho.plantaId, clienteId, disenoId, bombaId: bomba.id,
+      carga: en(8), finCarga: en(8, 30), inicioDescarga: en(9), finDescarga: en(9, 40), regreso: en(10),
+    });
+
+    const f = (await gantt([sm.plantelId])).filas.find((x) => x.personaId === personaId)!;
+    expect(f.viajes.map((v) => v.id)).toEqual([v.id]);
+    expect(f.resumen.minutosProductivos).toBe(40); // solo el tramo de DESCARGA
+  });
+
+  it("el filtro de plantel sigue acotando A QUIEN se lista, no sus viajes", async () => {
+    // Lo que el filtro SI debe seguir haciendo: no mostrar a la gente del otro plantel.
+    const { sm, cho, clienteId, disenoId } = await dosPlanteles();
+    const deSM = await crearPersona("Persona SM", "Motorista_Mixer", sm.plantelId);
+    const deCHO = await crearPersona("Persona CHO", "Motorista_Mixer", cho.plantelId);
+    await jornada(deSM, en(6), en(14));
+    await jornada(deCHO, en(6), en(14));
+    await crearViaje({
+      plantelId: cho.plantelId, plantaId: cho.plantaId, clienteId, disenoId, operadorId: deCHO,
+      carga: en(8), finCarga: en(8, 20), inicioDescarga: en(9), finDescarga: en(9, 20), regreso: en(9, 40),
+    });
+
+    const d = await gantt([sm.plantelId]);
+    expect(d.filas.map((f) => f.personaId)).toEqual([deSM]);
+  });
+});

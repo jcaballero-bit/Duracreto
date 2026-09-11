@@ -19,6 +19,7 @@
  * Si falta el timestamp REAL de un segmento se usa el programado y el tramo queda
  * marcado como estimado (la vista lo dibuja punteado).
  */
+import { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resolverPlantaDosificador } from "@/lib/dosificador/planta";
 import { etiquetaPuesto } from "@/lib/planilla/puestos";
@@ -221,14 +222,53 @@ async function plantaDelDosificador(
 /** Viaje tal como se necesita para el Gantt. */
 type ViajeGantt = Awaited<ReturnType<typeof leerViajes>>[number];
 
-async function leerViajes(desde: Date, hasta: Date, plantelIds: number[] | null) {
+/** A quien puede pertenecer un viaje de esta pantalla. Ver `leerViajes`. */
+interface AlcanceViajes {
+  /** Ids del personal listado: un viaje es suyo si va como `operador_id`. */
+  personaIds: number[];
+  /** Plantas donde dosificaron los dosificadores listados ese dia. */
+  plantaIds: number[];
+  /** Bombas que operan las personas listadas. */
+  bombaIds: number[];
+}
+
+/**
+ * Viajes que pueden pertenecer a alguien de la lista.
+ *
+ * **NO se filtra por PLANTEL, a proposito.** Lo que hace suyo un viaje a una persona no
+ * depende del plantel: el motorista va como `operador_id` (puede cargar en Choloma por
+ * la manana y en Santa Marta por la tarde), el dosificador se identifica por la PLANTA
+ * donde estuvo ese dia (y la reasignacion diaria puede mandarlo a la planta de otro
+ * plantel) y el operador de bomba por su BOMBA (que puede estar prestada a otro
+ * plantel). Filtrar por plantel dejaba fuera esos viajes: la persona aparecia con menos
+ * trabajo del que hizo y su tiempo "sin viaje asignado" salia inflado. El filtro de
+ * plantel de la pantalla acota **a quien se lista**, nunca los viajes de esa gente.
+ *
+ * El `OR` es deliberadamente un SUPERCONJUNTO: solo sirve para no traer de la base
+ * viajes que no le tocan a nadie de la lista. Quien decide de quien es cada viaje es el
+ * filtro en memoria de `datosGantt` (por `operador_id`, por planta o por bomba), asi
+ * que un `OR` de mas es inofensivo y uno de menos se ve en las pruebas.
+ */
+async function leerViajes(desde: Date, hasta: Date, alcance: AlcanceViajes) {
+  const dueno: Prisma.viajesWhereInput[] = [];
+  if (alcance.personaIds.length) dueno.push({ operador_id: { in: alcance.personaIds } });
+  if (alcance.plantaIds.length) {
+    // La planta del viaje, con la del pedido como respaldo (misma regla que el filtro
+    // en memoria: `v.planta_id ?? v.pedido.planta_id`).
+    dueno.push({ planta_id: { in: alcance.plantaIds } });
+    dueno.push({ planta_id: null, pedido: { planta_id: { in: alcance.plantaIds } } });
+  }
+  if (alcance.bombaIds.length) {
+    dueno.push({ pedido: { bombas: { some: { bomba_id: { in: alcance.bombaIds } } } } });
+  }
+  // Nadie de la lista puede tener viajes: no se consulta nada.
+  if (dueno.length === 0) return [];
+
   return prisma.viajes.findMany({
     where: {
       estado: { not: "Cancelado" },
-      pedido: {
-        estado_pedido: "Activo",
-        ...(plantelIds ? { plantel_id: { in: plantelIds } } : {}),
-      },
+      pedido: { estado_pedido: "Activo" },
+      AND: [{ OR: dueno }],
       OR: [
         { ts_inicio_carga_real: { gte: desde, lt: hasta } },
         { AND: [{ ts_inicio_carga_real: null }, { hora_inicio_carga: { gte: desde, lt: hasta } }] },
@@ -337,9 +377,37 @@ export async function datosGantt(
   // siguiente y no toque su jornada NO se dibuja aquí.
   const finAmplio = new Date(finDia.getTime() + 12 * 60 * 60_000);
 
-  const plantelIds = [
-    ...new Set(personas.map((p) => p.plantel_asignado_id).filter((x): x is number => x != null)),
-  ];
+  // La planta de cada dosificador se resuelve ANTES de leer los viajes: entra en el
+  // alcance de la consulta (ver `leerViajes`) y ademas asi las N consultas salen en
+  // paralelo en vez de una por vuelta del bucle de abajo.
+  const plantaPorDosificador = new Map<number, { plantaId: number | null; motivo: string | null }>(
+    await Promise.all(
+      personas
+        .filter((p) => p.puesto === "Dosificador")
+        .map(
+          async (p) =>
+            [p.id, await plantaDelDosificador(p, dia)] as [
+              number,
+              { plantaId: number | null; motivo: string | null },
+            ],
+        ),
+    ),
+  );
+
+  // A quien puede pertenecer un viaje de esta pantalla. NO lleva plantel: un viaje es
+  // de una persona por su motorista, su planta o su bomba, y ninguno de los tres se
+  // limita al plantel donde la persona esta asignada (ver `leerViajes`).
+  const alcance: AlcanceViajes = {
+    personaIds: personas.map((p) => p.id),
+    plantaIds: [
+      ...new Set(
+        [...plantaPorDosificador.values()]
+          .map((x) => x.plantaId)
+          .filter((x): x is number => x != null),
+      ),
+    ],
+    bombaIds: [...new Set(personas.flatMap((p) => p.bombaIds))],
+  };
 
   const [asistencias, viajes] = await Promise.all([
     prisma.asistencia_operativos.findMany({
@@ -348,7 +416,7 @@ export async function datosGantt(
         persona_id: { in: personas.length ? personas.map((p) => p.id) : [-1] },
       },
     }),
-    leerViajes(inicioDia, finAmplio, plantelIds.length ? plantelIds : null),
+    leerViajes(inicioDia, finAmplio, alcance),
   ]);
   const asistPorPersona = new Map(asistencias.map((a) => [a.persona_id, a]));
 
@@ -404,7 +472,10 @@ export async function datosGantt(
     } else if (persona.puesto === "Dosificador") {
       segmento = "carga";
       soloDentroDeJornada = true;
-      const { plantaId, motivo } = await plantaDelDosificador(persona, dia);
+      const { plantaId, motivo } = plantaPorDosificador.get(persona.id) ?? {
+        plantaId: null,
+        motivo: "no tiene planta asignada",
+      };
       if (plantaId == null) {
         mide = false;
         motivoNoMide = motivo;
