@@ -9,6 +9,24 @@ import { InstallApp } from "./install-app";
 import { AcercaDe } from "./acerca-de";
 import type { InfoVersion } from "@/lib/version";
 
+/**
+ * Cierra la sesión y sale del sistema con una RECARGA COMPLETA del navegador.
+ *
+ * No se usa el redirect del router de Next a propósito. Una computadora de planta la
+ * comparten varios turnos, así que al cerrar sesión no puede quedar nada de la persona
+ * anterior, y una navegación del lado del cliente conserva el documento y la memoria de
+ * la pestaña. `location.replace` en cambio:
+ *
+ *  · pide /login al servidor como documento nuevo, así que el proceso arranca limpio;
+ *  · **REEMPLAZA** la entrada del historial en vez de agregar una, de modo que el botón
+ *    Atrás ya no puede volver a la pantalla donde estaba la sesión anterior (que es la
+ *    otra forma de "cerré sesión pero sigo viendo el sistema").
+ */
+async function cerrarSesion() {
+  await cerrarSesionAction();
+  window.location.replace("/login");
+}
+
 function iniciales(nombre: string): string {
   return (
     nombre
@@ -84,7 +102,7 @@ export function UserMenu({
           >
             <Info size={16} /> Acerca de DURACRETO Logistics
           </button>
-          <form action={cerrarSesionAction} className="border-t border-slate-100">
+          <form action={cerrarSesion} className="border-t border-slate-100">
             <button
               type="submit"
               className="flex w-full items-center gap-2 px-4 py-2.5 text-sm font-medium text-red-600 hover:bg-red-50"

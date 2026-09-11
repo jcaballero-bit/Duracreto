@@ -35,7 +35,7 @@ const HASH_SENUELO = bcrypt.hashSync("cuenta-inexistente-no-usar", 10);
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "jwt" },
+  // `session` viene de authConfig (duracion compartida con el middleware).
   providers: [
     Credentials({
       credentials: {
