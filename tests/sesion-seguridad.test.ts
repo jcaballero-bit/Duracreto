@@ -61,30 +61,25 @@ describe("cerrar sesión cierra de verdad", () => {
     expect(src.indexOf("revalidatePath")).toBeLessThan(src.indexOf("signOut("));
   });
 
-  it("sale con una RECARGA COMPLETA, no con el redirect del router", () => {
-    // Una navegación del lado del cliente conserva el documento y la memoria de la
-    // pestaña; `location.replace` pide /login como documento nuevo.
-    const menu = codigo(MENU);
-    expect(menu).toMatch(/window\.location\.replace\(\s*"\/login"\s*\)/);
-    // Y la acción del servidor no debe redirigir ella misma (si lanzara el redirect, la
-    // recarga del cliente no llegaría a ejecutarse).
-    expect(codigo(CIERRE)).toMatch(/signOut\(\{\s*redirect:\s*false\s*\}\)/);
+  it("el redirect lo hace el SERVIDOR, no un paso del cliente", () => {
+    // Se probó sacar el redirect de la acción (`redirect: false`) para que el menú
+    // hiciera `window.location.replace("/login")` y así ganar una recarga completa y
+    // borrar la entrada del historial. Con eso el botón DEJÓ DE CERRAR SESIÓN: medido
+    // por el protocolo de server actions, la respuesta pasaba de 303 con
+    // `x-action-redirect: /login` a un 200 SIN ninguna instrucción de navegar, así que
+    // salir de la pantalla dependía por completo de ese paso del cliente. Aquí se fija
+    // la cadena documentada de Auth.js, que es la que funciona.
+    const src = codigo(CIERRE);
+    expect(src).toMatch(/signOut\(\{\s*redirectTo:\s*"\/login"\s*\}\)/);
+    expect(src).not.toMatch(/redirect:\s*false/);
   });
 
-  it("REEMPLAZA la entrada del historial, para que Atrás no vuelva a la sesión anterior", () => {
+  it("el botón envía DIRECTO a la server action, sin envoltorio propio", () => {
+    // Cualquier paso intermedio en el cliente es una pieza más que puede fallar entre
+    // el clic y el cierre de sesión.
     const menu = codigo(MENU);
-    expect(menu).toMatch(/location\.replace\(/);
-    // `href =` o `assign()` agregarían una entrada y dejarían la pantalla anterior a un
-    // botón Atrás de distancia.
-    expect(menu).not.toMatch(/location\.href\s*=\s*"\/login"/);
-    expect(menu).not.toMatch(/location\.assign\(/);
-  });
-
-  it("el botón de salir usa el handler que recarga, no la acción a secas", () => {
-    // Si el form volviera a apuntar directo a la server action, se perdería la recarga.
-    const menu = codigo(MENU);
-    expect(menu).toMatch(/<form action=\{cerrarSesion\}/);
-    expect(menu).not.toMatch(/<form action=\{cerrarSesionAction\}/);
+    expect(menu).toMatch(/<form action=\{cerrarSesionAction\}/);
+    expect(menu).not.toMatch(/window\.location\.replace/);
   });
 });
 
